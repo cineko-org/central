@@ -12,12 +12,16 @@ flowchart LR
     H --> I["Client reads live seats and prepares payment"]
 ```
 
-- The operator selects theaters and baseline randomized interval ranges in Central.
+- The operator selects a theater and the rolling date horizon. Central owns all cadence and priority decisions.
 - A theater has at most one active policy and one active assignment, regardless of users, movies, or auditoriums.
 - Each assignment checks today and every later date through the configured horizon. The horizon is not the delay
   between scans.
 - A pending or running booking monitor raises the matching theater to the demand range. A triggered monitor no longer
   raises discovery priority because its exact showtime is already known.
+- Opening demand is rechecked after a randomized 2-5 second delay, subject to the duration of the previous scan. It
+  always outranks ordinary and recent-change collection work.
+- Recent-change analysis uses 15-30 seconds and cancellation monitoring uses 30-45 seconds. Ordinary collection uses
+  the operator-independent baseline. These values are product policy, not admin form inputs.
 - A newly observed showtime with a previous complete absence activates the burst range for the configured duration.
 - Every range is additive random jitter: maximum must be greater than minimum. Exact fixed polling is rejected.
 - The first-ever capture is left-censored and cannot prove when a showtime opened.

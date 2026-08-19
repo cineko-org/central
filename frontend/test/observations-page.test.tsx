@@ -10,11 +10,7 @@ const theaters: Theater[] = [
 ];
 const draft: ObservationPolicyInput = {
   theaterId: '', enabled: true,
-  horizonDays: 14, priority: 50,
-  baselineMinSeconds: 900, baselineMaxSeconds: 1800,
-  demandMinSeconds: 120, demandMaxSeconds: 300,
-  burstMinSeconds: 30, burstMaxSeconds: 90, burstDurationSeconds: 3600,
-  locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default',
+  horizonDays: 14,
 };
 
 function render(
@@ -55,6 +51,10 @@ describe('Observation policy presentation', () => {
     const policy: AdminObservationPolicy = {
       ...draft,
       id: 'policy', revision: 1, theaterId: theaters[0].id, theater: theaters[0],
+      priority: 50, baselineMinSeconds: 300, baselineMaxSeconds: 900,
+      demandMinSeconds: 30, demandMaxSeconds: 45, burstMinSeconds: 15,
+      burstMaxSeconds: 30, burstDurationSeconds: 1800,
+      locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default',
       effectiveMode: 'baseline', effectivePriority: 50,
       effectiveMinSeconds: 900, effectiveMaxSeconds: 1800, demandActive: false,
       createdAt: '2026-08-14T00:00:00Z', updatedAt: '2026-08-14T00:00:00Z',
@@ -63,6 +63,31 @@ describe('Observation policy presentation', () => {
     expect(markup).toContain('서울 · 용산아이파크몰');
     expect(markup).toContain('data-disabled="true"');
     expect(markup).not.toContain('>극장 ID<');
+  });
+
+  it('shows only the operator decisions and explains the rolling scan', () => {
+    const markup = render();
+    expect(markup).toContain('한 번에 확인할 기간');
+    expect(markup).toContain('매 조회마다 오늘부터 선택한 기간까지의 예매 일정을 모두 확인합니다.');
+    expect(markup).toContain('관측 속도는 Central이 자동으로 조정합니다');
+    expect(markup).not.toContain('평상시 최소 간격');
+    expect(markup).not.toContain('기본 우선순위');
+    expect(markup).not.toContain('좌석 배치');
+  });
+
+  it('labels cancellation monitoring separately from baseline collection', () => {
+    const policy: AdminObservationPolicy = {
+      ...draft,
+      id: 'policy', revision: 1, theaterId: theaters[0].id, theater: theaters[0],
+      priority: 50, baselineMinSeconds: 300, baselineMaxSeconds: 900,
+      demandMinSeconds: 30, demandMaxSeconds: 45, burstMinSeconds: 15,
+      burstMaxSeconds: 30, burstDurationSeconds: 1800,
+      locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default',
+      effectiveMode: 'cancellation', effectivePriority: 44,
+      effectiveMinSeconds: 30, effectiveMaxSeconds: 45, demandActive: true,
+      createdAt: '2026-08-14T00:00:00Z', updatedAt: '2026-08-14T00:00:00Z',
+    };
+    expect(render(policy)).toContain('취소표 관측');
   });
 
   it('offers an initial catalog path instead of an unusable empty policy form', () => {

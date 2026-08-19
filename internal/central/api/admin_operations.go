@@ -65,6 +65,18 @@ type AdminObservationPolicyInput struct {
 	EgressPolicyID       string `json:"egressPolicyId"`
 }
 
+const (
+	observationPolicyPriority           = 50
+	observationBaselineMinSeconds       = 300
+	observationBaselineMaxSeconds       = 900
+	observationDemandStoredMinSeconds   = 30
+	observationDemandStoredMaxSeconds   = 45
+	observationBurstStoredMinSeconds    = 15
+	observationBurstStoredMaxSeconds    = 30
+	observationBurstDurationSeconds     = 1800
+	observationPolicyMaximumHorizonDays = 14
+)
+
 type AdminObservationPolicy struct {
 	ID       string          `json:"id"`
 	Revision int64           `json:"revision"`
@@ -269,18 +281,17 @@ func (server *Server) decodeObservationPolicyInput(
 
 func normalizeObservationPolicyInput(input AdminObservationPolicyInput) (AdminObservationPolicyInput, error) {
 	input.TheaterID = strings.TrimSpace(input.TheaterID)
-	input.Locale = strings.TrimSpace(input.Locale)
-	input.TimeZone = strings.TrimSpace(input.TimeZone)
-	input.EgressPolicyID = strings.TrimSpace(input.EgressPolicyID)
-	if input.Locale == "" {
-		input.Locale = "ko-KR"
-	}
-	if input.TimeZone == "" {
-		input.TimeZone = "Asia/Seoul"
-	}
-	if input.EgressPolicyID == "" {
-		input.EgressPolicyID = "scan_default"
-	}
+	input.Priority = observationPolicyPriority
+	input.BaselineMinSeconds = observationBaselineMinSeconds
+	input.BaselineMaxSeconds = observationBaselineMaxSeconds
+	input.DemandMinSeconds = observationDemandStoredMinSeconds
+	input.DemandMaxSeconds = observationDemandStoredMaxSeconds
+	input.BurstMinSeconds = observationBurstStoredMinSeconds
+	input.BurstMaxSeconds = observationBurstStoredMaxSeconds
+	input.BurstDurationSeconds = observationBurstDurationSeconds
+	input.Locale = "ko-KR"
+	input.TimeZone = "Asia/Seoul"
+	input.EgressPolicyID = "scan_default"
 	if input.TheaterID == "" {
 		return AdminObservationPolicyInput{}, fmt.Errorf("%w: theater id is required", central.ErrInvalid)
 	}
@@ -291,8 +302,8 @@ func normalizeObservationPolicyInput(input AdminObservationPolicyInput) (AdminOb
 }
 
 func validateObservationPolicyRanges(input AdminObservationPolicyInput) error {
-	if input.HorizonDays < 1 || input.HorizonDays > 90 || input.Priority < 0 || input.Priority > 100 {
-		return fmt.Errorf("%w: horizon or priority is out of range", central.ErrInvalid)
+	if input.HorizonDays < 1 || input.HorizonDays > observationPolicyMaximumHorizonDays {
+		return fmt.Errorf("%w: observation horizon must be between 1 and %d days", central.ErrInvalid, observationPolicyMaximumHorizonDays)
 	}
 	ranges := []struct {
 		minimum int

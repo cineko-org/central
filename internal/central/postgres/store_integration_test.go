@@ -1477,6 +1477,11 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 	if due[3].ID != policyIDs[3] || due[3].Priority != 33 {
 		t.Fatalf("baseline policy = %+v", due[3])
 	}
+	if due[0].MinimumInterval != 2*time.Second || due[0].MaximumInterval != 5*time.Second ||
+		due[1].MinimumInterval != 15*time.Second || due[1].MaximumInterval != 30*time.Second ||
+		due[2].MinimumInterval != 30*time.Second || due[2].MaximumInterval != 45*time.Second {
+		t.Fatalf("automatic observation cadence = %+v", due[:3])
+	}
 	if due[0].Theater.ID != demandTheaterID || due[1].Theater.ID != burstTheaterID ||
 		due[2].Theater.ID != cancellationTheaterID {
 		t.Fatalf("unexpected lane theaters: demand=%q burst=%q", due[0].Theater.ID, due[1].Theater.ID)

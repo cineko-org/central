@@ -4,11 +4,7 @@ import type { AdminObservationPolicy, CatalogIndex, CatalogRefreshStatus, Observ
 import { ObservationsPageView } from './ui/ObservationsPageView';
 
 const emptyPolicy: ObservationPolicyInput = {
-  theaterId: '', enabled: true, horizonDays: 14, priority: 50,
-  baselineMinSeconds: 900, baselineMaxSeconds: 1800,
-  demandMinSeconds: 120, demandMaxSeconds: 300,
-  burstMinSeconds: 30, burstMaxSeconds: 90, burstDurationSeconds: 3600,
-  locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default',
+  theaterId: '', enabled: true, horizonDays: 14,
 };
 
 export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => void }) {
@@ -93,12 +89,12 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
   }, [handleError, refresh]);
 
   return <ObservationsPageView
-	policies={policies} theaters={catalog?.theaters} auditoriums={catalog?.auditoriums}
-	catalogRefresh={catalogRefresh} draft={draft} editing={editing}
+    policies={policies} theaters={catalog?.theaters}
+    catalogRefresh={catalogRefresh} draft={draft} editing={editing}
     failed={failed} saving={saving} requestingCatalog={requestingCatalog}
     onDraftChange={setDraft} onSave={() => { if (!saving) void save(); }} onRefresh={() => void refresh()}
     onRequestCatalogRefresh={() => void requestCatalogRefresh()}
-    onEdit={(policy) => { setEditing(policy); setDraft({ ...policy, theaterId: policy.theater.id }); }}
+    onEdit={(policy) => { setEditing(policy); setDraft({ theaterId: policy.theater.id, enabled: policy.enabled, horizonDays: policy.horizonDays }); }}
     onCancel={() => { setEditing(undefined); setDraft(emptyPolicy); }}
     onDelete={(policy) => { if (!saving) void remove(policy); }}
   />;

@@ -310,19 +310,15 @@ const adminObservationPolicySelect = `
 				ELSE policy.priority / 3
 			END AS effective_priority,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_min_interval_seconds, policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_min_interval_seconds, policy.min_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_min_interval_seconds, policy.min_interval_seconds)
+				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN COALESCE(demand.cancellation_active, false) THEN 30
+				WHEN policy.burst_until > $1 THEN 15
 				ELSE policy.min_interval_seconds
 			END AS effective_min_seconds,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_max_interval_seconds, policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_max_interval_seconds, policy.max_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_max_interval_seconds, policy.max_interval_seconds)
+				WHEN COALESCE(demand.opening_active, false) THEN 5
+				WHEN COALESCE(demand.cancellation_active, false) THEN 45
+				WHEN policy.burst_until > $1 THEN 30
 				ELSE policy.max_interval_seconds
 			END AS effective_max_seconds
 		FROM observation_policies AS policy
