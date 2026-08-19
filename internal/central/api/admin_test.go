@@ -315,10 +315,7 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 	}
 	theaterID := contracts.CatalogID(contracts.ProviderCGV, "theater", "서울/용산아이파크몰")
 	validPolicy := AdminObservationPolicyInput{
-		Enabled: true, TheaterID: " " + theaterID + " ",
-		HorizonDays: 14, Priority: 50, BaselineMinSeconds: 900, BaselineMaxSeconds: 1800,
-		DemandMinSeconds: 120, DemandMaxSeconds: 300, BurstMinSeconds: 30,
-		BurstMaxSeconds: 90, BurstDurationSeconds: 3600,
+		Enabled: true, TheaterID: " " + theaterID + " ", HorizonDays: 14,
 	}
 	createPolicy := requestWithCookieAndHeaders(
 		t, server, http.MethodPost, "/v1/admin/observation-policies", validPolicy, cookie,
@@ -329,6 +326,25 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 		!strings.Contains(createPolicy.Body.String(), `"theaterId":"`+theaterID+`"`) {
 		t.Fatalf("create policy = %d, %s", createPolicy.Code, createPolicy.Body.String())
 	}
+	createdPolicy := operations.policies[len(operations.policies)-1]
+	if createdPolicy.Priority != observationPolicyPriority ||
+		createdPolicy.BaselineMinSeconds != observationBaselineMinSeconds ||
+		createdPolicy.BaselineMaxSeconds != observationBaselineMaxSeconds ||
+		createdPolicy.DemandMinSeconds != observationDemandStoredMinSeconds ||
+		createdPolicy.DemandMaxSeconds != observationDemandStoredMaxSeconds ||
+		createdPolicy.BurstMinSeconds != observationBurstStoredMinSeconds ||
+		createdPolicy.BurstMaxSeconds != observationBurstStoredMaxSeconds ||
+		createdPolicy.BurstDurationSeconds != observationBurstDurationSeconds ||
+		createdPolicy.Locale != "ko-KR" || createdPolicy.TimeZone != "Asia/Seoul" ||
+		createdPolicy.EgressPolicyID != "scan_default" {
+		t.Fatalf("Central did not own observation scheduling defaults: %#v", createdPolicy.AdminObservationPolicyInput)
+	}
+	invalidHorizon := validPolicy
+	invalidHorizon.HorizonDays = 15
+	assertAPIError(t, requestWithCookieAndHeaders(
+		t, server, http.MethodPost, "/v1/admin/observation-policies", invalidHorizon, cookie,
+		map[string]string{"If-None-Match": "*"},
+	), http.StatusBadRequest, "invalid_request")
 	listPolicies := requestWithCookie(t, server, http.MethodGet, "/v1/admin/observation-policies", cookie)
 	if listPolicies.Code != http.StatusOK || !strings.Contains(listPolicies.Body.String(), `"id":"policy"`) {
 		t.Fatalf("list policies = %d, %s", listPolicies.Code, listPolicies.Body.String())

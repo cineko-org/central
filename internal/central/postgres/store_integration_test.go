@@ -1422,6 +1422,7 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 			WHEN $3 THEN 0
 			WHEN $4 THEN 100
 		END,
+		horizon_days = CASE WHEN id = $4 THEN 21 ELSE horizon_days END,
 		burst_until = CASE WHEN id = $2 THEN $5::timestamptz ELSE NULL END
 		WHERE id = ANY($6)
 	`, policyIDs[0], policyIDs[1], policyIDs[2], policyIDs[3], now.Add(time.Hour), policyIDs); err != nil {
@@ -1474,8 +1475,15 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 	if due[2].ID != policyIDs[2] || due[2].Priority != 40 {
 		t.Fatalf("cancellation demand policy = %+v", due[2])
 	}
-	if due[3].ID != policyIDs[3] || due[3].Priority != 33 {
+	if due[3].ID != policyIDs[3] || due[3].Priority != 10 {
 		t.Fatalf("baseline policy = %+v", due[3])
+	}
+	if due[0].MinimumInterval != 2*time.Second || due[0].MaximumInterval != 5*time.Second ||
+		due[1].MinimumInterval != 15*time.Second || due[1].MaximumInterval != 30*time.Second ||
+		due[2].MinimumInterval != 30*time.Second || due[2].MaximumInterval != 45*time.Second ||
+		due[3].MinimumInterval != 5*time.Minute || due[3].MaximumInterval != 15*time.Minute ||
+		due[3].HorizonDays != 14 {
+		t.Fatalf("automatic observation cadence = %+v", due[:3])
 	}
 	if due[0].Theater.ID != demandTheaterID || due[1].Theater.ID != burstTheaterID ||
 		due[2].Theater.ID != cancellationTheaterID {

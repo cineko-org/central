@@ -304,26 +304,22 @@ const adminObservationPolicySelect = `
 				ELSE 'baseline'
 			END AS effective_mode,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 90 + policy.priority / 11
-				WHEN policy.burst_until > $1 THEN 60 + policy.priority / 11
-				WHEN COALESCE(demand.cancellation_active, false) THEN 40 + policy.priority / 11
-				ELSE policy.priority / 3
+				WHEN COALESCE(demand.opening_active, false) THEN 90
+				WHEN policy.burst_until > $1 THEN 60
+				WHEN COALESCE(demand.cancellation_active, false) THEN 40
+				ELSE 10
 			END AS effective_priority,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_min_interval_seconds, policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_min_interval_seconds, policy.min_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				ELSE policy.min_interval_seconds
+				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN policy.burst_until > $1 THEN 15
+				WHEN COALESCE(demand.cancellation_active, false) THEN 30
+				ELSE 300
 			END AS effective_min_seconds,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_max_interval_seconds, policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_max_interval_seconds, policy.max_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				ELSE policy.max_interval_seconds
+				WHEN COALESCE(demand.opening_active, false) THEN 5
+				WHEN policy.burst_until > $1 THEN 30
+				WHEN COALESCE(demand.cancellation_active, false) THEN 45
+				ELSE 900
 			END AS effective_max_seconds
 		FROM observation_policies AS policy
 		LEFT JOIN demand_theaters AS demand ON demand.theater_id = policy.theater_id
@@ -331,7 +327,7 @@ const adminObservationPolicySelect = `
 	)
 	SELECT policy.id, policy.revision, policy.enabled,
 		theater.id, theater.provider_id, theater.source_key, theater.region, theater.name,
-		policy.horizon_days, policy.priority,
+		LEAST(policy.horizon_days, 14), policy.priority,
 		policy.min_interval_seconds, policy.max_interval_seconds,
 		policy.demand_min_interval_seconds, policy.demand_max_interval_seconds,
 		policy.burst_min_interval_seconds, policy.burst_max_interval_seconds,

@@ -324,20 +324,16 @@ func (store *cycleStore) TerminalPolicyRuns(
 		)
 		SELECT policy.id, policy.enabled, terminal.finished_at, terminal.status,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_min_interval_seconds, policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_min_interval_seconds, policy.min_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				ELSE policy.min_interval_seconds
+				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN policy.burst_until > $1 THEN 15
+				WHEN COALESCE(demand.cancellation_active, false) THEN 30
+				ELSE 300
 			END,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_max_interval_seconds, policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_max_interval_seconds, policy.max_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				ELSE policy.max_interval_seconds
+				WHEN COALESCE(demand.opening_active, false) THEN 5
+				WHEN policy.burst_until > $1 THEN 30
+				WHEN COALESCE(demand.cancellation_active, false) THEN 45
+				ELSE 900
 			END
 		FROM observation_policies AS policy
 		LEFT JOIN demand_theaters AS demand ON demand.theater_id = policy.theater_id
@@ -421,29 +417,25 @@ func (store *cycleStore) DuePolicies(
 		)
 		SELECT policy.id, policy.enabled, policy.task_kind, policy.theater_id,
 			policy.theater_provider_id, policy.theater_source_key, policy.theater_region,
-			policy.theater_name, policy.target_date_mode, policy.target_dates::text[], policy.horizon_days,
+			policy.theater_name, policy.target_date_mode, policy.target_dates::text[], LEAST(policy.horizon_days, 14),
 			policy.locale, policy.time_zone, policy.egress_policy_id,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 90 + policy.priority / 11
-				WHEN policy.burst_until > $1 THEN 60 + policy.priority / 11
-				WHEN COALESCE(demand.cancellation_active, false) THEN 40 + policy.priority / 11
-				ELSE policy.priority / 3
+				WHEN COALESCE(demand.opening_active, false) THEN 90
+				WHEN policy.burst_until > $1 THEN 60
+				WHEN COALESCE(demand.cancellation_active, false) THEN 40
+				ELSE 10
 			END AS effective_priority,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_min_interval_seconds, policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_min_interval_seconds, policy.min_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_min_interval_seconds, policy.min_interval_seconds)
-				ELSE policy.min_interval_seconds
+				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN policy.burst_until > $1 THEN 15
+				WHEN COALESCE(demand.cancellation_active, false) THEN 30
+				ELSE 300
 			END,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) AND policy.burst_until > $1 THEN
-					LEAST(policy.demand_max_interval_seconds, policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false) THEN
-					LEAST(policy.demand_max_interval_seconds, policy.max_interval_seconds)
-				WHEN policy.burst_until > $1 THEN LEAST(policy.burst_max_interval_seconds, policy.max_interval_seconds)
-				ELSE policy.max_interval_seconds
+				WHEN COALESCE(demand.opening_active, false) THEN 5
+				WHEN policy.burst_until > $1 THEN 30
+				WHEN COALESCE(demand.cancellation_active, false) THEN 45
+				ELSE 900
 			END,
 			policy.execution_window_seconds,
 			policy.next_run_at, policy.last_finished_at, COALESCE(policy.last_outcome, '')

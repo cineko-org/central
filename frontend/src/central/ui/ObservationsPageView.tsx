@@ -1,11 +1,10 @@
 import { Alert, Button, Checkbox, Divider, Group, NumberInput, ScrollArea, Select, Skeleton, Stack, Table, Text } from '@mantine/core';
-import type { AdminObservationPolicy, Auditorium, CatalogRefreshStatus, ObservationPolicyInput, Theater } from '../types';
+import type { AdminObservationPolicy, CatalogRefreshStatus, ObservationPolicyInput, Theater } from '../types';
 import { PageHeader } from './PageHeader';
 
 interface Props {
   policies?: AdminObservationPolicy[];
   theaters?: Theater[];
-	auditoriums?: Auditorium[];
   catalogRefresh?: CatalogRefreshStatus;
   draft: ObservationPolicyInput;
   editing?: AdminObservationPolicy;
@@ -27,6 +26,16 @@ function seconds(value: number): string {
   return `${value}초`;
 }
 
+function observationMode(policy: AdminObservationPolicy): string {
+  if (!policy.enabled) return '중지됨';
+  switch (policy.effectiveMode) {
+    case 'demand': return '예매 요청 집중 관측';
+    case 'burst': return '새 회차 집중 관측';
+    case 'cancellation': return '취소표 관측';
+    case 'baseline': return '평상시 관측';
+  }
+}
+
 function PolicyForm(props: Props) {
   const update = <K extends keyof ObservationPolicyInput>(key: K, value: ObservationPolicyInput[K]) => props.onDraftChange({ ...props.draft, [key]: value });
   const theaterOptions = props.theaters?.map((theater) => ({
@@ -37,11 +46,11 @@ function PolicyForm(props: Props) {
     <Stack gap="lg">
       <Text component="h2" fz="lg" fw={700}>{props.editing ? '관측 정책 편집' : '새 관측 정책'}</Text>
       <Select label="극장" placeholder="극장을 선택하세요" searchable data={theaterOptions} value={props.draft.theaterId || null} disabled={Boolean(props.editing)} nothingFoundMessage="등록된 극장이 없습니다" onChange={(value) => update('theaterId', value ?? '')} />
-      <Group grow align="start"><NumberInput label="관측할 날짜" suffix="일" min={1} max={90} value={props.draft.horizonDays} onChange={(value) => update('horizonDays', Number(value))} /><NumberInput label="기본 우선순위" min={0} max={100} value={props.draft.priority} onChange={(value) => update('priority', Number(value))} /></Group>
-      <Group grow align="start"><NumberInput label="평상시 최소 간격" suffix="초" min={30} value={props.draft.baselineMinSeconds} onChange={(value) => update('baselineMinSeconds', Number(value))} /><NumberInput label="평상시 최대 간격" suffix="초" min={31} value={props.draft.baselineMaxSeconds} onChange={(value) => update('baselineMaxSeconds', Number(value))} /></Group>
-      <Group grow align="start"><NumberInput label="예매 요청 시 최소 간격" suffix="초" min={30} value={props.draft.demandMinSeconds} onChange={(value) => update('demandMinSeconds', Number(value))} /><NumberInput label="예매 요청 시 최대 간격" suffix="초" min={31} value={props.draft.demandMaxSeconds} onChange={(value) => update('demandMaxSeconds', Number(value))} /></Group>
-      <Group grow align="start"><NumberInput label="새 회차 발견 후 최소 간격" suffix="초" min={15} value={props.draft.burstMinSeconds} onChange={(value) => update('burstMinSeconds', Number(value))} /><NumberInput label="새 회차 발견 후 최대 간격" suffix="초" min={16} value={props.draft.burstMaxSeconds} onChange={(value) => update('burstMaxSeconds', Number(value))} /><NumberInput label="집중 관측 시간" suffix="초" min={300} max={21_600} value={props.draft.burstDurationSeconds} onChange={(value) => update('burstDurationSeconds', Number(value))} /></Group>
-      <Checkbox label="관측 실행" checked={props.draft.enabled} onChange={(event) => update('enabled', event.currentTarget.checked)} />
+      <NumberInput label="한 번에 확인할 기간" description="매 조회마다 오늘부터 선택한 기간까지의 예매 일정을 모두 확인합니다." suffix="일" min={1} max={14} value={props.draft.horizonDays} onChange={(value) => update('horizonDays', Number(value))} />
+      <Alert title="관측 속도는 Central이 자동으로 조정합니다" variant="light">
+        예매 요청이 있는 극장은 최우선으로 확인하고, 새 회차를 찾으면 즉시 Client에 알립니다.
+      </Alert>
+      <Checkbox label="이 극장 관측" checked={props.draft.enabled} onChange={(event) => update('enabled', event.currentTarget.checked)} />
       <Group justify="flex-end"><Button variant="subtle" color="gray" onClick={props.onCancel}>초기화</Button><Button loading={props.saving} disabled={!props.draft.theaterId} onClick={props.onSave}>{props.editing ? '변경 저장' : '정책 추가'}</Button></Group>
     </Stack>
   );
@@ -70,17 +79,12 @@ function EmptyCatalogState(props: Pick<Props, 'catalogRefresh' | 'onRefresh' | '
 }
 
 export function ObservationsPageView(props: Props) {
-	const seatMapCount = props.auditoriums?.filter((auditorium) => Boolean(auditorium.seatMapVersion)).length ?? 0;
-	const missingSeatMaps = (props.auditoriums?.length ?? 0) - seatMapCount;
   if ((!props.policies || !props.theaters) && !props.failed) return <Stack gap="md"><PageHeader title="관측 정책" /><Skeleton h={280} /></Stack>;
   return (
     <Stack gap={48}>
-      <PageHeader title="관측 정책" description="극장마다 한 번 조회하고, 예매 요청과 새 회차 발견에 따라 관측 간격만 자동으로 조정합니다." actions={<Group gap="xs"><Button variant="default" onClick={props.onRefresh}>새로고침</Button>{props.theaters && props.theaters.length > 0 ? <Button variant="default" loading={props.requestingCatalog} disabled={props.catalogRefresh?.state === 'running'} onClick={props.onRequestCatalogRefresh}>전체 카탈로그 다시 수집</Button> : null}</Group>} />
+      <PageHeader title="예매 오픈 관측" description="극장별 일정을 반복 확인하고, 새 회차가 열리면 대기 중인 Client에 즉시 전달합니다." actions={<Group gap="xs"><Button variant="default" onClick={props.onRefresh}>새로고침</Button>{props.theaters && props.theaters.length > 0 ? <Button variant="default" loading={props.requestingCatalog} disabled={props.catalogRefresh?.state === 'running'} onClick={props.onRequestCatalogRefresh}>극장 목록 다시 수집</Button> : null}</Group>} />
       {props.failed ? <Alert color="red" title="관측 정책 요청을 처리하지 못했습니다">입력값과 Central 연결을 확인한 뒤 다시 시도하세요.</Alert> : null}
       {props.theaters?.length === 0 ? <EmptyCatalogState {...props} /> : null}
-	  {missingSeatMaps > 0 ? <Alert color="blue" title={`좌석 배치 ${seatMapCount}/${props.auditoriums?.length ?? 0}개 준비됨`}>
-		상영 일정에서 발견한 상영관의 좌석 배치는 순차적으로 채웁니다. 로그인된 Client가 없으면 안전하게 대기합니다.
-	  </Alert> : null}
       {props.theaters && props.theaters.length > 0 ? <>
         {props.policies?.length === 0 ? <Alert color="blue" title="등록된 관측 정책이 없습니다">극장을 선택해 첫 관측 정책을 저장하면 해당 극장의 일정 수집이 시작됩니다.</Alert> : null}
         <PolicyForm {...props} />
@@ -93,7 +97,7 @@ export function ObservationsPageView(props: Props) {
           <Table.Tbody>
             {props.policies?.map((policy) => <Table.Tr key={policy.id}>
               <Table.Td><Text fw={600}>{policy.theater.name}</Text><Text size="xs" c="dimmed">{policy.theater.region}</Text></Table.Td>
-              <Table.Td>{policy.enabled ? policy.effectiveMode === 'burst' ? '새 회차 집중 관측' : policy.effectiveMode === 'demand' ? '예매 요청 집중 관측' : '평상시 관측' : '중지됨'}</Table.Td>
+              <Table.Td>{observationMode(policy)}</Table.Td>
               <Table.Td>{seconds(policy.effectiveMinSeconds)}–{seconds(policy.effectiveMaxSeconds)}</Table.Td>
               <Table.Td>{policy.nextRunAt ? new Date(policy.nextRunAt).toLocaleString('ko-KR') : '할당 처리 중'}</Table.Td>
               <Table.Td><Group justify="flex-end" gap="xs"><Button variant="subtle" color="gray" onClick={() => props.onEdit(policy)}>편집</Button><Button variant="subtle" color="red" onClick={() => props.onDelete(policy)}>삭제</Button></Group></Table.Td>

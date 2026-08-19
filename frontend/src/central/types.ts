@@ -203,6 +203,12 @@ export interface ObservationPolicyInput {
   theaterId: string;
   enabled: boolean;
   horizonDays: number;
+}
+
+export interface AdminObservationPolicy extends ObservationPolicyInput {
+  id: string;
+  revision: number;
+  theater: Theater;
   priority: number;
   baselineMinSeconds: number;
   baselineMaxSeconds: number;
@@ -214,13 +220,7 @@ export interface ObservationPolicyInput {
   locale: string;
   timeZone: string;
   egressPolicyId: string;
-}
-
-export interface AdminObservationPolicy extends ObservationPolicyInput {
-  id: string;
-  revision: number;
-  theater: Theater;
-  effectiveMode: 'baseline' | 'demand' | 'burst';
+  effectiveMode: 'baseline' | 'demand' | 'burst' | 'cancellation';
   effectivePriority: number;
   effectiveMinSeconds: number;
   effectiveMaxSeconds: number;
