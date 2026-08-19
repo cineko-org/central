@@ -52,7 +52,15 @@ jobs:
 
       - name: Resolve immutable image tag
         id: image
-        run: echo "tag=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must contain a semantic version" >&2
+            exit 1
+          fi
+          echo "tag=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build and publish
         id: build
@@ -61,6 +69,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          build-args: CINEKO_VERSION=${{ steps.image.outputs.version }}
           tags: ${{ secrets.CINEKO_IMAGE }}:${{ steps.image.outputs.tag }}
 
       - name: Request immutable deployment
