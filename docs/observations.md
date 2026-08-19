@@ -20,8 +20,8 @@ flowchart LR
   raises discovery priority because its exact showtime is already known.
 - Opening demand is rechecked after a randomized 2-5 second delay, subject to the duration of the previous scan. It
   always outranks ordinary and recent-change collection work.
-- Recent-change analysis uses 15-30 seconds and cancellation monitoring uses 30-45 seconds. Ordinary collection uses
-  the operator-independent baseline. These values are product policy, not admin form inputs.
+- Recent-change analysis uses 15-30 seconds, cancellation monitoring uses 30-45 seconds, and ordinary collection uses
+  5-15 minutes. These values are product policy, not admin form inputs.
 - A newly observed showtime with a previous complete absence activates the burst range for the configured duration.
 - Every range is additive random jitter: maximum must be greater than minimum. Exact fixed polling is rejected.
 - The first-ever capture is left-censored and cannot prove when a showtime opened.
