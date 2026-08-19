@@ -1,0 +1,11 @@
+.git
+.github
+.cineko
+deploy/.env
+deploy/.env.*
+deploy/secrets
+bin
+frontend/coverage
+frontend/node_modules
+*.log
+.DS_Store
