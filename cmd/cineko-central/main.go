@@ -16,6 +16,7 @@ import (
 	centralapi "github.com/cineko-org/central/internal/central/api"
 	centralpostgres "github.com/cineko-org/central/internal/central/postgres"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	"github.com/cineko-org/central/internal/telemetry"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -35,9 +36,15 @@ func run() error {
 	if config.clientAuthorizer == nil || config.probeBootstrapSigner == nil {
 		return errors.New("client Probe bootstrap signing and verification keys are required")
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	telemetrySetup, err := telemetry.New(ctx, "cineko-central", os.Stderr)
+	if err != nil {
+		return fmt.Errorf("initialize telemetry: %w", err)
+	}
+	logger := telemetrySetup.Logger
+	slog.SetDefault(logger)
+	defer shutdownTelemetry(telemetrySetup.Shutdown)
 	store, err := centralpostgres.Open(ctx, config.databaseURL)
 	if err != nil {
 		return err
@@ -48,6 +55,14 @@ func run() error {
 		return err
 	}
 	return serveCentral(ctx, server, reconciler)
+}
+
+func shutdownTelemetry(shutdown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "cineko-central: flush telemetry: %v\n", err)
+	}
 }
 
 func buildCentral(
