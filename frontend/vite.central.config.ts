@@ -25,9 +25,11 @@ export default defineConfig({
     rollupOptions: {
       input: resolve('central.html'),
       output: {
-        entryFileNames: 'central.js',
-        chunkFileNames: 'central-[name].js',
-        assetFileNames: (asset) => asset.names.some((name) => name.endsWith('.css')) ? 'central.css' : 'central-[name][extname]',
+        entryFileNames: 'central-[hash].js',
+        chunkFileNames: 'central-[name]-[hash].js',
+        assetFileNames: (asset) => asset.names.some((name) => name.endsWith('.css'))
+          ? 'central-[hash].css'
+          : 'central-[name]-[hash][extname]',
       },
     },
   },

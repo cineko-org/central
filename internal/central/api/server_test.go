@@ -8,7 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"regexp"
 	"testing"
 	"time"
 
@@ -193,10 +193,11 @@ func TestCentralWebAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := request(t, server.Handler(), http.MethodGet, "/", nil, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "/assets/central.js") {
+	assetPath := regexp.MustCompile(`/assets/central-[A-Za-z0-9_-]+\.js`).FindString(page.Body.String())
+	if page.Code != http.StatusOK || assetPath == "" {
 		t.Fatalf("Central page = %d, %q", page.Code, page.Body.String())
 	}
-	asset := request(t, server.Handler(), http.MethodGet, "/assets/central.js", nil, nil)
+	asset := request(t, server.Handler(), http.MethodGet, assetPath, nil, nil)
 	if asset.Code != http.StatusOK || asset.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("Central asset = %d, headers %v", asset.Code, asset.Header())
 	}
