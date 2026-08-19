@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	"github.com/cineko-org/central/internal/telemetry"
 	contracts "github.com/cineko-org/contracts/v3"
 )
 
@@ -495,7 +496,9 @@ func (engine *Engine) scheduleDuePolicies(
 				return fmt.Errorf("suspend invalid policy %s: %w", policy.ID, suspendErr)
 			}
 			report.SuspendedPolicies++
-			engine.config.Logger.Error("suspended invalid observation policy", "policy_id", policy.ID, "error", err)
+			engine.config.Logger.ErrorContext(ctx, "Observation policy suspended",
+				"domain", "observation", "event", "observation.policy.suspended", "outcome", "failed",
+				"policy_id", policy.ID, "reason", "invalid_policy", "error_type", telemetry.ErrorType(err))
 			continue
 		}
 		candidates, err := cycle.EligibleProbes(
@@ -647,12 +650,33 @@ func (engine *Engine) runAndRecord(ctx context.Context) {
 		engine.lastErrorCode = "cycle_failed"
 	}
 	engine.mu.Unlock()
+	duration := report.FinishedAt.Sub(report.StartedAt).Milliseconds()
 	if err != nil {
-		engine.config.Logger.Error("reconciler cycle failed", "error", err)
+		engine.config.Logger.ErrorContext(ctx, "Observation reconciliation failed",
+			"domain", "observation", "event", "observation.reconcile.completed", "outcome", "failed",
+			"reason", "cycle_failed", "error_type", telemetry.ErrorType(err), "duration_ms", duration,
+			"leader", report.Leader)
+	} else if report.Leader && reportHasActivity(report) {
+		engine.config.Logger.InfoContext(ctx, "Observation reconciliation completed",
+			"domain", "observation", "event", "observation.reconcile.completed", "outcome", "succeeded",
+			"duration_ms", duration, "created_assignments", report.CreatedAssignments,
+			"requeued_assignments", report.RequeuedAssignments, "failed_assignments", report.FailedAssignments,
+			"missed_assignments", report.MissedAssignments, "stale_probes", report.StaleProbes,
+			"oldest_due_age_seconds", report.OldestDueAgeSeconds)
 	}
 	if previousLeader != report.Leader {
-		engine.config.Logger.Info("reconciler leadership changed", "leader", report.Leader)
+		engine.config.Logger.InfoContext(ctx, "Observation leadership changed",
+			"domain", "observation", "event", "observation.leadership.changed", "outcome", "succeeded",
+			"leader", report.Leader)
 	}
+}
+
+func reportHasActivity(report Report) bool {
+	return report.StaleProbes+report.DeletedProbes+report.ExpiredLeases+report.RequeuedAssignments+
+		report.FailedAssignments+report.MissedAssignments+report.AdvancedPolicies+
+		report.CreatedAssignments+report.DeferredPolicies+report.SuspendedPolicies > 0 ||
+		report.DeletedClientEvents > 0 || report.CatalogRefreshCreated || report.CatalogRefreshWaiting ||
+		report.SeatMapBackfillCreated || report.SeatMapBackfillWaiting
 }
 
 func (engine *Engine) setRunning(value bool) bool {
