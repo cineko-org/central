@@ -19,6 +19,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM debian:bookworm-slim
 
+ARG CINEKO_VERSION=0.0.0-dev
+LABEL org.opencontainers.image.version="$CINEKO_VERSION"
+
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
