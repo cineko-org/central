@@ -160,7 +160,7 @@ func upsertCatalogSnapshotTx(
 	}
 	groups := []catalogMutationResult{
 		upsertCatalogEntities(ctx, tx, snapshot.Theaters, snapshot.ObservedAt, upsertTheater),
-		upsertCatalogEntities(ctx, tx, snapshot.Movies, snapshot.ObservedAt, upsertMovie),
+		upsertMovies(ctx, tx, snapshot.Movies, snapshot.ObservedAt),
 		upsertCatalogEntities(ctx, tx, snapshot.Auditoriums, snapshot.ObservedAt, upsertAuditorium),
 		upsertCatalogEntities(ctx, tx, snapshot.Showtimes, snapshot.ObservedAt, upsertShowtime),
 	}
@@ -174,6 +174,23 @@ func upsertCatalogSnapshotTx(
 		return generation, nil
 	}
 	return incrementCatalogGeneration(ctx, tx, snapshot.ObservedAt)
+}
+
+func upsertMovies(
+	ctx context.Context,
+	tx pgx.Tx,
+	movies []contracts.Movie,
+	observedAt time.Time,
+) catalogMutationResult {
+	changed := false
+	for index, movie := range movies {
+		entityChanged, err := upsertMovie(ctx, tx, movie, index+1, observedAt)
+		if err != nil {
+			return catalogMutationResult{err: err}
+		}
+		changed = changed || entityChanged
+	}
+	return catalogMutationResult{changed: changed}
 }
 
 func completeCatalogRefresh(ctx context.Context, tx pgx.Tx) error {
@@ -373,20 +390,31 @@ func upsertTheater(ctx context.Context, tx pgx.Tx, theater contracts.Theater, ob
 	`, theater.ID, theater.ProviderID, theater.SourceKey, theater.Region, theater.Name)
 }
 
-func upsertMovie(ctx context.Context, tx pgx.Tx, movie contracts.Movie, observedAt time.Time) (bool, error) {
+func upsertMovie(
+	ctx context.Context,
+	tx pgx.Tx,
+	movie contracts.Movie,
+	displayOrder int,
+	observedAt time.Time,
+) (bool, error) {
+	content := struct {
+		Movie        contracts.Movie
+		DisplayOrder int
+	}{Movie: movie, DisplayOrder: displayOrder}
 	return mutateCatalogEntity(
-		ctx, tx, "movie", movie.ID, movie, observedAt,
+		ctx, tx, "movie", movie.ID, content, observedAt,
 		`SELECT content_hash, updated_at FROM movies WHERE id = $1 FOR UPDATE`, `
-		INSERT INTO movies (id, provider_id, source_key, title, poster_url, content_hash, first_seen_at, last_seen_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7)
+		INSERT INTO movies (id, provider_id, source_key, title, poster_url, display_order, content_hash, first_seen_at, last_seen_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $8)
 		ON CONFLICT (id) DO UPDATE SET provider_id = EXCLUDED.provider_id,
-			source_key = EXCLUDED.source_key, title = EXCLUDED.title, poster_url = EXCLUDED.poster_url, active = true,
+			source_key = EXCLUDED.source_key, title = EXCLUDED.title, poster_url = EXCLUDED.poster_url,
+			display_order = EXCLUDED.display_order, active = true,
 			content_hash = EXCLUDED.content_hash,
 			last_seen_at = GREATEST(movies.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN movies.content_hash <> EXCLUDED.content_hash
 				THEN EXCLUDED.updated_at ELSE movies.updated_at END
 		WHERE EXCLUDED.updated_at >= movies.updated_at
-	`, movie.ID, movie.ProviderID, movie.SourceKey, movie.Title, movie.PosterURL)
+	`, movie.ID, movie.ProviderID, movie.SourceKey, movie.Title, movie.PosterURL, displayOrder)
 }
 
 func upsertAuditorium(
@@ -400,11 +428,16 @@ func upsertAuditorium(
 		`SELECT content_hash, updated_at FROM auditoriums WHERE id = $1 FOR UPDATE`, `
 		INSERT INTO auditoriums (
 			id, theater_id, source_key, name, screen_types, capacity, content_hash,
-			first_seen_at, last_seen_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $8)
+			first_seen_at, last_seen_at, updated_at, seat_map_requested_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $8, $8)
 		ON CONFLICT (id) DO UPDATE SET theater_id = EXCLUDED.theater_id,
 			source_key = EXCLUDED.source_key, name = EXCLUDED.name, screen_types = EXCLUDED.screen_types,
 			capacity = EXCLUDED.capacity, active = true,
+			seat_map_requested_at = CASE
+				WHEN auditoriums.current_seat_map_version_id IS NULL
+					THEN COALESCE(auditoriums.seat_map_requested_at, EXCLUDED.seat_map_requested_at)
+				ELSE auditoriums.seat_map_requested_at
+			END,
 			content_hash = EXCLUDED.content_hash,
 			last_seen_at = GREATEST(auditoriums.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN auditoriums.content_hash <> EXCLUDED.content_hash
@@ -515,8 +548,13 @@ func (store *Store) listTheaters(ctx context.Context) ([]contracts.Theater, erro
 
 func (store *Store) listMovies(ctx context.Context) ([]contracts.Movie, error) {
 	return queryCatalogRows(ctx, store.pool, "movie", `
-		SELECT id, provider_id, source_key, title, poster_url
-		FROM movies WHERE active ORDER BY title, id
+		SELECT movie.id, movie.provider_id, movie.source_key, movie.title, movie.poster_url
+		FROM movies AS movie
+		WHERE movie.active AND EXISTS (
+			SELECT 1 FROM showtimes AS showtime
+			WHERE showtime.movie_id = movie.id AND showtime.active AND showtime.starts_at > now()
+		)
+		ORDER BY movie.display_order, movie.title, movie.id
 	`, func(rows pgx.Rows, value *contracts.Movie) error {
 		return rows.Scan(&value.ID, &value.ProviderID, &value.SourceKey, &value.Title, &value.PosterURL)
 	})
@@ -545,7 +583,7 @@ func (store *Store) listShowtimes(ctx context.Context) ([]contracts.Showtime, er
 		FROM showtimes AS showtime
 		JOIN movies AS movie ON movie.id = showtime.movie_id
 		JOIN auditoriums AS auditorium ON auditorium.id = showtime.auditorium_id
-		WHERE showtime.active AND showtime.ends_at >= now() - interval '6 hours'
+		WHERE showtime.active AND showtime.starts_at > now()
 		ORDER BY showtime.starts_at, showtime.id
 	`, func(rows pgx.Rows, value *contracts.Showtime) error {
 		return rows.Scan(

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CentralAPIError, loadJSON } from './api';
 import type { AdminReleases } from './types';
 import { ReleasesPageView } from './ui/ReleasesPageView';
+import { useInitialRefresh } from './useInitialRefresh';
 
 export function ReleasesView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [releases, setReleases] = useState<AdminReleases>();
@@ -16,6 +17,6 @@ export function ReleasesView({ onUnauthorized }: { onUnauthorized: () => void })
     }
   }, [onUnauthorized]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useInitialRefresh(refresh);
   return <ReleasesPageView releases={releases} failed={failed} onRefresh={() => void refresh()} />;
 }

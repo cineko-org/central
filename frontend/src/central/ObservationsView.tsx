@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CentralAPIError, loadJSON, request } from './api';
 import type { AdminObservationPolicy, CatalogIndex, CatalogRefreshStatus, ObservationPolicyInput } from './types';
 import { ObservationsPageView } from './ui/ObservationsPageView';
+import { useInitialRefresh } from './useInitialRefresh';
 
 const emptyPolicy: ObservationPolicyInput = {
   theaterId: '', enabled: true, horizonDays: 14,
@@ -49,7 +50,7 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
     }
   }, [handleError, refresh]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useInitialRefresh(refresh);
 
   const save = useCallback(async () => {
     setSaving(true);

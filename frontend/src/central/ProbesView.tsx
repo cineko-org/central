@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CentralAPIError, loadJSON, request } from './api';
 import type { AdminProbe } from './types';
 import { ProbesPageView } from './ui/ProbesPageView';
+import { useInitialRefresh } from './useInitialRefresh';
 
 export function ProbesView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [probes, setProbes] = useState<AdminProbe[]>();
@@ -34,6 +35,6 @@ export function ProbesView({ onUnauthorized }: { onUnauthorized: () => void }) {
     }
   }, [busy, onUnauthorized, refresh, removing]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useInitialRefresh(refresh);
   return <ProbesPageView probes={probes} removing={removing} busy={busy} failure={failure} onRefresh={() => void refresh()} onRemoveRequest={setRemoving} onRemoveCancel={() => setRemoving(undefined)} onRemove={() => void remove()} />;
 }

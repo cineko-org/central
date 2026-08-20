@@ -834,11 +834,12 @@ func storeCapture(
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO showtime_observations (
 				assignment_id, run_id, target_date, source_key, theater_id,
-				auditorium_id, auditorium_name, screen_types, movie_title, poster_url,
+				auditorium_id, auditorium_name, screen_types, movie_id, movie_title, poster_url,
 				starts_at, ends_at, available_seats, capacity, sold_out, observed_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		`, commit.AssignmentID, commit.Result.RunID, capture.TargetDate, showtime.SourceKey, theaterID,
-			showtime.Auditorium.ID, showtime.Auditorium.Name, showtime.Auditorium.ScreenTypes, showtime.Movie.Title,
+			showtime.Auditorium.ID, showtime.Auditorium.Name, showtime.Auditorium.ScreenTypes, showtime.Movie.ID,
+			showtime.Movie.Title,
 			showtime.Movie.PosterURL, showtime.StartsAt, showtime.EndsAt, showtime.AvailableSeats,
 			showtime.Capacity, showtime.SoldOut, capture.ObservedAt); err != nil {
 			return fmt.Errorf("store showtime observation: %w", err)
@@ -856,18 +857,18 @@ func catalogSnapshotFromResult(
 		Provider: contracts.Provider{ID: theater.ProviderID, Name: providerName(theater.ProviderID)},
 		Theaters: []contracts.Theater{theater}, ObservedAt: observedAt,
 	}
-	movies := make(map[string]contracts.Movie)
+	movies := make(map[string]struct{})
 	auditoriums := make(map[string]contracts.Auditorium)
 	showtimes := make(map[string]contracts.Showtime)
 	for _, capture := range result.Captures {
 		for _, showtime := range capture.Showtimes {
-			movies[showtime.Movie.ID] = showtime.Movie
+			if _, exists := movies[showtime.Movie.ID]; !exists {
+				movies[showtime.Movie.ID] = struct{}{}
+				snapshot.Movies = append(snapshot.Movies, showtime.Movie)
+			}
 			auditoriums[showtime.Auditorium.ID] = showtime.Auditorium
 			showtimes[showtime.ID] = showtime
 		}
-	}
-	for _, movie := range movies {
-		snapshot.Movies = append(snapshot.Movies, movie)
 	}
 	for _, auditorium := range auditoriums {
 		snapshot.Auditoriums = append(snapshot.Auditoriums, auditorium)
@@ -875,7 +876,6 @@ func catalogSnapshotFromResult(
 	for _, showtime := range showtimes {
 		snapshot.Showtimes = append(snapshot.Showtimes, showtime)
 	}
-	slices.SortFunc(snapshot.Movies, func(left, right contracts.Movie) int { return strings.Compare(left.ID, right.ID) })
 	slices.SortFunc(snapshot.Auditoriums, func(left, right contracts.Auditorium) int { return strings.Compare(left.ID, right.ID) })
 	slices.SortFunc(snapshot.Showtimes, func(left, right contracts.Showtime) int { return strings.Compare(left.ID, right.ID) })
 	return snapshot

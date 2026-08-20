@@ -1,7 +1,8 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useState } from 'react';
 import { CentralAPIError, loadJSON, request } from './api';
 import type { ClientPINIssue, ClientPINUser } from './types';
 import { UsersPageView } from './ui/UsersPageView';
+import { useInitialRefresh } from './useInitialRefresh';
 
 export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [users, setUsers] = useState<ClientPINUser[]>([]);
@@ -22,7 +23,7 @@ export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
     }
   }, [handleError]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useInitialRefresh(refresh);
 
   const create = async (event: FormEvent) => {
     event.preventDefault();

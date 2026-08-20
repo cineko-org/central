@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -654,7 +655,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	targetDate := showtimeStart.In(time.FixedZone("KST", 9*60*60)).Format(time.DateOnly)
 	monitor := domain.MonitorJob{
 		ID: "execution_monitor", UserID: userID, PresetID: preset.ID,
-		Mode: domain.MonitorModeOpening, MovieID: "movie_execution", Movie: "Execution Movie",
+		Mode: domain.MonitorModeCancellation, MovieID: "movie_execution", Movie: "Execution Movie",
 		TargetDates: []string{targetDate}, EarliestTime: "00:00", LatestTime: "23:59",
 		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
 	}
@@ -745,19 +746,59 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 		t.Fatalf("second execution claim = %+v, %v", second, err)
 	}
 	if err := service.CompleteExecution(ctx, principal, second.ID, central.ExecutionResultRequest{
-		LeaseToken: second.LeaseToken, Status: "completed",
+		LeaseToken: second.LeaseToken, Status: "failed", ReasonCode: executionReasonPreferredSeatsUnavailable,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.CompleteExecution(ctx, principal, second.ID, central.ExecutionResultRequest{
-		LeaseToken: second.LeaseToken, Status: "completed",
+		LeaseToken: second.LeaseToken, Status: "failed", ReasonCode: executionReasonPreferredSeatsUnavailable,
 	}); !errors.Is(err, central.ErrLeaseExpired) {
 		t.Fatalf("replayed execution completion error = %v", err)
+	}
+	commit.CommittedAt = time.Now().UTC()
+	commit.Result.Captures[0].ObservedAt = commit.CommittedAt
+	tx, beginErr := store.pool.Begin(ctx)
+	if beginErr != nil {
+		t.Fatal(beginErr)
+	}
+	if err := enqueueClientExecutions(ctx, tx, commit, preset.TheaterID, "Asia/Seoul"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if empty, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
 		InstallationID: "execution_install_a",
 	}); err != nil || empty != nil {
-		t.Fatalf("terminal execution claim = %+v, %v", empty, err)
+		t.Fatalf("availability cooldown claim = %+v, %v", empty, err)
+	}
+	commit.CommittedAt = commit.CommittedAt.Add(31 * time.Second)
+	commit.Result.Captures[0].ObservedAt = commit.CommittedAt
+	for index := range commit.Result.Captures[0].Showtimes {
+		commit.Result.Captures[0].Showtimes[index].AvailableSeats = 1
+	}
+	tx, beginErr = store.pool.Begin(ctx)
+	if beginErr != nil {
+		t.Fatal(beginErr)
+	}
+	if err := enqueueClientExecutions(ctx, tx, commit, preset.TheaterID, "Asia/Seoul"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	third, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
+		InstallationID: "execution_install_a",
+	})
+	if err != nil || third == nil || third.Attempt != 1 {
+		t.Fatalf("availability rearmed execution claim = %+v, %v", third, err)
+	}
+	if err := service.CompleteExecution(ctx, principal, third.ID, central.ExecutionResultRequest{
+		LeaseToken: third.LeaseToken, Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -983,6 +1024,15 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	}
 	if captureCount != 1 || showtimeCount != 1 {
 		t.Fatalf("stored rows: captures=%d showtimes=%d", captureCount, showtimeCount)
+	}
+	var observedMovieID string
+	if err := store.pool.QueryRow(ctx, `
+		SELECT movie_id FROM showtime_observations WHERE assignment_id = $1
+	`, assignmentID).Scan(&observedMovieID); err != nil {
+		t.Fatal(err)
+	}
+	if expected := result.Captures[0].Showtimes[0].Movie.ID; observedMovieID != expected {
+		t.Fatalf("observation movie ID = %q, want %q", observedMovieID, expected)
 	}
 }
 
@@ -1657,6 +1707,86 @@ func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T)
 	}
 	if requestedAt != nil {
 		t.Fatalf("completed catalog assignment left refresh pending at %v", requestedAt)
+	}
+}
+
+func TestPostgresCatalogRetainsMovieHistoryOutsideClientProjection(t *testing.T) {
+	databaseURL := testDatabaseURL
+	if databaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	now := time.Now().UTC()
+	fixtureID := fmt.Sprintf("%d", now.UnixNano())
+	providerID := "catalog_history_integration_" + fixtureID
+	theater := contracts.Theater{
+		ID: contracts.CatalogID(providerID, "theater", "theater"), ProviderID: providerID,
+		SourceKey: "theater", Region: "Seoul", Name: "History theater",
+	}
+	auditorium := contracts.Auditorium{
+		ID: contracts.CatalogID(providerID, "auditorium", "auditorium"), TheaterID: theater.ID,
+		SourceKey: "auditorium", Name: "History auditorium", ScreenTypes: []string{"STANDARD"}, Capacity: 100,
+	}
+	pastMovie := contracts.Movie{
+		ID: contracts.CatalogID(providerID, "movie", "past"), ProviderID: providerID,
+		SourceKey: "past", Title: "Past movie",
+	}
+	futureMovie := contracts.Movie{
+		ID: contracts.CatalogID(providerID, "movie", "future"), ProviderID: providerID,
+		SourceKey: "future", Title: "Future movie",
+	}
+	snapshot := contracts.CatalogSnapshot{
+		Provider: contracts.Provider{ID: providerID, Name: "Catalog history integration"},
+		Theaters: []contracts.Theater{theater}, Movies: []contracts.Movie{pastMovie, futureMovie},
+		Auditoriums: []contracts.Auditorium{auditorium}, ObservedAt: now,
+		Showtimes: []contracts.Showtime{
+			{
+				ID: contracts.CatalogID(providerID, "showtime", "past"), ProviderID: providerID,
+				SourceKey: "past", TheaterID: theater.ID, Movie: pastMovie, Auditorium: auditorium,
+				StartsAt: now.Add(-2 * time.Hour), EndsAt: now.Add(-time.Hour),
+			},
+			{
+				ID: contracts.CatalogID(providerID, "showtime", "future"), ProviderID: providerID,
+				SourceKey: "future", TheaterID: theater.ID, Movie: futureMovie, Auditorium: auditorium,
+				StartsAt: now.Add(time.Hour), EndsAt: now.Add(2 * time.Hour),
+			},
+		},
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM showtimes WHERE provider_id = $1`, providerID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM auditoriums WHERE theater_id = $1`, theater.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM movies WHERE provider_id = $1`, providerID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, providerID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, providerID)
+	})
+	if _, err := store.UpsertCatalogSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	var retainedMovies int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM movies WHERE provider_id = $1`, providerID).Scan(&retainedMovies); err != nil {
+		t.Fatal(err)
+	}
+	if retainedMovies != 2 {
+		t.Fatalf("retained movie rows = %d, want 2", retainedMovies)
+	}
+	catalog, err := store.Catalog(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, movie := range catalog.Movies {
+		if movie.ID == pastMovie.ID {
+			t.Fatal("historical movie leaked into Client catalog")
+		}
+	}
+	if !slices.ContainsFunc(catalog.Movies, func(movie contracts.Movie) bool { return movie.ID == futureMovie.ID }) {
+		t.Fatal("future movie missing from Client catalog")
 	}
 }
 
