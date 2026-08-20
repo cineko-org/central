@@ -72,6 +72,76 @@ func TestMonitorJobMatchesTimeWindow(t *testing.T) {
 	if !(MonitorJob{}).MatchesTimeWindow(time.Date(2026, time.August, 15, 1, 0, 0, 0, location), location) {
 		t.Fatal("MatchesTimeWindow() rejected an unrestricted window")
 	}
+
+	edges := []struct {
+		name     string
+		job      MonitorJob
+		start    time.Time
+		location *time.Location
+		want     bool
+	}{
+		{
+			name:     "zero start",
+			job:      MonitorJob{EarliestTime: "18:00"},
+			start:    time.Time{},
+			location: location,
+		},
+		{
+			name:  "missing location",
+			job:   MonitorJob{EarliestTime: "18:00"},
+			start: time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
+			want:  false,
+		},
+		{
+			name:     "invalid clock",
+			job:      MonitorJob{EarliestTime: "not-a-time"},
+			start:    time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
+			location: location,
+			want:     false,
+		},
+		{
+			name:     "equal bounds",
+			job:      MonitorJob{EarliestTime: "18:00", LatestTime: "18:00"},
+			start:    time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
+			location: location,
+			want:     false,
+		},
+		{
+			name:     "latest-only before end",
+			job:      MonitorJob{LatestTime: "06:00"},
+			start:    time.Date(2026, time.August, 15, 5, 59, 0, 0, location),
+			location: location,
+			want:     true,
+		},
+		{
+			name:     "latest-only end exclusive",
+			job:      MonitorJob{LatestTime: "06:00"},
+			start:    time.Date(2026, time.August, 15, 6, 0, 0, 0, location),
+			location: location,
+			want:     false,
+		},
+		{
+			name:     "earliest-only start inclusive",
+			job:      MonitorJob{EarliestTime: "18:00"},
+			start:    time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
+			location: location,
+			want:     true,
+		},
+		{
+			name:     "earliest-only before start",
+			job:      MonitorJob{EarliestTime: "18:00"},
+			start:    time.Date(2026, time.August, 15, 17, 59, 0, 0, location),
+			location: location,
+			want:     false,
+		},
+	}
+	for _, test := range edges {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.job.MatchesTimeWindow(test.start, test.location); got != test.want {
+				t.Fatalf("MatchesTimeWindow() = %t, want %t", got, test.want)
+			}
+		})
+	}
 }
 
 func TestMonitorJobMatchesScheduleUsesLocalCalendarDate(t *testing.T) {

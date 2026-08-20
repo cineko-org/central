@@ -192,7 +192,7 @@ func insertLaneProgressAssignment(t *testing.T, store *Store, assignment lanePro
 		) VALUES (
 			$1, 'cgv.schedule.capture.v2', $2, $3, 'cgv', 'lane-progress',
 			'서울', '레인 진행 시험관', ARRAY[$4::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
-			$5, $6, $7, $8, $9, $9, jsonb_build_object('_cinekoLane', $10)
+			$5, $6, $7, $8, $9, $9, jsonb_build_object('_cinekoLane', $10::text)
 		)
 	`, assignment.ID, assignment.PolicyID, assignment.TheaterID, assignment.TargetDate,
 		assignment.Status, now.Add(-time.Minute), now.Add(time.Minute), finishedAt, now, assignment.Lane); err != nil {

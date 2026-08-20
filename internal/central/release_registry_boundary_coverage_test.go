@@ -64,6 +64,21 @@ func TestReleaseSnapshotBoundaries(t *testing.T) {
 	); err != nil || release.Version == "" || generation != 11 {
 		t.Fatalf("CurrentProbeReleaseSnapshot(repository) = %+v, %d, %v", release, generation, err)
 	}
+	if release, generation, err := service.CurrentRuntimeReleaseSnapshot(
+		t.Context(), "stable", "linux", "arm64",
+	); !errors.Is(err, ErrNotFound) || generation != 11 || release.Client.Version != "" {
+		t.Fatalf("CurrentRuntimeReleaseSnapshot(missing target) = %+v, %d, %v", release, generation, err)
+	}
+	if release, generation, err := service.CurrentLauncherReleaseSnapshot(
+		t.Context(), "stable", "linux", "arm64",
+	); !errors.Is(err, ErrNotFound) || generation != 11 || release.Version != "" {
+		t.Fatalf("CurrentLauncherReleaseSnapshot(missing target) = %+v, %d, %v", release, generation, err)
+	}
+	if release, generation, err := service.CurrentProbeReleaseSnapshot(
+		t.Context(), "beta",
+	); !errors.Is(err, ErrNotFound) || generation != 11 || release.Version != "" {
+		t.Fatalf("CurrentProbeReleaseSnapshot(missing channel) = %+v, %d, %v", release, generation, err)
+	}
 
 	repository.listErr = errInjectedClient
 	if _, _, err := service.CurrentLauncherReleaseSnapshot(

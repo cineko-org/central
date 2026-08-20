@@ -100,30 +100,40 @@ func (store *cycleStore) DeleteExpiredClientEvents(
 	if err != nil {
 		return 0, fmt.Errorf("delete expired Client events: %w", err)
 	}
-	defer rows.Close()
-	var deleted int64
+	type prunedClientEvents struct {
+		userID  string
+		through int64
+		count   int64
+	}
+	pruned := make([]prunedClientEvents, 0)
 	for rows.Next() {
 		var userID string
 		var through, count int64
 		if err := rows.Scan(&userID, &through, &count); err != nil {
+			rows.Close()
 			return 0, fmt.Errorf("scan expired Client events: %w", err)
 		}
+		pruned = append(pruned, prunedClientEvents{userID: userID, through: through, count: count})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate expired Client events: %w", err)
+	}
+	var deleted int64
+	for _, user := range pruned {
 		if _, err := store.tx.Exec(ctx, `
 			INSERT INTO client_event_cursors (user_id, pruned_through, updated_at)
 			VALUES ($1, $2, now())
 			ON CONFLICT (user_id) DO UPDATE SET
 				pruned_through = GREATEST(client_event_cursors.pruned_through, EXCLUDED.pruned_through),
 				updated_at = EXCLUDED.updated_at
-		`, userID, through); err != nil {
+		`, user.userID, user.through); err != nil {
 			return 0, fmt.Errorf("advance Client event prune cursor: %w", err)
 		}
-		if _, err := store.tx.Exec(ctx, `SELECT pg_notify($1, $2)`, clientEventNotifyChannel, userID); err != nil {
+		if _, err := store.tx.Exec(ctx, `SELECT pg_notify($1, $2)`, clientEventNotifyChannel, user.userID); err != nil {
 			return 0, fmt.Errorf("notify Client event retention: %w", err)
 		}
-		deleted += count
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate expired Client events: %w", err)
+		deleted += user.count
 	}
 	return deleted, nil
 }

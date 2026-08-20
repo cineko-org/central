@@ -372,14 +372,16 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 	t.Cleanup(store.Close)
 
 	const (
-		onlineID     = "probe_admin_delete_online"
-		offlineID    = "probe_admin_delete_offline"
-		historyID    = "probe_admin_delete_history"
-		assignmentID = "assignment_admin_delete_history"
+		onlineID           = "probe_admin_delete_online"
+		offlineID          = "probe_admin_delete_offline"
+		historyID          = "probe_admin_delete_history"
+		assignmentID       = "assignment_admin_delete_history"
+		leasedAssignmentID = "assignment_admin_delete_leased"
 	)
 	probeIDs := []string{onlineID, offlineID, historyID}
 	cleanup := func() {
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM assignment_attempts WHERE assignment_id = $1`, assignmentID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM observation_assignments WHERE id = $1`, leasedAssignmentID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM observation_assignments WHERE id = $1`, assignmentID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM probe_runtimes WHERE id = ANY($1)`, probeIDs)
 	}
@@ -420,8 +422,38 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 	if err := store.DeleteAdminProbe(ctx, onlineID); !errors.Is(err, central.ErrConflict) {
 		t.Fatalf("delete online Probe = %v", err)
 	}
-	if err := store.DeleteAdminProbe(ctx, historyID); !errors.Is(err, central.ErrConflict) {
+	if err := store.DeleteAdminProbe(ctx, historyID); err != nil {
 		t.Fatalf("delete Probe with history = %v", err)
+	}
+	var attempts int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM assignment_attempts WHERE assignment_id = $1 AND probe_id = $2
+	`, assignmentID, historyID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("historical Probe attempts = %d, want 1", attempts)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE probe_runtimes SET status = 'offline' WHERE id = $1`, onlineID); err != nil {
+		t.Fatal(err)
+	}
+	leaseTokenHash := sha256.Sum256([]byte("lease_" + onlineID))
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO observation_assignments (
+			id, task_kind, theater_id, theater_provider_id, theater_source_key,
+			theater_region, theater_name, target_dates, locale, time_zone, egress_policy_id,
+			status, not_before, deadline, probe_id, lease_token_hash, lease_expires_at,
+			created_at, updated_at
+		) VALUES (
+			$1, 'cgv.schedule.capture.v2', 'theater_admin_delete_leased', 'cgv', 'admin-delete-leased',
+			'서울', '관리 시험관', ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
+			'leased', $2, $3, $4, $5, $3, $2, $3
+		)
+	`, leasedAssignmentID, now.Add(-time.Minute), now.Add(time.Minute), onlineID, leaseTokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAdminProbe(ctx, onlineID); !errors.Is(err, central.ErrConflict) {
+		t.Fatalf("delete Probe with active assignment = %v", err)
 	}
 	if err := store.DeleteAdminProbe(ctx, offlineID); err != nil {
 		t.Fatalf("delete offline Probe: %v", err)
@@ -1536,6 +1568,93 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 	}
 	if policyID != nil {
 		t.Fatalf("system assignment policy = %q", *policyID)
+	}
+}
+
+func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T) {
+	databaseURL := testDatabaseURL
+	if databaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	fixtureID := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	providerID := "catalog_refresh_integration_" + fixtureID
+	sourceKey := "catalog-refresh-theater-" + fixtureID
+	snapshot := contracts.CatalogSnapshot{
+		Provider: contracts.Provider{ID: providerID, Name: "Catalog refresh integration"},
+		Theaters: []contracts.Theater{{
+			ID: contracts.CatalogID(providerID, "theater", sourceKey), ProviderID: providerID,
+			SourceKey: sourceKey, Region: "Seoul", Name: "Catalog refresh theater",
+		}},
+		ObservedAt: time.Now().UTC(),
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, snapshot.Provider.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, snapshot.Provider.ID)
+	})
+	if err := store.RequestCatalogRefresh(ctx, snapshot.ObservedAt); err != nil {
+		t.Fatal(err)
+	}
+	firstGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedGeneration != firstGeneration {
+		t.Fatalf("identical catalog replay changed generation: first=%d replay=%d", firstGeneration, replayedGeneration)
+	}
+	var requestedAt *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt == nil {
+		t.Fatal("partial catalog write cleared the pending full refresh")
+	}
+	empty := snapshot
+	empty.Theaters = nil
+	invalidTx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeCatalogResult(ctx, invalidTx, central.AssignmentResult{Catalog: &empty}); !errors.Is(err, central.ErrInvalid) {
+		_ = invalidTx.Rollback(ctx)
+		t.Fatalf("provider-only full catalog result = %v", err)
+	}
+	if err := invalidTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt == nil {
+		t.Fatal("invalid provider-only catalog result cleared the pending refresh")
+	}
+
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := storeCatalogResult(ctx, tx, central.AssignmentResult{Catalog: &snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt != nil {
+		t.Fatalf("completed catalog assignment left refresh pending at %v", requestedAt)
 	}
 }
 

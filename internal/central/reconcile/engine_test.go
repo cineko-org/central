@@ -138,6 +138,38 @@ func TestHotPolicyPreemptsQueuedBaselineBeforeScheduling(t *testing.T) {
 	}
 }
 
+func TestScheduleDuePoliciesSkipsAnIdlePlan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
+	policy := validPolicy("idle", "theater_idle", now, "explicit")
+	policy.HotTargets = []planning.MonitorTarget{{TargetDates: []string{"2026-08-20"}}}
+	policy.HotTargetFingerprint = planning.Fingerprint(policy.HotTargets)
+	policy.LastHotTargetDates = []string{"2026-08-20"}
+	policy.LastHotTargetFingerprint = policy.HotTargetFingerprint
+	policy.LastHotFinishedAt = now
+	policy.LastBaselineFinishedAt = now
+	policy.BaselineMaximumInterval = time.Hour
+	policy.MinimumInterval = time.Hour
+	policy.MaximumInterval = 2 * time.Hour
+	plan, err := policyPlan(policy, now)
+	if err != nil || len(plan.TargetDates) != 0 {
+		t.Fatalf("policy plan = %+v, %v; want idle plan", plan, err)
+	}
+
+	cycle := newMemoryCycle()
+	cycle.due = []Policy{policy}
+	engine := newTestEngine(t, &memoryRepository{cycle: cycle, leader: true}, now)
+	report, err := engine.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CreatedAssignments != 0 || len(cycle.created) != 0 || len(cycle.preempted) != 0 {
+		t.Fatalf("idle policy was scheduled: report = %+v, assignments = %+v, preempted = %v",
+			report, cycle.created, cycle.preempted)
+	}
+}
+
 func TestCatalogRefreshWaitsForProbeAndCreatesOneSystemAssignment(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 5, 0, 0, 0, time.UTC)
@@ -296,7 +328,7 @@ func TestReconcilePropagatesCycleFailures(t *testing.T) {
 	stages := []string{
 		"mark_stale", "delete_retired", "expired_leases", "expire_lease", "retryable_failures", "retry_availability",
 		"requeue", "finish_expired", "timed_out", "finish_timed_out", "terminal_runs",
-		"advance_terminal", "catalog_refresh", "due_policies", "eligible_probes", "create_assignment", "suspend_policy",
+		"advance_terminal", "catalog_refresh", "due_policies", "preempt_baseline", "eligible_probes", "create_assignment", "suspend_policy",
 		"advance_missed", "oldest_due",
 	}
 	for _, stage := range stages {
@@ -428,6 +460,22 @@ func TestEngineConfigurationLifecycleAndHealth(t *testing.T) {
 	engine.clock = func() time.Time { return now }
 	if status := engine.Snapshot(); status.Healthy {
 		t.Fatalf("stale status = %+v", status)
+	}
+}
+
+func TestEngineRunAndRecordRecordsSuccessfulActivity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
+	cycle := newMemoryCycle()
+	cycle.staleProbes = 1
+	engine := newTestEngine(t, &memoryRepository{cycle: cycle, leader: true}, now)
+	engine.runAndRecord(context.Background())
+
+	status := engine.Snapshot()
+	if !status.Healthy || !status.Leader || status.LastReport.StaleProbes != 1 ||
+		status.LastAttemptAt.IsZero() || status.LastSuccessAt.IsZero() {
+		t.Fatalf("successful activity status = %+v", status)
 	}
 }
 
@@ -566,6 +614,12 @@ func failureCycle(stage string, now time.Time) *memoryCycle {
 		}}
 	case "eligible_probes", "create_assignment":
 		cycle.due = []Policy{validPolicy("due", "theater", now, "explicit")}
+	case "preempt_baseline":
+		policy := validPolicy("hot", "theater", now, "explicit")
+		policy.HotTargets = []planning.MonitorTarget{{TargetDates: []string{"2026-08-20"}}}
+		policy.HotTargetFingerprint = planning.Fingerprint(policy.HotTargets)
+		policy.LastHotTargetFingerprint = "previous-hot-target"
+		cycle.due = []Policy{policy}
 	case "suspend_policy":
 		cycle.due = []Policy{validPolicy("invalid", "theater", now, "invalid")}
 	case "advance_missed":
