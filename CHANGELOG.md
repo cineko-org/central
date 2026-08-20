@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/cineko-org/central/compare/v2.4.0...v2.4.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** include version in deployment event ([#9](https://github.com/cineko-org/central/issues/9)) ([af9b6d3](https://github.com/cineko-org/central/commit/af9b6d312bb48d5286161d2cf2ef614c7b8e3395))
+
 ## [2.4.0](https://github.com/cineko-org/central/compare/v2.3.0...v2.4.0) (2026-08-20)
 
 
