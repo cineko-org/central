@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CentralAPIError, loadJSON } from './api';
 import type { AdminConfiguration, AdminReleases } from './types';
 import { SettingsPageView } from './ui/SettingsPageView';
+import { useInitialRefresh } from './useInitialRefresh';
 
 export function SettingsView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [configuration, setConfiguration] = useState<AdminConfiguration>();
@@ -22,6 +23,6 @@ export function SettingsView({ onUnauthorized }: { onUnauthorized: () => void })
     }
   }, [onUnauthorized]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useInitialRefresh(refresh);
   return <SettingsPageView configuration={configuration} releases={releases} failed={failed} onRefresh={() => void refresh()} />;
 }

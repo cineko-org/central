@@ -25,7 +25,7 @@ export function StatusView({ onUnauthorized }: { onUnauthorized: () => void }) {
   }, [onUnauthorized]);
 
   useEffect(() => {
-    void refresh();
+    queueMicrotask(() => void refresh());
     const timer = window.setInterval(() => void refresh(), 5_000);
     return () => window.clearInterval(timer);
   }, [refresh]);

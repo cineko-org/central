@@ -13,6 +13,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const (
+	executionReasonPreferredSeatsUnavailable = "preferred_seats_unavailable"
+	executionReasonShowtimeUnavailable       = "showtime_unavailable"
+)
+
 func (store *Store) ClaimClientExecution(
 	ctx context.Context,
 	claim central.ExecutionClaim,
@@ -133,45 +138,21 @@ func (store *Store) CompleteClientExecution(ctx context.Context, completion cent
 		return fmt.Errorf("begin Client execution completion: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var storedHash []byte
-	var status string
-	var expiresAt *time.Time
-	var attempts int
-	var monitorID string
-	err = tx.QueryRow(ctx, `
-		SELECT status, lease_token_hash, lease_expires_at, attempt_count, monitor_id
-		FROM client_execution_commands WHERE id = $1 AND user_id = $2 FOR UPDATE
-	`, completion.CommandID, completion.UserID).Scan(&status, &storedHash, &expiresAt, &attempts, &monitorID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ErrNotFound
-	}
+	locked, err := lockClientExecutionCompletion(ctx, tx, completion)
 	if err != nil {
-		return fmt.Errorf("lock Client execution completion: %w", err)
+		return err
 	}
-	if status != "leased" || expiresAt == nil || !expiresAt.After(completion.Now) ||
-		len(storedHash) != len(completion.LeaseHash) ||
-		subtle.ConstantTimeCompare(storedHash, completion.LeaseHash[:]) != 1 {
+	if !locked.matchesLease(completion) {
 		return central.ErrLeaseExpired
 	}
-	nextStatus := completion.Status
-	completedAt := any(completion.Now)
-	if completion.Status == "failed" && attempts < 3 {
-		nextStatus = "queued"
-		completedAt = nil
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE client_execution_commands
-		SET status = $2, last_installation_id = leased_installation_id, leased_installation_id = NULL,
-			lease_token_hash = NULL, lease_expires_at = NULL, reason_code = $3,
-			completed_at = $4, updated_at = $5
-		WHERE id = $1
-	`, completion.CommandID, nextStatus, completion.ReasonCode, completedAt, completion.Now); err != nil {
-		return fmt.Errorf("complete Client execution command: %w", err)
+	nextStatus, completedAt := executionCompletionState(completion, locked.attempts)
+	if err := updateClientExecutionCompletion(ctx, tx, completion, nextStatus, completedAt); err != nil {
+		return err
 	}
 	if nextStatus == "queued" {
-		identity := fmt.Sprintf("automatic-retry:%d:%s", attempts, completion.Now.Format(time.RFC3339Nano))
+		identity := fmt.Sprintf("automatic-retry:%d:%s", locked.attempts, completion.Now.Format(time.RFC3339Nano))
 		if err := recordExecutionReadyEvent(
-			ctx, tx, completion.UserID, completion.CommandID, monitorID,
+			ctx, tx, completion.UserID, completion.CommandID, locked.monitorID,
 			"automatic_retry", identity, completion.Now,
 		); err != nil {
 			return err
@@ -181,6 +162,84 @@ func (store *Store) CompleteClientExecution(ctx context.Context, completion cent
 		return fmt.Errorf("commit Client execution completion: %w", err)
 	}
 	return nil
+}
+
+type lockedExecutionCompletion struct {
+	status     string
+	storedHash []byte
+	expiresAt  *time.Time
+	attempts   int
+	monitorID  string
+}
+
+func lockClientExecutionCompletion(
+	ctx context.Context,
+	tx pgx.Tx,
+	completion central.ExecutionCompletion,
+) (lockedExecutionCompletion, error) {
+	var locked lockedExecutionCompletion
+	err := tx.QueryRow(ctx, `
+		SELECT status, lease_token_hash, lease_expires_at, attempt_count, monitor_id
+		FROM client_execution_commands WHERE id = $1 AND user_id = $2 FOR UPDATE
+	`, completion.CommandID, completion.UserID).Scan(
+		&locked.status,
+		&locked.storedHash,
+		&locked.expiresAt,
+		&locked.attempts,
+		&locked.monitorID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return lockedExecutionCompletion{}, central.ErrNotFound
+	}
+	if err != nil {
+		return lockedExecutionCompletion{}, fmt.Errorf("lock Client execution completion: %w", err)
+	}
+	return locked, nil
+}
+
+// matchesLease verifies ownership and expiry without exposing the stored lease token.
+func (locked lockedExecutionCompletion) matchesLease(completion central.ExecutionCompletion) bool {
+	return locked.status == "leased" &&
+		locked.expiresAt != nil && locked.expiresAt.After(completion.Now) &&
+		len(locked.storedHash) == len(completion.LeaseHash) &&
+		subtle.ConstantTimeCompare(locked.storedHash, completion.LeaseHash[:]) == 1
+}
+
+func executionCompletionState(completion central.ExecutionCompletion, attempts int) (string, any) {
+	nextStatus := completion.Status
+	completedAt := any(completion.Now)
+	waitsForAvailability := executionWaitsForAvailability(completion.ReasonCode)
+	if nextStatus == "failed" && attempts < 3 && !waitsForAvailability {
+		nextStatus = "queued"
+		completedAt = nil
+	}
+	return nextStatus, completedAt
+}
+
+func updateClientExecutionCompletion(
+	ctx context.Context,
+	tx pgx.Tx,
+	completion central.ExecutionCompletion,
+	nextStatus string,
+	completedAt any,
+) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE client_execution_commands
+		SET status = $2, last_installation_id = leased_installation_id, leased_installation_id = NULL,
+			lease_token_hash = NULL, lease_expires_at = NULL, reason_code = $3,
+			completed_at = $4, updated_at = $5
+		WHERE id = $1
+	`, completion.CommandID, nextStatus, completion.ReasonCode, completedAt, completion.Now); err != nil {
+		return fmt.Errorf("complete Client execution command: %w", err)
+	}
+	return nil
+}
+
+// executionWaitsForAvailability identifies failures that require fresh CGV
+// availability evidence before the Client opens another browser.
+func executionWaitsForAvailability(reasonCode string) bool {
+	return reasonCode == executionReasonPreferredSeatsUnavailable ||
+		reasonCode == executionReasonShowtimeUnavailable
 }
 
 func (store *Store) RetryClientExecution(

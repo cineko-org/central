@@ -7,7 +7,7 @@ contract-document changes in this branch. The snapshot contains 2,826 tracked fi
 | --- | ---: | --- |
 | First-party Go | 96 | command/configuration, domain, services, HTTP, PostgreSQL, reconciler, telemetry, and tests reviewed semantically |
 | First-party TypeScript/TSX | 35 | admin application, pure views, API adapter, Storybook, and tests reviewed semantically |
-| SQL migrations | 21 | replayed as one effective schema; every current table/column/check/FK/index and each deliberate drop inventoried |
+| SQL migrations | 23 | replayed as one effective schema; every current table/column/check/FK/index and each deliberate drop inventoried |
 | GitHub workflows | 3 | CI, image publication, and release triggers/permissions reviewed |
 | Other YAML | 2 | dependency automation and lint configuration reviewed |
 | Manifests and lock files | 6 | Go/npm module identity and locked dependency provenance reviewed |

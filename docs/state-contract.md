@@ -74,15 +74,19 @@ stateDiagram-v2
     leased --> failed: terminal result or third attempt
     completed --> [*]
     failed --> queued: explicit authenticated retry
+    failed --> queued: later positive availability observation
 ```
 
-- A command has at most three lease attempts. `completed` is terminal; `failed` is
-  terminal until the owning user explicitly retries it, which resets the attempt budget.
+- A command has at most three lease attempts for transient preparation failures. A missing
+  preferred seat or not-yet-selectable showtime becomes `failed` after one attempt so the
+  Client does not spin a browser. A later positive availability observation may rearm that
+  exact command after 30 seconds and reset its attempt budget. `completed` is terminal;
+  other `failed` outcomes require an explicit owner retry.
 - Execution matching uses the monitor's canonical `movieId` and preset auditorium
   identity. A legacy title-only monitor is fail-closed and does not enqueue a
   booking command; title text is display-only and may change without changing identity.
 - The unique user/monitor/showtime/start key prevents duplicate commands for the same
-  execution identity. New, automatic-retry, and explicit-retry transitions emit one
+  execution identity. New, availability-rearm, automatic-retry, and explicit-retry transitions emit one
   durable `execution.ready.v1` event; conflict/queued replay emits none. A database
   trigger notifies the user-scoped event stream only when that transaction commits.
 - The lease is bound to one user installation and an opaque token hash. Another device

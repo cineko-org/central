@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CentralAPIError, loadJSON } from './api';
 import type { AdminDataSummary, ObservationIntelligence } from './types';
 import { DataPageView } from './ui/DataPageView';
+import { useInitialRefresh } from './useInitialRefresh';
 
 export function DataView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [summary, setSummary] = useState<AdminDataSummary>();
@@ -22,6 +23,6 @@ export function DataView({ onUnauthorized }: { onUnauthorized: () => void }) {
     }
   }, [onUnauthorized]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useInitialRefresh(refresh);
   return <DataPageView summary={summary} intelligence={intelligence} failed={failed} onRefresh={() => void refresh()} />;
 }

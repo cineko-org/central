@@ -20,6 +20,8 @@ type executionTarget struct {
 	preset  domain.Preset
 }
 
+const executionAvailabilityRearmCooldown = 30 * time.Second
+
 func enqueueClientExecutions(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -62,7 +64,7 @@ func loadExecutionTargets(ctx context.Context, tx pgx.Tx, theaterID string) ([]e
 			AND presets.id = monitors.payload->>'presetId' AND presets.deleted_at IS NULL
 		WHERE monitors.kind = 'monitors' AND monitors.deleted_at IS NULL
 			AND monitors.payload->>'status' IN ('pending', 'running')
-			AND COALESCE(monitors.payload->>'mode', 'opening') IN ('', 'opening')
+			AND COALESCE(monitors.payload->>'mode', 'opening') IN ('', 'opening', 'cancellation')
 			AND presets.payload->>'theaterId' = $1
 	`, theaterID)
 	if err != nil {
@@ -131,19 +133,38 @@ func insertExecutionCommand(
 		target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt.UTC().Format(time.RFC3339Nano),
 	}, "\x00")))
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO client_execution_commands (
+		INSERT INTO client_execution_commands AS command (
 			id, user_id, monitor_id, showtime_id, starts_at, payload, status, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $7)
-		ON CONFLICT (user_id, monitor_id, showtime_id, starts_at) DO NOTHING
-	`, id, target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt, payload, now)
+		ON CONFLICT (user_id, monitor_id, showtime_id, starts_at) DO UPDATE SET
+			payload = EXCLUDED.payload,
+			status = 'queued',
+			leased_installation_id = NULL,
+			last_installation_id = NULL,
+			lease_token_hash = NULL,
+			lease_expires_at = NULL,
+			attempt_count = 0,
+			reason_code = '',
+			completed_at = NULL,
+			updated_at = EXCLUDED.updated_at
+		WHERE command.status = 'failed'
+			AND command.reason_code IN ($9, $10)
+			AND command.starts_at > EXCLUDED.updated_at
+			AND command.updated_at <= $8
+	`, id, target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt, payload, now,
+		now.Add(-executionAvailabilityRearmCooldown), executionReasonPreferredSeatsUnavailable,
+		executionReasonShowtimeUnavailable)
 	if err != nil {
 		return fmt.Errorf("enqueue Client execution command: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
 	}
+	identity := strings.Join([]string{
+		"availability", observedAt.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano),
+	}, ":")
 	return recordExecutionReadyEvent(
-		ctx, tx, target.userID, id, target.monitor.ID, "created", "created", now,
+		ctx, tx, target.userID, id, target.monitor.ID, "availability_observed", identity, now,
 	)
 }
 
