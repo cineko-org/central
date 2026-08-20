@@ -34,12 +34,23 @@ func TestClientCatalogAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	crossSite := request(t, server.Handler(), http.MethodPost, "/v1/admin/catalog-refresh", nil, map[string]string{
+		"Origin": "https://attacker.invalid",
+	})
+	if crossSite.Code != http.StatusForbidden {
+		t.Fatalf("cross-site catalog refresh = %d, %s", crossSite.Code, crossSite.Body.String())
+	}
 	headers := map[string]string{
 		"Authorization":          "Bearer client-session",
 		contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
 		"Idempotency-Key":        "catalog-write",
+		clientInstallationHeader: "install-catalog-client",
 	}
 	snapshot := apiCatalogSnapshot(time.Now().UTC())
+	missingInstallation := cloneHeaders(headers)
+	delete(missingInstallation, clientInstallationHeader)
+	unauthorizedWrite := request(t, server.Handler(), http.MethodPost, "/v1/catalog/snapshots", snapshot, missingInstallation)
+	assertAPIError(t, unauthorizedWrite, http.StatusUnauthorized, "unauthorized")
 	published := request(t, server.Handler(), http.MethodPost, "/v1/catalog/snapshots", snapshot, headers)
 	if published.Code != http.StatusOK || published.Header().Get(contracts.CatalogGenerationHeader) != "4" {
 		t.Fatalf("publish catalog = %d, %s, generation %q", published.Code, published.Body.String(), published.Header().Get(contracts.CatalogGenerationHeader))
@@ -125,6 +136,18 @@ type apiCatalogRepository struct {
 	requestedSeatMap string
 	generation       int64
 	refresh          central.CatalogRefreshStatus
+}
+
+func (repository *apiCatalogRepository) AuthorizeCatalogWrite(
+	_ context.Context,
+	userID string,
+	installationID string,
+	_ string,
+) error {
+	if userID != "user" || installationID != "install-catalog-client" {
+		return central.ErrUnauthorized
+	}
+	return nil
 }
 
 func (repository *apiCatalogRepository) Catalog(context.Context) (contracts.CatalogIndex, error) {

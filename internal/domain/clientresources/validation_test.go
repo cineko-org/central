@@ -69,6 +69,20 @@ func TestValidatePayloadsRejectsCorruption(t *testing.T) {
 	}
 }
 
+func TestValidateUntypedPayloads(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"theaters", "booking-catalogs", "auditoriums", "reservations", "unknown-kind"} {
+		t.Run(kind, func(t *testing.T) {
+			if err := ValidatePayload("user", kind, "resource", json.RawMessage(`{"ok":true}`)); err != nil {
+				t.Fatalf("ValidatePayload(%q) = %v", kind, err)
+			}
+			if err := ValidatePayload("user", kind, "resource", json.RawMessage(`{`)); err == nil {
+				t.Fatalf("ValidatePayload(%q) accepted invalid JSON", kind)
+			}
+		})
+	}
+}
+
 func marshalResource(t *testing.T, value any) json.RawMessage {
 	t.Helper()
 	payload, err := json.Marshal(value)

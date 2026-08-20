@@ -130,13 +130,50 @@ func insertExecutionCommand(
 	id := "execution_" + contentHash([]byte(strings.Join([]string{
 		target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt.UTC().Format(time.RFC3339Nano),
 	}, "\x00")))
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO client_execution_commands (
 			id, user_id, monitor_id, showtime_id, starts_at, payload, status, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $7)
 		ON CONFLICT (user_id, monitor_id, showtime_id, starts_at) DO NOTHING
-	`, id, target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt, payload, now); err != nil {
+	`, id, target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt, payload, now)
+	if err != nil {
 		return fmt.Errorf("enqueue Client execution command: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	return recordExecutionReadyEvent(
+		ctx, tx, target.userID, id, target.monitor.ID, "created", "created", now,
+	)
+}
+
+// recordExecutionReadyEvent persists the durable wake that lets a Client claim
+// a newly queued command without polling Central.
+func recordExecutionReadyEvent(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID string,
+	commandID string,
+	monitorID string,
+	reason string,
+	identity string,
+	now time.Time,
+) error {
+	eventPayload, err := json.Marshal(map[string]string{
+		"commandId": commandID,
+		"monitorId": monitorID,
+		"reason":    reason,
+	})
+	if err != nil {
+		return fmt.Errorf("encode Client execution-ready event: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO client_events (
+			id, user_id, event_type, resource_kind, resource_id, resource_revision, payload, occurred_at
+		) VALUES ($1, $2, 'execution.ready.v1', 'executions', $3, 1, $4, $5)
+	`, clientEventID(userID, "execution.ready.v1\x00"+commandID+"\x00"+identity),
+		userID, commandID, eventPayload, now); err != nil {
+		return fmt.Errorf("record Client execution-ready event: %w", err)
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 )
 
 type CatalogRepository interface {
+	AuthorizeCatalogWrite(context.Context, string, string, string) error
 	Catalog(context.Context) (contracts.CatalogIndex, error)
 	CatalogRefreshStatus(context.Context, time.Time, time.Time) (CatalogRefreshStatus, error)
 	RequestCatalogRefresh(context.Context, time.Time) error
@@ -18,6 +19,21 @@ type CatalogRepository interface {
 	PutSeatMapVersion(context.Context, contracts.SeatMapVersion) (int64, error)
 	SeatMapVersion(context.Context, string) (contracts.SeatMapVersion, error)
 	RequestSeatMapBackfill(context.Context, string, time.Time) error
+}
+
+func (service *CatalogService) AuthorizeClientWrite(
+	ctx context.Context,
+	principal ClientPrincipal,
+	installationID string,
+	capability string,
+) error {
+	installationID = strings.TrimSpace(installationID)
+	if installationID == "" {
+		return ErrUnauthorized
+	}
+	return service.repository.AuthorizeCatalogWrite(
+		ctx, principal.UserID, installationID, capability,
+	)
 }
 
 type CatalogRefreshStatus struct {

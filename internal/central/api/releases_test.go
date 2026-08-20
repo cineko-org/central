@@ -48,7 +48,6 @@ func TestReleaseRegistryPublisherAndCurrentEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	withoutPublisher, err := New(probeService, WithClientService(clients))
 	if err != nil {
 		t.Fatal(err)
@@ -531,6 +530,10 @@ func (*apiClientRepository) HeartbeatClientExecution(context.Context, string, st
 }
 
 func (*apiClientRepository) CompleteClientExecution(context.Context, central.ExecutionCompletion) error {
+	return nil
+}
+
+func (*apiClientRepository) RetryClientExecution(context.Context, string, string, time.Time) error {
 	return nil
 }
 

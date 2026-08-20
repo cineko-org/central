@@ -113,6 +113,7 @@ type ClientRepository interface {
 	ClaimClientExecution(context.Context, ExecutionClaim) (ExecutionCommand, error)
 	HeartbeatClientExecution(context.Context, string, string, [32]byte, time.Time, time.Time) error
 	CompleteClientExecution(context.Context, ExecutionCompletion) error
+	RetryClientExecution(context.Context, string, string, time.Time) error
 }
 
 type ClientService struct {

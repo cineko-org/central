@@ -85,7 +85,7 @@ func (server *Server) issueLaunchTicket(writer http.ResponseWriter, request *htt
 		return
 	}
 	if request.Header.Get("Idempotency-Key") != input.Nonce {
-		server.writeError(writer, request, fmt.Errorf("%w: Idempotency-Key must equal nonce", central.ErrInvalid))
+		server.writeError(writer, request, central.InvalidRequest("Idempotency-Key must equal nonce"))
 		return
 	}
 	response, err := server.clients.IssueLaunchTicket(request.Context(), principal, input)
@@ -208,6 +208,20 @@ func (server *Server) completeClientExecution(writer http.ResponseWriter, reques
 	}
 	if err := server.clients.CompleteExecution(
 		request.Context(), principal, request.PathValue("executionId"), input,
+	); err != nil {
+		server.writeError(writer, request, err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) retryClientExecution(writer http.ResponseWriter, request *http.Request) {
+	principal, ok := server.authenticatedClient(writer, request)
+	if !ok {
+		return
+	}
+	if err := server.clients.RetryExecution(
+		request.Context(), principal, request.PathValue("executionId"),
 	); err != nil {
 		server.writeError(writer, request, err)
 		return
@@ -392,7 +406,7 @@ func (server *Server) streamClientEvents(writer http.ResponseWriter, request *ht
 	}
 	cursor, err := clientEventCursor(request)
 	if err != nil {
-		server.writeError(writer, request, fmt.Errorf("%w: invalid event cursor", central.ErrInvalid))
+		server.writeError(writer, request, central.InvalidRequest("event cursor is invalid"))
 		return
 	}
 	flusher, ok := writer.(http.Flusher)

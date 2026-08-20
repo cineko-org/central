@@ -133,7 +133,7 @@ func (server *Server) deleteAdminProbe(writer http.ResponseWriter, request *http
 	}
 	probeID := strings.TrimSpace(request.PathValue("probeId"))
 	if probeID == "" {
-		server.writeError(writer, request, fmt.Errorf("%w: probe id is required", central.ErrInvalid))
+		server.writeError(writer, request, central.InvalidRequest("probe id is required"))
 		return
 	}
 	if err := server.adminOperations.DeleteAdminProbe(request.Context(), probeID); err != nil {
@@ -293,7 +293,7 @@ func normalizeObservationPolicyInput(input AdminObservationPolicyInput) (AdminOb
 	input.TimeZone = "Asia/Seoul"
 	input.EgressPolicyID = "scan_default"
 	if input.TheaterID == "" {
-		return AdminObservationPolicyInput{}, fmt.Errorf("%w: theater id is required", central.ErrInvalid)
+		return AdminObservationPolicyInput{}, central.InvalidRequest("theater id is required")
 	}
 	if err := validateObservationPolicyRanges(input); err != nil {
 		return AdminObservationPolicyInput{}, err
@@ -303,7 +303,9 @@ func normalizeObservationPolicyInput(input AdminObservationPolicyInput) (AdminOb
 
 func validateObservationPolicyRanges(input AdminObservationPolicyInput) error {
 	if input.HorizonDays < 1 || input.HorizonDays > observationPolicyMaximumHorizonDays {
-		return fmt.Errorf("%w: observation horizon must be between 1 and %d days", central.ErrInvalid, observationPolicyMaximumHorizonDays)
+		return central.InvalidRequest(fmt.Sprintf(
+			"observation horizon must be between 1 and %d days", observationPolicyMaximumHorizonDays,
+		))
 	}
 	ranges := []struct {
 		minimum int
@@ -316,15 +318,15 @@ func validateObservationPolicyRanges(input AdminObservationPolicyInput) error {
 	}
 	for _, interval := range ranges {
 		if interval.minimum < interval.floor || interval.maximum <= interval.minimum {
-			return fmt.Errorf("%w: observation intervals are invalid", central.ErrInvalid)
+			return central.InvalidRequest("observation intervals are invalid")
 		}
 	}
 	if input.BurstDurationSeconds < 300 || input.BurstDurationSeconds > 21600 {
-		return fmt.Errorf("%w: observation intervals are invalid", central.ErrInvalid)
+		return central.InvalidRequest("observation intervals are invalid")
 	}
 	if input.DemandMinSeconds > input.BaselineMinSeconds || input.DemandMaxSeconds > input.BaselineMaxSeconds ||
 		input.BurstMinSeconds > input.DemandMinSeconds || input.BurstMaxSeconds > input.DemandMaxSeconds {
-		return fmt.Errorf("%w: boosted intervals must be no slower than baseline", central.ErrInvalid)
+		return central.InvalidRequest("boosted intervals must be no slower than baseline")
 	}
 	return nil
 }
