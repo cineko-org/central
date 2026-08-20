@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.5.0](https://github.com/cineko-org/central/compare/v2.4.2...v2.5.0) (2026-08-20)
+
+
+### Features
+
+* preserve movie history and rearm availability ([#13](https://github.com/cineko-org/central/issues/13)) ([c2cb0f4](https://github.com/cineko-org/central/commit/c2cb0f488cb2c77cc11729956f389aae6128aa72))
+
+
+### Bug Fixes
+
+* **ci:** avoid duplicate release validation ([#15](https://github.com/cineko-org/central/issues/15)) ([583c8ba](https://github.com/cineko-org/central/commit/583c8ba9c1d824ed6da0f7fcb48abbd42d734095))
+
 ## [2.4.2](https://github.com/cineko-org/central/compare/v2.4.1...v2.4.2) (2026-08-20)
 
 
