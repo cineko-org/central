@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.4.0](https://github.com/cineko-org/central/compare/v2.3.0...v2.4.0) (2026-08-20)
+
+
+### Features
+
+* **central:** enforce domain contracts ([#8](https://github.com/cineko-org/central/issues/8)) ([6f0a112](https://github.com/cineko-org/central/commit/6f0a112cefa2292c5c9b8d63c530f184d106419a))
+
+
+### Bug Fixes
+
+* **observation:** automate booking discovery cadence ([#5](https://github.com/cineko-org/central/issues/5)) ([f412845](https://github.com/cineko-org/central/commit/f412845e985ca0eeff24381f1c6474d48f7ff353))
+* **web:** fingerprint Central assets ([#7](https://github.com/cineko-org/central/issues/7)) ([608843f](https://github.com/cineko-org/central/commit/608843f502050297ff8bdd2ce84aa4b0ba9e32ad))
+
 ## [2.3.0](https://github.com/cineko-org/central/compare/v2.2.1...v2.3.0) (2026-08-19)
 
 
