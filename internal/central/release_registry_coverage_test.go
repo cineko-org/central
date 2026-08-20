@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 )
 
 func TestReleaseRegistryBootstrapAndPublish(t *testing.T) {
@@ -161,7 +163,7 @@ func TestReleaseSetValidation(t *testing.T) {
 	if _, err := releaseRecord("client", struct{}{}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unsupported release record = %v", err)
 	}
-	if completeDesktopTargetSet(map[string]struct{}{
+	if releasepolicy.CompleteDesktopTargetSet(map[string]struct{}{
 		"darwin/arm64": {}, "linux/amd64": {}, "unsupported/amd64": {},
 	}) {
 		t.Fatal("unsupported target set accepted")

@@ -140,7 +140,7 @@ func (store *Store) DeleteClientPINUser(ctx context.Context, userID string, now 
 	`, userID, now); err != nil {
 		return fmt.Errorf("expire deleted Client user Probe attempts: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	if tag, err := tx.Exec(ctx, `
 		UPDATE observation_assignments AS assignment
 		SET status = 'queued', probe_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
 			started_at = NULL, updated_at = $2
@@ -150,6 +150,10 @@ func (store *Store) DeleteClientPINUser(ctx context.Context, userID string, now 
 			AND probe.owner_user_id = $1
 	`, userID, now); err != nil {
 		return fmt.Errorf("requeue deleted Client user Probe assignments: %w", err)
+	} else if tag.RowsAffected() > 0 {
+		if err := notifyAssignmentAvailability(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM assignment_eligible_probes

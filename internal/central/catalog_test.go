@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	contracts "github.com/cineko-org/contracts/v3"
 )
 
@@ -111,7 +112,7 @@ func TestCatalogServiceRejectsBrokenRelationships(t *testing.T) {
 			snapshot.Showtimes[0].TheaterID = other.ID
 		},
 		"future observation": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.ObservedAt = now.Add(maximumCatalogClockSkew + time.Second)
+			snapshot.ObservedAt = now.Add(catalogdomain.MaximumObservationClockSkew + time.Second)
 		},
 	}
 	for name, mutate := range tests {
@@ -153,13 +154,6 @@ func TestCatalogServiceCanonicalizesSeatMap(t *testing.T) {
 		AuditoriumID: "auditorium", Capacity: 0, Layout: json.RawMessage(`{}`),
 	}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid seat map error = %v", err)
-	}
-}
-
-func TestNormalizeSeatMapVersionRequiresValue(t *testing.T) {
-	t.Parallel()
-	if err := NormalizeSeatMapVersion(nil, time.Now().UTC()); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("NormalizeSeatMapVersion(nil) error = %v", err)
 	}
 }
 
@@ -213,7 +207,7 @@ func TestCatalogServiceBoundaries(t *testing.T) {
 	for name, version := range map[string]contracts.SeatMapVersion{
 		"future observation": {
 			AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`{}`),
-			ObservedAt: now.Add(maximumCatalogClockSkew + time.Second),
+			ObservedAt: now.Add(catalogdomain.MaximumObservationClockSkew + time.Second),
 		},
 		"invalid layout": {AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`[]`)},
 		"noncanonical id": {
@@ -223,41 +217,6 @@ func TestCatalogServiceBoundaries(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := service.PutSeatMapVersion(t.Context(), version); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("PutSeatMapVersion() error = %v", err)
-			}
-		})
-	}
-}
-
-func TestCatalogSnapshotRejectsIncompleteAndDuplicateEntities(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	tests := map[string]func(*contracts.CatalogSnapshot){
-		"provider": func(snapshot *contracts.CatalogSnapshot) { snapshot.Provider.Name = " " },
-		"theater":  func(snapshot *contracts.CatalogSnapshot) { snapshot.Theaters[0].Name = " " },
-		"movie":    func(snapshot *contracts.CatalogSnapshot) { snapshot.Movies[0].Title = " " },
-		"auditorium": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Auditoriums[0].Name = " "
-		},
-		"showtime": func(snapshot *contracts.CatalogSnapshot) { snapshot.Showtimes[0].SourceKey = " " },
-		"duplicate theater": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Theaters = append(snapshot.Theaters, snapshot.Theaters[0])
-		},
-		"duplicate movie": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Movies = append(snapshot.Movies, snapshot.Movies[0])
-		},
-		"duplicate auditorium": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Auditoriums = append(snapshot.Auditoriums, snapshot.Auditoriums[0])
-		},
-		"duplicate showtime": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Showtimes = append(snapshot.Showtimes, snapshot.Showtimes[0])
-		},
-	}
-	for name, mutate := range tests {
-		t.Run(name, func(t *testing.T) {
-			snapshot := validCatalogSnapshot(now)
-			mutate(&snapshot)
-			if err := NormalizeCatalogSnapshot(&snapshot); !errors.Is(err, ErrInvalid) {
-				t.Fatalf("NormalizeCatalogSnapshot() error = %v", err)
 			}
 		})
 	}
@@ -280,21 +239,21 @@ func TestCatalogServiceRequestsSeatMapBackfill(t *testing.T) {
 
 func validCatalogSnapshot(observedAt time.Time) contracts.CatalogSnapshot {
 	provider := contracts.Provider{ID: contracts.ProviderCGV, Name: "CGV"}
-	theaterSourceKey := "서울/용산아이파크몰"
+	theaterSourceKey := "0056"
 	theater := contracts.Theater{
 		ID:         contracts.CatalogID(provider.ID, "theater", theaterSourceKey),
 		ProviderID: provider.ID, SourceKey: theaterSourceKey, Region: "서울", Name: "용산아이파크몰",
 	}
 	movie := contracts.Movie{
-		ID:         contracts.CatalogID(provider.ID, "movie", "테스트 영화"),
-		ProviderID: provider.ID, SourceKey: "테스트 영화", Title: "테스트 영화",
+		ID:         contracts.CatalogID(provider.ID, "movie", "00001234"),
+		ProviderID: provider.ID, SourceKey: "00001234", Title: "테스트 영화",
 	}
-	auditoriumSourceKey := theaterSourceKey + "/IMAX관"
+	auditoriumSourceKey := theaterSourceKey + "/0007"
 	auditorium := contracts.Auditorium{
 		ID:        contracts.CatalogID(provider.ID, "auditorium", auditoriumSourceKey),
 		TheaterID: theater.ID, SourceKey: auditoriumSourceKey, Name: "IMAX관", Capacity: 624,
 	}
-	showtimeSourceKey := theaterSourceKey + "/2026-08-14/테스트 영화/IMAX관/12:00"
+	showtimeSourceKey := theaterSourceKey + "/2026-08-14/0007/0003"
 	showtime := contracts.Showtime{
 		ID:         contracts.CatalogID(provider.ID, "showtime", showtimeSourceKey),
 		ProviderID: provider.ID, SourceKey: showtimeSourceKey, TheaterID: theater.ID,

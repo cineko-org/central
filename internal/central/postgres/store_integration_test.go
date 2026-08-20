@@ -234,7 +234,7 @@ func TestPostgresClientPlaneLifecycle(t *testing.T) {
 		t.Fatalf("replay client resource = %+v, %v", replayed, err)
 	}
 	if _, err := service.PutResource(
-		ctx, principal, "monitors", "other", json.RawMessage(`{"id":"other","userId":"`+userID+`","presetId":"preset_integration","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`), nil, "create_preset",
+		ctx, principal, "monitors", "other", json.RawMessage(`{"id":"other","userId":"`+userID+`","presetId":"preset_integration","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`), nil, "create_preset",
 	); !errors.Is(err, central.ErrIdempotencyConflict) {
 		t.Fatalf("reused client command error = %v", err)
 	}
@@ -620,7 +620,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	monitor := domain.MonitorJob{
 		ID: "execution_monitor", UserID: userID, PresetID: preset.ID,
-		Mode: domain.MonitorModeOpening, Movie: "Execution Movie",
+		Mode: domain.MonitorModeOpening, MovieID: "movie_execution", Movie: "Execution Movie",
 		TargetDates: []string{"2026-08-20"}, EarliestTime: "18:00", LatestTime: "22:00",
 		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
 	}
@@ -645,13 +645,13 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 			($1, 'presets', 'corrupt_execution_preset', 1,
 			 '{"id":"corrupt_execution_preset","userId":"foreign_user","name":"Poison","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}', now(), now()),
 			($1, 'monitors', 'corrupt_execution_monitor', 1,
-			 '{"id":"corrupt_execution_monitor","userId":"foreign_user","presetId":"corrupt_execution_preset","movie":"Execution Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}', now(), now())
+			 '{"id":"corrupt_execution_monitor","userId":"foreign_user","presetId":"corrupt_execution_preset","movieId":"movie_execution","movie":"Execution Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}', now(), now())
 	`, userID); err != nil {
 		t.Fatal(err)
 	}
 	observedAt := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
 	showtime := central.Showtime{
-		ID: "show_execution", Movie: central.Movie{Title: monitor.Movie},
+		ID: "show_execution", Movie: central.Movie{ID: monitor.MovieID, Title: monitor.Movie},
 		Auditorium:     central.Auditorium{ID: preset.AuditoriumID, Name: "IMAX관"},
 		StartsAt:       time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC),
 		EndsAt:         time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC),
@@ -988,7 +988,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 		t.Fatalf("initial reconcile report = %+v", report)
 	}
 	retryAssignment := assignmentForPolicy(t, store, policyIDs[0])
-	if retryAssignment.Status != "queued" || len(retryAssignment.Task.TargetDates) != 2 {
+	if retryAssignment.Status != "queued" || len(retryAssignment.Task.TargetDates) != 1 {
 		t.Fatalf("scheduled assignment = %+v", retryAssignment)
 	}
 	var eligibleCount int
@@ -1435,10 +1435,10 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 		t.Fatal(err)
 	}
 	presetPayload := fmt.Sprintf(`{"id":"preset_lane","userId":%q,"name":"lane","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, demandTheaterID)
-	monitorPayload := fmt.Sprintf(`{"id":"monitor_lane","userId":%q,"presetId":"preset_lane","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"opening"}`, userID)
+	monitorPayload := fmt.Sprintf(`{"id":"monitor_lane","userId":%q,"presetId":"preset_lane","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"opening"}`, userID)
 	cancellationPresetPayload := fmt.Sprintf(`{"id":"preset_cancellation","userId":%q,"name":"cancellation","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, cancellationTheaterID)
-	cancellationPayload := fmt.Sprintf(`{"id":"monitor_cancellation","userId":%q,"presetId":"preset_cancellation","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"cancellation"}`, userID)
-	triggeredPayload := fmt.Sprintf(`{"id":"monitor_triggered","userId":%q,"presetId":"preset_triggered","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"triggered","mode":"opening"}`, userID)
+	cancellationPayload := fmt.Sprintf(`{"id":"monitor_cancellation","userId":%q,"presetId":"preset_cancellation","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"cancellation"}`, userID)
+	triggeredPayload := fmt.Sprintf(`{"id":"monitor_triggered","userId":%q,"presetId":"preset_triggered","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"triggered","mode":"opening"}`, userID)
 	triggeredPresetPayload := fmt.Sprintf(`{"id":"preset_triggered","userId":%q,"name":"triggered","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, baselineTheaterID)
 	if _, err := store.pool.Exec(ctx, `
 		INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
@@ -1757,18 +1757,18 @@ func integrationResultCommit(
 }
 
 func integrationShowtime(theater central.Theater, now time.Time) central.Showtime {
-	movieSourceKey := "movie_integration"
+	movieSourceKey := "00001234"
 	movie := central.Movie{
 		ID:         contracts.CatalogID(theater.ProviderID, "movie", movieSourceKey),
 		ProviderID: theater.ProviderID, SourceKey: movieSourceKey, Title: "통합 시험 영화",
 	}
-	auditoriumSourceKey := theater.SourceKey + "/imax"
+	auditoriumSourceKey := theater.SourceKey + "/0007"
 	auditorium := central.Auditorium{
 		ID:        contracts.CatalogID(theater.ProviderID, "auditorium", auditoriumSourceKey),
 		TheaterID: theater.ID, SourceKey: auditoriumSourceKey, Name: "IMAX관",
 		ScreenTypes: []string{"IMAX"}, Capacity: 624,
 	}
-	showtimeSourceKey := theater.SourceKey + "/showtime_integration"
+	showtimeSourceKey := theater.SourceKey + "/2026-08-20/0007/0003"
 	return central.Showtime{
 		ID:         contracts.CatalogID(theater.ProviderID, "showtime", showtimeSourceKey),
 		ProviderID: theater.ProviderID, SourceKey: showtimeSourceKey, TheaterID: theater.ID,

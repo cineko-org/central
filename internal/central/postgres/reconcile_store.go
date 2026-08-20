@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central/reconcile"
+	"github.com/cineko-org/central/internal/observation/planning"
 	contracts "github.com/cineko-org/contracts/v3"
 
 	"github.com/jackc/pgx/v5"
@@ -246,7 +247,10 @@ func (store *cycleStore) RequeueAssignment(
 	if err != nil {
 		return fmt.Errorf("requeue expired assignment: %w", err)
 	}
-	return expectOneRow(tag.RowsAffected(), "requeue expired assignment")
+	if err := expectOneRow(tag.RowsAffected(), "requeue expired assignment"); err != nil {
+		return err
+	}
+	return notifyAssignmentAvailability(ctx, store.tx)
 }
 
 func (store *cycleStore) FinishAssignment(
@@ -265,7 +269,10 @@ func (store *cycleStore) FinishAssignment(
 	if err != nil {
 		return fmt.Errorf("finish assignment: %w", err)
 	}
-	return expectOneRow(tag.RowsAffected(), "finish assignment")
+	if err := expectOneRow(tag.RowsAffected(), "finish assignment"); err != nil {
+		return err
+	}
+	return notifyAssignmentAvailability(ctx, store.tx)
 }
 
 func (store *cycleStore) TimedOutAssignments(
@@ -401,10 +408,14 @@ func (store *cycleStore) DuePolicies(
 	limit int,
 ) ([]reconcile.Policy, error) {
 	rows, err := store.tx.Query(ctx, `
-		WITH demand_theaters AS (
+		WITH demand_monitors AS (
 			SELECT preset.payload->>'theaterId' AS theater_id,
-				BOOL_OR(COALESCE(monitor.payload->>'mode', 'opening') IN ('', 'opening')) AS opening_active,
-				BOOL_OR(monitor.payload->>'mode' = 'cancellation') AS cancellation_active
+				COALESCE(monitor.payload->>'mode', 'opening') AS mode,
+				jsonb_build_object(
+					'targetDates', COALESCE(monitor.payload->'targetDates', '[]'::jsonb),
+					'targetWeekdays', COALESCE(monitor.payload->'targetWeekdays', '[]'::jsonb),
+					'searchHorizonDays', COALESCE(monitor.payload->'searchHorizonDays', '0'::jsonb)
+				) AS target
 			FROM client_resources AS monitor
 			JOIN client_resources AS preset
 				ON preset.user_id = monitor.user_id
@@ -413,7 +424,34 @@ func (store *cycleStore) DuePolicies(
 				AND preset.deleted_at IS NULL
 			WHERE monitor.kind = 'monitors' AND monitor.deleted_at IS NULL
 				AND monitor.payload->>'status' IN ('pending', 'running')
-			GROUP BY preset.payload->>'theaterId'
+		), demand_theaters AS (
+			SELECT theater_id,
+				BOOL_OR(mode IN ('', 'opening')) AS opening_active,
+				BOOL_OR(mode = 'cancellation') AS cancellation_active,
+				COALESCE(jsonb_agg(target) FILTER (WHERE mode IN ('', 'opening', 'cancellation')), '[]'::jsonb) AS monitor_targets
+			FROM demand_monitors
+			GROUP BY theater_id
+		), latest_hot AS (
+			SELECT latest.policy_id, latest.finished_at, latest.target_dates, latest.fingerprint
+			FROM (
+				SELECT DISTINCT ON (assignment.policy_id) assignment.policy_id,
+					assignment.status, assignment.finished_at, assignment.target_dates::text[] AS target_dates,
+					assignment.task_data->>'_cinekoHotFingerprint' AS fingerprint
+				FROM observation_assignments AS assignment
+				WHERE assignment.policy_id IS NOT NULL
+					AND assignment.status IN ('completed', 'partial', 'failed', 'missed')
+					AND assignment.task_data->>'_cinekoLane' = 'hot'
+				ORDER BY assignment.policy_id, assignment.finished_at DESC NULLS LAST, assignment.created_at DESC
+			) AS latest
+			WHERE latest.status = 'completed'
+		), latest_baseline AS (
+			SELECT DISTINCT ON (assignment.policy_id) assignment.policy_id,
+				assignment.finished_at, (assignment.target_dates::text[])[1] AS target_date
+			FROM observation_assignments AS assignment
+			WHERE assignment.policy_id IS NOT NULL
+				AND assignment.status = 'completed'
+				AND COALESCE(assignment.task_data->>'_cinekoLane', 'baseline') = 'baseline'
+			ORDER BY assignment.policy_id, assignment.finished_at DESC NULLS LAST, assignment.created_at DESC
 		)
 		SELECT policy.id, policy.enabled, policy.task_kind, policy.theater_id,
 			policy.theater_provider_id, policy.theater_source_key, policy.theater_region,
@@ -438,13 +476,26 @@ func (store *cycleStore) DuePolicies(
 				ELSE 900
 			END,
 			policy.execution_window_seconds,
-			policy.next_run_at, policy.last_finished_at, COALESCE(policy.last_outcome, '')
+			policy.max_interval_seconds,
+			COALESCE(policy.next_run_at, $1), policy.last_finished_at, COALESCE(policy.last_outcome, ''),
+			COALESCE(demand.monitor_targets, '[]'::jsonb),
+			latest_hot.finished_at, latest_hot.target_dates, latest_hot.fingerprint,
+			latest_baseline.finished_at, latest_baseline.target_date
 		FROM observation_policies AS policy
 		LEFT JOIN demand_theaters AS demand ON demand.theater_id = policy.theater_id
-		WHERE policy.enabled AND policy.deleted_at IS NULL AND policy.next_run_at <= $1
+		LEFT JOIN latest_hot ON latest_hot.policy_id = policy.id
+		LEFT JOIN latest_baseline ON latest_baseline.policy_id = policy.id
+		WHERE policy.enabled AND policy.deleted_at IS NULL
+			AND (policy.next_run_at <= $1 OR demand.opening_active OR demand.cancellation_active)
 			AND NOT EXISTS (
 				SELECT 1 FROM observation_assignments AS active
-				WHERE active.policy_id = policy.id AND active.status IN ('queued', 'leased', 'retry_pending')
+				WHERE active.policy_id = policy.id
+					AND active.status IN ('queued', 'leased', 'retry_pending')
+					AND NOT (
+						active.status = 'queued'
+						AND COALESCE(active.task_data->>'_cinekoLane', 'baseline') = 'baseline'
+						AND (demand.opening_active OR demand.cancellation_active)
+					)
 			)
 		ORDER BY effective_priority DESC, policy.next_run_at, policy.id
 		FOR UPDATE OF policy SKIP LOCKED
@@ -467,6 +518,39 @@ func (store *cycleStore) DuePolicies(
 	}
 	return policies, nil
 }
+
+func (store *cycleStore) PreemptQueuedBaseline(
+	ctx context.Context,
+	policyID string,
+	now time.Time,
+) error {
+	tag, err := store.tx.Exec(ctx, preemptQueuedBaselineAssignmentsQuery, policyID, now)
+	if err != nil {
+		return fmt.Errorf("preempt queued baseline assignment: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	policyTag, err := store.tx.Exec(ctx, makePreemptedObservationPolicyDueQuery, policyID, now)
+	if err != nil {
+		return fmt.Errorf("make preempted observation policy due: %w", err)
+	}
+	return expectOneRow(policyTag.RowsAffected(), "make preempted observation policy due")
+}
+
+const preemptQueuedBaselineAssignmentsQuery = `
+	UPDATE observation_assignments
+	SET status = 'missed', terminal_reason = 'hot_demand_preempted',
+		finished_at = $2, updated_at = $2
+	WHERE policy_id = $1 AND status = 'queued'
+		AND COALESCE(task_data->>'_cinekoLane', 'baseline') = 'baseline'
+`
+
+const makePreemptedObservationPolicyDueQuery = `
+	UPDATE observation_policies
+	SET next_run_at = LEAST(COALESCE(next_run_at, $2), $2), updated_at = $2
+	WHERE id = $1
+`
 
 func (store *cycleStore) EligibleProbes(
 	ctx context.Context,
@@ -600,12 +684,30 @@ func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconc
 	if err != nil {
 		return err
 	}
-	taskData, err := json.Marshal(assignment.Task)
+	taskData, err := marshalAssignmentTask(assignment)
 	if err != nil {
 		return fmt.Errorf("encode observation assignment task: %w", err)
 	}
+	if err := store.insertAssignment(ctx, assignment, targetDates, taskData); err != nil {
+		return err
+	}
+	if err := store.insertEligibleProbes(ctx, assignment); err != nil {
+		return err
+	}
+	if err := store.activateAssignmentPolicy(ctx, assignment); err != nil {
+		return err
+	}
+	return store.notifyQueuedAssignment(ctx, assignment)
+}
+
+func (store *cycleStore) insertAssignment(
+	ctx context.Context,
+	assignment reconcile.NewAssignment,
+	targetDates []time.Time,
+	taskData []byte,
+) error {
 	var insertedID string
-	err = store.tx.QueryRow(ctx, `
+	err := store.tx.QueryRow(ctx, `
 		INSERT INTO observation_assignments (
 			id, policy_id, task_kind, theater_id, theater_provider_id, theater_source_key,
 			theater_region, theater_name, target_dates,
@@ -637,6 +739,13 @@ func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconc
 	if err != nil {
 		return fmt.Errorf("insert observation assignment: %w", err)
 	}
+	return nil
+}
+
+func (store *cycleStore) insertEligibleProbes(
+	ctx context.Context,
+	assignment reconcile.NewAssignment,
+) error {
 	if len(assignment.Candidates) > 0 {
 		batch := &pgx.Batch{}
 		for _, candidate := range assignment.Candidates {
@@ -656,6 +765,13 @@ func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconc
 			return fmt.Errorf("finish assignment eligible probes: %w", err)
 		}
 	}
+	return nil
+}
+
+func (store *cycleStore) activateAssignmentPolicy(
+	ctx context.Context,
+	assignment reconcile.NewAssignment,
+) error {
 	if assignment.PolicyID == "" {
 		return nil
 	}
@@ -666,7 +782,20 @@ func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconc
 	if err != nil {
 		return fmt.Errorf("activate observation policy assignment: %w", err)
 	}
-	return expectOneRow(tag.RowsAffected(), "activate observation policy assignment")
+	if err := expectOneRow(tag.RowsAffected(), "activate observation policy assignment"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (store *cycleStore) notifyQueuedAssignment(
+	ctx context.Context,
+	assignment reconcile.NewAssignment,
+) error {
+	if assignment.Status == "queued" {
+		return notifyAssignmentAvailability(ctx, store.tx)
+	}
+	return nil
 }
 
 func (store *cycleStore) SuspendPolicy(
@@ -701,15 +830,22 @@ func (store *cycleStore) OldestDuePolicy(ctx context.Context, now time.Time) (*t
 func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	var policy reconcile.Policy
 	var horizonDays *int
-	var minimumSeconds, maximumSeconds, executionWindowSeconds int
+	var minimumSeconds, maximumSeconds, executionWindowSeconds, baselineMaximumSeconds int
 	var lastFinishedAt *time.Time
+	var lastHotFinishedAt, lastBaselineFinishedAt *time.Time
+	var lastHotTargetDates []string
+	var lastHotTargetFingerprint *string
+	var lastBaselineTargetDate *string
+	var monitorTargetsRaw []byte
 	err := row.Scan(
 		&policy.ID, &policy.Enabled, &policy.TaskKind, &policy.Theater.ID,
 		&policy.Theater.ProviderID, &policy.Theater.SourceKey, &policy.Theater.Region,
 		&policy.Theater.Name, &policy.TargetDateMode, &policy.TargetDates, &horizonDays,
 		&policy.Locale, &policy.TimeZone, &policy.EgressPolicyID, &policy.Priority,
-		&minimumSeconds, &maximumSeconds, &executionWindowSeconds,
-		&policy.NextRunAt, &lastFinishedAt, &policy.LastOutcome,
+		&minimumSeconds, &maximumSeconds, &executionWindowSeconds, &baselineMaximumSeconds,
+		&policy.NextRunAt, &lastFinishedAt, &policy.LastOutcome, &monitorTargetsRaw,
+		&lastHotFinishedAt, &lastHotTargetDates, &lastHotTargetFingerprint,
+		&lastBaselineFinishedAt, &lastBaselineTargetDate,
 	)
 	if err != nil {
 		return reconcile.Policy{}, fmt.Errorf("scan observation policy: %w", err)
@@ -720,9 +856,29 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	if lastFinishedAt != nil {
 		policy.LastFinishedAt = *lastFinishedAt
 	}
+	if lastHotFinishedAt != nil {
+		policy.LastHotFinishedAt = *lastHotFinishedAt
+	}
+	policy.LastHotTargetDates = lastHotTargetDates
+	if lastHotTargetFingerprint != nil {
+		policy.LastHotTargetFingerprint = *lastHotTargetFingerprint
+	}
+	if lastBaselineFinishedAt != nil {
+		policy.LastBaselineFinishedAt = *lastBaselineFinishedAt
+	}
+	if lastBaselineTargetDate != nil {
+		policy.LastBaselineTargetDate = *lastBaselineTargetDate
+	}
 	policy.MinimumInterval = time.Duration(minimumSeconds) * time.Second
 	policy.MaximumInterval = time.Duration(maximumSeconds) * time.Second
+	policy.BaselineMaximumInterval = time.Duration(baselineMaximumSeconds) * time.Second
 	policy.ExecutionWindow = time.Duration(executionWindowSeconds) * time.Second
+	if len(monitorTargetsRaw) > 0 {
+		policy.HotTargets, err = planning.DecodeMonitorTargets(monitorTargetsRaw)
+		if err != nil {
+			return reconcile.Policy{}, err
+		}
+	}
 	return policy, nil
 }
 
@@ -743,6 +899,33 @@ func nullableTime(value time.Time) *time.Time {
 		return nil
 	}
 	return &value
+}
+
+func marshalAssignmentTask(assignment reconcile.NewAssignment) ([]byte, error) {
+	rawTask, err := json.Marshal(assignment.Task)
+	if err != nil {
+		return nil, err
+	}
+	if assignment.Lane == "" {
+		return rawTask, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawTask, &fields); err != nil {
+		return nil, fmt.Errorf("assignment task is not an object: %w", err)
+	}
+	lane, err := json.Marshal(assignment.Lane)
+	if err != nil {
+		return nil, fmt.Errorf("encode assignment lane: %w", err)
+	}
+	fields[planning.TaskDataLaneKey] = lane
+	if assignment.HotTargetFingerprint != "" {
+		fingerprint, err := json.Marshal(assignment.HotTargetFingerprint)
+		if err != nil {
+			return nil, fmt.Errorf("encode hot target fingerprint: %w", err)
+		}
+		fields[planning.TaskDataHotFingerprintKey] = fingerprint
+	}
+	return json.Marshal(fields)
 }
 
 func expectOneRow(affected int64, operation string) error {

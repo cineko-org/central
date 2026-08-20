@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 	contracts "github.com/cineko-org/contracts/v3"
 )
 
@@ -52,8 +53,8 @@ func TestProbeLifecycleAndResultIdempotency(t *testing.T) {
 		Task: AssignmentTask{
 			Kind: contracts.CapabilityCGVScheduleCapture,
 			Theater: Theater{
-				ID:         contracts.CatalogID(contracts.ProviderCGV, "theater", "서울/용산아이파크몰"),
-				ProviderID: contracts.ProviderCGV, SourceKey: "서울/용산아이파크몰",
+				ID:         contracts.CatalogID(contracts.ProviderCGV, "theater", "0056"),
+				ProviderID: contracts.ProviderCGV, SourceKey: "0056",
 				Region: "서울", Name: "용산아이파크몰",
 			},
 			TargetDates: []string{"2026-08-20"}, Locale: "ko-KR", TimeZone: "Asia/Seoul",
@@ -490,7 +491,8 @@ func TestRuntimeCompatibilityDrainsOutdatedProbe(t *testing.T) {
 			t.Fatalf("runtime compatibility for %+v = %t, want %t", test.runtime, got, test.want)
 		}
 	}
-	if canonicalVersion(" v1.2.0 ") != "v1.2.0" || compareNumericRevision("2001", "2000") <= 0 {
+	if releasepolicy.CanonicalVersion(" v1.2.0 ") != "v1.2.0" ||
+		releasepolicy.CompareNumericRevision("2001", "2000") <= 0 {
 		t.Fatal("version normalization or browser revision comparison failed")
 	}
 }
@@ -514,10 +516,10 @@ func containerRegistration() RegisterProbeRequest {
 
 func validResult(now time.Time) AssignmentResult {
 	providerID := contracts.ProviderCGV
-	theaterID := contracts.CatalogID(providerID, "theater", "서울/용산아이파크몰")
-	movieSourceKey := "영화"
-	auditoriumSourceKey := theaterID + "/IMAX관"
-	showtimeSourceKey := theaterID + "/2026-08-20/영화/IMAX관/05:00"
+	theaterID := contracts.CatalogID(providerID, "theater", "0056")
+	movieSourceKey := "00001234"
+	auditoriumSourceKey := "0056/0007"
+	showtimeSourceKey := "0056/2026-08-20/0007/0003"
 	return AssignmentResult{
 		RunID: "run_01", Status: "completed", StartedAt: now, FinishedAt: now.Add(10 * time.Second),
 		Captures: []Capture{{

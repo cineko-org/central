@@ -14,6 +14,10 @@ PostgreSQL is the authority for shared booking metadata:
 Admin observation policies reference a Central theater ID selected from the catalog. One active theater policy owns
 the shared schedule scan; user monitors only increase its cadence.
 
+Client monitor resources store `movieId` as the canonical catalog Movie ID. The `movie` field is only a display
+snapshot and is never used to match a showtime; execution matching fails closed when either Movie ID is missing or
+different.
+
 Stored seat layouts and anonymous Probe seat observations are optional analysis or preview data. Their absence never
 blocks a preset, monitor, execution command, or booking attempt. The live CGV seat response read again on the user's
 Client is authoritative.

@@ -40,3 +40,10 @@ type Repository interface {
 	HeartbeatAssignment(context.Context, string, string, [32]byte, time.Time, time.Time) error
 	CommitResult(context.Context, ResultCommit) (ResultReceipt, error)
 }
+
+// AssignmentWaiter is an optional repository capability for event-driven
+// probe claims. Implementations re-check durable claim eligibility before and
+// after waiting so a PostgreSQL notification cannot lose a state transition.
+type AssignmentWaiter interface {
+	WaitForAssignment(context.Context, string, time.Time) error
+}

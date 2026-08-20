@@ -4,7 +4,7 @@
 flowchart LR
     A["Admin observation policy"] --> B["Central reconciler"]
     C["User booking monitors"] -->|"cadence boost only"| B
-    B -->|"one theater and every date in the horizon"| D["Probe"]
+    B -->|"one theater and one bounded date set"| D["Probe"]
     D --> E["Complete schedule captures"]
     E --> F["Opening interval and availability analysis"]
     E --> G["Match all user booking monitors"]
@@ -14,8 +14,9 @@ flowchart LR
 
 - The operator selects a theater and the rolling date horizon. Central owns all cadence and priority decisions.
 - A theater has at most one active policy and one active assignment, regardless of users, movies, or auditoriums.
-- Each assignment checks today and every later date through the configured horizon. The horizon is not the delay
-  between scans.
+- Hot assignments check the union of active monitor dates. Baseline assignments check one date at a time; a persisted
+  cursor eventually covers the configured horizon without blocking hot work. The horizon is not the delay between
+  scans.
 - A pending or running booking monitor raises the matching theater to the demand range. A triggered monitor no longer
   raises discovery priority because its exact showtime is already known.
 - Opening demand is rechecked after a randomized 2-5 second delay, subject to the duration of the previous scan. It
@@ -28,6 +29,9 @@ flowchart LR
 - Holds and cancellations can increase availability, so the analysis does not label depletion as confirmed ticket sales.
 - A seat layout is not required for matching or execution. Once matched, the Client opens the exact showtime and
   applies the preset to CGV's current live seats.
+- Monitor time windows use the theater's local time as a half-open interval: the start is included and the end is
+  excluded. If the end is earlier than the start, the window crosses midnight; a Saturday 01:00 showtime remains a
+  Saturday target.
 
 ## Scheduling order
 
@@ -56,3 +60,48 @@ schedule request instead of ten, a structural 90% reduction. Live latency and
 bandwidth were not benchmarked because this change has not been deployed to a
 production CGV workload; the unique active-policy and active-assignment database
 constraints are the verification boundary before rollout.
+
+## Hot-date planning and probe wakeups
+
+Central projects the union of every active monitor's explicit dates and weekday
+targets in the monitor's search horizon. A hot assignment contains only that
+union. The ordinary baseline advances one date per assignment through the
+policy horizon. A hot assignment is selected first; once it finishes, the
+persisted lane timestamps require one baseline date before recurring hot work
+can claim the next slot. This closes the fairness gap even when a 5-second
+reconcile tick misses a nominal 2-second hot interval. The single
+active-assignment guard is the concurrency boundary, so a second assignment for
+the same theater is never run concurrently. Central stores a canonical hash of
+the active monitor projection in task data; a changed target preempts a queued
+baseline before the next hot assignment is created.
+
+The state sequence is `hot -> baseline(one date) -> hot`; a new hot target is
+therefore never hidden behind a multi-day baseline assignment. The planner's
+14-date cursor test proves that continuous demand still reaches every date in
+the rolling horizon. On the reviewed CGV path, the previous 14-date baseline
+had a structural estimate of `1.85s + (14 * 0.5s) = 8.85s`; one-date chunks
+reduce that to `1.85s + 0.5s = 2.35s` per baseline assignment, a 6.50s (73.4%)
+reduction before queueing and network variance. These are path estimates, not a
+production benchmark; no live Central database was used for this change.
+
+Only a `completed` assignment advances lane progress. `partial`, `failed`, and
+`missed` assignments do not unlock recurring hot work or advance the baseline
+date cursor; the same demand or date remains eligible for a retry. A newer
+non-completed hot attempt also blocks an older successful hot timestamp from
+unlocking baseline work until hot demand completes again.
+
+Probe claim keeps the immediate durable claim attempt, then waits on PostgreSQL
+`LISTEN/NOTIFY` for up to 5 seconds. The repository rechecks eligibility after
+installing the listener and after every notification, so a missed notification
+cannot lose an assignment. Assignment creation, retry/requeue, terminal
+release, result commit, and probe-slot recovery publish the wakeup in their
+own transaction; an empty response after the bound is normal.
+
+The previous 2–5 second polling loop had a measured structural worst case of
+5 seconds before a probe could observe a newly queued assignment. The event
+path removes that polling interval: its bound is one committed state change
+plus notification and scheduling overhead, with a 5-second empty-wait ceiling.
+Production wake latency is not claimed here because no live Central database
+workload was available in this change; the repository integration test proves
+the committed assignment notification path when `CINEKO_CENTRAL_TEST_DATABASE_URL`
+is provided, while the default unit suite proves the durable wait/retry boundary.

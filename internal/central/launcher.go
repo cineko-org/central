@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 	contracts "github.com/cineko-org/contracts/v3"
 
 	"golang.org/x/mod/semver"
@@ -86,7 +86,7 @@ func (service *ClientService) ConfigureReleases(releases []ClientRelease) error 
 		if err := validateClientRelease(release); err != nil {
 			return fmt.Errorf("client release %d: %w", index, err)
 		}
-		identity := componentReleaseKey(release.Channel, release.Platform, release.Arch, release.Version)
+		identity := releasepolicy.ComponentKey(release.Channel, release.Platform, release.Arch, release.Version)
 		if _, duplicate := configured[identity]; duplicate {
 			return fmt.Errorf("duplicate client release for %s", identity)
 		}
@@ -117,7 +117,7 @@ func (service *ClientService) ConfigureBrowserReleases(releases []BrowserRelease
 		if err := validateBrowserRelease(release); err != nil {
 			return fmt.Errorf("browser release %d: %w", index, err)
 		}
-		key := componentReleaseKey(release.Channel, release.Platform, release.Arch, release.Revision)
+		key := releasepolicy.ComponentKey(release.Channel, release.Platform, release.Arch, release.Revision)
 		if _, duplicate := configured[key]; duplicate {
 			return fmt.Errorf("duplicate browser release for %s", key)
 		}
@@ -149,61 +149,10 @@ func (service *ClientService) ConfigurePlaywrightReleases(releases []PlaywrightR
 func (service *ClientService) CurrentRuntimeRelease(channel, platform, arch string) (RuntimeRelease, error) {
 	service.releaseMu.RLock()
 	defer service.releaseMu.RUnlock()
-	return currentRuntimeReleaseFromCatalog(service.releaseCatalog(), channel, platform, arch)
-}
-
-func currentRuntimeReleaseFromCatalog(
-	catalog releaseCatalog,
-	channel string,
-	platform string,
-	arch string,
-) (RuntimeRelease, error) {
-	release, exists := selectCurrentRuntimeRelease(catalog, channel, platform, arch)
-	if !exists {
-		return RuntimeRelease{}, ErrNotFound
+	if release, ok := releasepolicy.CurrentRuntime(service.releaseCatalog(), channel, platform, arch); ok {
+		return release, nil
 	}
-	return release, nil
-}
-
-func selectCurrentRuntimeRelease(
-	catalog releaseCatalog,
-	channel string,
-	platform string,
-	arch string,
-) (RuntimeRelease, bool) {
-	prefix := releaseKey(channel, platform, arch) + "/"
-	candidates := make([]ClientRelease, 0, len(catalog.clients))
-	for key, client := range catalog.clients {
-		if strings.HasPrefix(key, prefix) {
-			candidates = append(candidates, client)
-		}
-	}
-	sort.Slice(candidates, func(left, right int) bool {
-		return semver.Compare(canonicalVersion(candidates[left].Version), canonicalVersion(candidates[right].Version)) > 0
-	})
-	launcher, launcherExists := selectCurrentLauncherRelease(catalog, channel, platform, arch)
-	if !launcherExists {
-		return RuntimeRelease{}, false
-	}
-	for _, client := range candidates {
-		if semver.Compare(canonicalVersion(launcher.Version), canonicalVersion(client.MinimumLauncherVersion)) < 0 {
-			continue
-		}
-		playwright, playwrightExists := catalog.playwright[componentReleaseKey(
-			channel, platform, arch, client.PlaywrightVersion,
-		)]
-		if !playwrightExists {
-			continue
-		}
-		browser, browserExists := compatibleBrowserReleaseFromCatalog(
-			catalog,
-			channel, platform, arch, client.MinimumBrowserRevision, playwright.Version,
-		)
-		if browserExists {
-			return RuntimeRelease{Client: client, Browser: browser, Playwright: playwright}, true
-		}
-	}
-	return RuntimeRelease{}, false
+	return RuntimeRelease{}, ErrNotFound
 }
 
 func (service *ClientService) compatibleBrowserRelease(
@@ -215,31 +164,9 @@ func (service *ClientService) compatibleBrowserRelease(
 ) (BrowserRelease, bool) {
 	service.releaseMu.RLock()
 	defer service.releaseMu.RUnlock()
-	return compatibleBrowserReleaseFromCatalog(
+	return releasepolicy.CompatibleBrowser(
 		service.releaseCatalog(), channel, platform, arch, minimumRevision, playwrightVersion,
 	)
-}
-
-func compatibleBrowserReleaseFromCatalog(
-	catalog releaseCatalog,
-	channel string,
-	platform string,
-	arch string,
-	minimumRevision string,
-	playwrightVersion string,
-) (BrowserRelease, bool) {
-	prefix := releaseKey(channel, platform, arch) + "/"
-	var selected BrowserRelease
-	for key, release := range catalog.browsers {
-		if !strings.HasPrefix(key, prefix) || compareNumericRevision(release.Revision, minimumRevision) < 0 ||
-			!containsString(release.CompatiblePlaywrightVersions, playwrightVersion) {
-			continue
-		}
-		if selected.Revision == "" || compareNumericRevision(release.Revision, selected.Revision) > 0 {
-			selected = release
-		}
-	}
-	return selected, selected.Revision != ""
 }
 
 func (service *ClientService) ConfigureLauncherReleases(releases []LauncherRelease) error {
@@ -267,7 +194,7 @@ func normalizePlaywrightRelease(release *PlaywrightRelease) {
 }
 
 func playwrightReleaseIdentity(release PlaywrightRelease) string {
-	return componentReleaseKey(release.Channel, release.Platform, release.Arch, release.Version)
+	return releasepolicy.ComponentKey(release.Channel, release.Platform, release.Arch, release.Version)
 }
 
 func normalizeLauncherRelease(release *LauncherRelease) {
@@ -278,7 +205,7 @@ func normalizeLauncherRelease(release *LauncherRelease) {
 }
 
 func launcherReleaseIdentity(release LauncherRelease) string {
-	return componentReleaseKey(release.Channel, release.Platform, release.Arch, release.Version)
+	return releasepolicy.ComponentKey(release.Channel, release.Platform, release.Arch, release.Version)
 }
 
 func configureVersionedReleaseMap[Release any](
@@ -310,38 +237,10 @@ func configureVersionedReleaseMap[Release any](
 func (service *ClientService) CurrentLauncherRelease(channel, platform, arch string) (LauncherRelease, error) {
 	service.releaseMu.RLock()
 	defer service.releaseMu.RUnlock()
-	return currentLauncherReleaseFromCatalog(service.releaseCatalog(), channel, platform, arch)
-}
-
-func currentLauncherReleaseFromCatalog(
-	catalog releaseCatalog,
-	channel string,
-	platform string,
-	arch string,
-) (LauncherRelease, error) {
-	release, exists := selectCurrentLauncherRelease(catalog, channel, platform, arch)
-	if !exists {
-		return LauncherRelease{}, ErrNotFound
+	if release, ok := releasepolicy.CurrentLauncher(service.releaseCatalog(), channel, platform, arch); ok {
+		return release, nil
 	}
-	return release, nil
-}
-
-func selectCurrentLauncherRelease(
-	catalog releaseCatalog,
-	channel string,
-	platform string,
-	arch string,
-) (LauncherRelease, bool) {
-	prefix := releaseKey(channel, platform, arch) + "/"
-	var release LauncherRelease
-	for key, candidate := range catalog.launchers {
-		if strings.HasPrefix(key, prefix) && (release.Version == "" ||
-			semver.Compare(canonicalVersion(candidate.Version), canonicalVersion(release.Version)) > 0) {
-			release = candidate
-		}
-	}
-	exists := release.Version != ""
-	return release, exists
+	return LauncherRelease{}, ErrNotFound
 }
 
 func (service *ClientService) ConfigureProbeReleases(releases []ProbeRelease) error {
@@ -374,28 +273,16 @@ func (service *ClientService) ConfigureProbeReleases(releases []ProbeRelease) er
 func (service *ClientService) CurrentProbeRelease(channel string) (ProbeRelease, error) {
 	service.releaseMu.RLock()
 	defer service.releaseMu.RUnlock()
-	return currentProbeReleaseFromCatalog(service.releaseCatalog(), channel)
+	if release, ok := releasepolicy.CurrentProbe(service.releaseCatalog(), channel); ok {
+		return release, nil
+	}
+	return ProbeRelease{}, ErrNotFound
 }
 
-func currentProbeReleaseFromCatalog(catalog releaseCatalog, channel string) (ProbeRelease, error) {
-	prefix := strings.TrimSpace(channel) + "/"
-	var selected ProbeRelease
-	for key, release := range catalog.probes {
-		if strings.HasPrefix(key, prefix) && (selected.Version == "" ||
-			semver.Compare(canonicalVersion(release.Version), canonicalVersion(selected.Version)) > 0) {
-			selected = release
-		}
-	}
-	if selected.Version == "" {
-		return ProbeRelease{}, ErrNotFound
-	}
-	return selected, nil
-}
-
-func (service *ClientService) releaseCatalog() releaseCatalog {
-	return releaseCatalog{
-		clients: service.clients, browsers: service.browsers, playwright: service.playwright,
-		launchers: service.launchers, probes: service.probes,
+func (service *ClientService) releaseCatalog() releasepolicy.Catalog {
+	return releasepolicy.Catalog{
+		Clients: service.clients, Browsers: service.browsers, Playwright: service.playwright,
+		Launchers: service.launchers, Probes: service.probes,
 	}
 }
 
@@ -415,7 +302,8 @@ func (service *ClientService) IssueLaunchTicket(
 	runtimeRelease, generation, err := service.CurrentRuntimeReleaseSnapshot(
 		ctx, "stable", device.Platform, device.Arch,
 	)
-	if err != nil || request.ReleaseGeneration != generation || !runtimeMatchesLaunchRequest(runtimeRelease, request) {
+	if err != nil || request.ReleaseGeneration != generation ||
+		!releasepolicy.RuntimeMatchesLaunchRequest(runtimeRelease, request) {
 		return LaunchTicketResponse{}, ErrStaleRelease
 	}
 	token, tokenHash, err := service.secret("clt_")
@@ -470,16 +358,6 @@ func validSHA256(value string) bool {
 	// DecodeString always yields 32 bytes after the exact 64-character check.
 	_, err := hex.DecodeString(value)
 	return err == nil
-}
-
-func runtimeMatchesLaunchRequest(runtimeRelease RuntimeRelease, request LaunchTicketRequest) bool {
-	return runtimeRelease.Client.Version == request.ClientVersion &&
-		runtimeRelease.Client.Artifact.SHA256 == request.ArtifactSHA256 &&
-		runtimeRelease.Client.Protocol == request.Protocol &&
-		runtimeRelease.Browser.Revision == request.BrowserRevision &&
-		runtimeRelease.Browser.Artifact.SHA256 == request.BrowserArtifactSHA256 &&
-		runtimeRelease.Playwright.Version == request.PlaywrightVersion &&
-		runtimeRelease.Playwright.Artifact.SHA256 == request.PlaywrightArtifactSHA256
 }
 
 func (service *ClientService) ExchangeLaunchTicket(
@@ -569,7 +447,7 @@ func validateClientRelease(release ClientRelease) error {
 }
 
 func validateClientReleaseIdentity(release ClientRelease) error {
-	if release.Channel != "stable" || !supportedPlatform(release.Platform, release.Arch) ||
+	if release.Channel != "stable" || !releasepolicy.IsSupportedDesktopTarget(release.Platform, release.Arch) ||
 		release.Version == "" || release.MinimumLauncherVersion == "" ||
 		release.MinimumBrowserRevision == "" || release.PlaywrightVersion == "" ||
 		release.Protocol != ProtocolVersion || release.PublishedAt.IsZero() {
@@ -579,12 +457,12 @@ func validateClientReleaseIdentity(release ClientRelease) error {
 }
 
 func validateClientReleaseVersions(release ClientRelease) error {
-	if !semver.IsValid(canonicalVersion(release.Version)) ||
-		!semver.IsValid(canonicalVersion(release.MinimumLauncherVersion)) ||
-		!semver.IsValid(canonicalVersion(release.PlaywrightVersion)) {
+	if !semver.IsValid(releasepolicy.CanonicalVersion(release.Version)) ||
+		!semver.IsValid(releasepolicy.CanonicalVersion(release.MinimumLauncherVersion)) ||
+		!semver.IsValid(releasepolicy.CanonicalVersion(release.PlaywrightVersion)) {
 		return errors.New("client, minimum Launcher, and Playwright versions must be semantic versions")
 	}
-	if !isNumericRevision(release.MinimumBrowserRevision) {
+	if !releasepolicy.IsNumericRevision(release.MinimumBrowserRevision) {
 		return errors.New("minimum browser revision must be numeric")
 	}
 	return nil
@@ -604,14 +482,14 @@ func validateProbeBootstrapKeyring(keyring map[string]string) error {
 }
 
 func validateBrowserRelease(release BrowserRelease) error {
-	if release.Channel != "stable" || !supportedPlatform(release.Platform, release.Arch) ||
-		!isNumericRevision(release.Revision) || release.PublishedAt.IsZero() ||
+	if release.Channel != "stable" || !releasepolicy.IsSupportedDesktopTarget(release.Platform, release.Arch) ||
+		!releasepolicy.IsNumericRevision(release.Revision) || release.PublishedAt.IsZero() ||
 		len(release.CompatiblePlaywrightVersions) == 0 {
 		return errors.New("release identity, compatibility, and publishedAt are required")
 	}
 	seen := make(map[string]struct{}, len(release.CompatiblePlaywrightVersions))
 	for _, version := range release.CompatiblePlaywrightVersions {
-		if !semver.IsValid(canonicalVersion(version)) {
+		if !semver.IsValid(releasepolicy.CanonicalVersion(version)) {
 			return errors.New("compatible Playwright versions must not be empty")
 		}
 		if _, duplicate := seen[version]; duplicate {
@@ -626,11 +504,11 @@ func validateBrowserRelease(release BrowserRelease) error {
 }
 
 func validatePlaywrightRelease(release PlaywrightRelease) error {
-	if release.Channel != "stable" || !supportedPlatform(release.Platform, release.Arch) ||
+	if release.Channel != "stable" || !releasepolicy.IsSupportedDesktopTarget(release.Platform, release.Arch) ||
 		release.Version == "" || release.PublishedAt.IsZero() {
 		return errors.New("release identity and publishedAt are required")
 	}
-	if !semver.IsValid(canonicalVersion(release.Version)) {
+	if !semver.IsValid(releasepolicy.CanonicalVersion(release.Version)) {
 		return errors.New("playwright version must be a semantic version")
 	}
 	if err := validateReleaseArtifact(release.Artifact); err != nil {
@@ -639,21 +517,12 @@ func validatePlaywrightRelease(release PlaywrightRelease) error {
 	return nil
 }
 
-func containsString(values []string, expected string) bool {
-	for _, value := range values {
-		if value == expected {
-			return true
-		}
-	}
-	return false
-}
-
 func validateLauncherRelease(release LauncherRelease) error {
-	if release.Channel != "stable" || !supportedPlatform(release.Platform, release.Arch) ||
+	if release.Channel != "stable" || !releasepolicy.IsSupportedDesktopTarget(release.Platform, release.Arch) ||
 		release.Version == "" || release.Protocol != ProtocolVersion || release.PublishedAt.IsZero() {
 		return errors.New("release identity, compatibility, and publishedAt are required")
 	}
-	if !semver.IsValid(canonicalVersion(release.Version)) {
+	if !semver.IsValid(releasepolicy.CanonicalVersion(release.Version)) {
 		return errors.New("launcher version must be a semantic version")
 	}
 	if err := validateReleaseArtifact(release.Launcher); err != nil {
@@ -663,8 +532,8 @@ func validateLauncherRelease(release LauncherRelease) error {
 }
 
 func validateProbeRelease(release ProbeRelease) error {
-	if release.Channel != "stable" || !semver.IsValid(canonicalVersion(release.Version)) ||
-		release.Protocol != ProtocolVersion || !isNumericRevision(release.BrowserRevision) ||
+	if release.Channel != "stable" || !semver.IsValid(releasepolicy.CanonicalVersion(release.Version)) ||
+		release.Protocol != ProtocolVersion || !releasepolicy.IsNumericRevision(release.BrowserRevision) ||
 		release.PublishedAt.IsZero() {
 		return errors.New("release identity, compatibility, and publishedAt are required")
 	}
@@ -698,23 +567,4 @@ func validateReleaseArtifact(artifact ReleaseArtifact) error {
 		return errors.New("executable must be a clean relative archive path")
 	}
 	return nil
-}
-
-func supportedPlatform(platform, arch string) bool {
-	_, supported := supportedDesktopReleaseTargets[platform+"/"+arch]
-	return supported
-}
-
-var supportedDesktopReleaseTargets = map[string]struct{}{
-	"darwin/arm64":  {},
-	"linux/amd64":   {},
-	"windows/amd64": {},
-}
-
-func releaseKey(channel, platform, arch string) string {
-	return strings.TrimSpace(channel) + "/" + strings.TrimSpace(platform) + "/" + strings.TrimSpace(arch)
-}
-
-func componentReleaseKey(channel, platform, arch, version string) string {
-	return releaseKey(channel, platform, arch) + "/" + strings.TrimSpace(version)
 }

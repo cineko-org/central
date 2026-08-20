@@ -1,9 +1,14 @@
 name: Publish image
 
 on:
-  push:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: docker/setup-buildx-action@v4
 
       - name: Validate release secrets
@@ -54,12 +61,22 @@ jobs:
         id: image
         run: |
           set -euo pipefail
+          source_sha='${{ inputs.source_sha }}'
+          release_tag='${{ inputs.release_tag }}'
+          if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release source SHA is invalid" >&2
+            exit 1
+          fi
           version="$(tr -d '[:space:]' < VERSION)"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "VERSION must contain a semantic version" >&2
             exit 1
           fi
-          echo "tag=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          if [[ "$release_tag" != "v${version}" ]]; then
+            echo "release tag ${release_tag} does not match VERSION ${version}" >&2
+            exit 1
+          fi
+          echo "tag=sha-${source_sha:0:12}" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build and publish
@@ -87,4 +104,4 @@ jobs:
             -f "client_payload[digest]=$IMAGE_DIGEST" \
             -f "client_payload[tag]=$IMAGE_TAG" \
             -f "client_payload[source_repository]=$GITHUB_REPOSITORY" \
-            -f "client_payload[source_sha]=$GITHUB_SHA"
+            -f "client_payload[source_sha]=${{ inputs.source_sha }}"

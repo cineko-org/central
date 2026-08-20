@@ -20,7 +20,10 @@ import (
 	contracts "github.com/cineko-org/contracts/v3"
 )
 
-const maxRequestBody = 2 << 20
+const (
+	maxRequestBody           = 2 << 20
+	assignmentClaimWaitLimit = 5 * time.Second
+)
 
 type Server struct {
 	service              *central.Service
@@ -281,8 +284,24 @@ func (server *Server) claimAssignment(writer http.ResponseWriter, request *http.
 	}
 	response, err := server.service.ClaimAssignment(request.Context(), probe)
 	if errors.Is(err, central.ErrNoAssignment) {
-		writer.WriteHeader(http.StatusNoContent)
-		return
+		waitContext, cancel := context.WithTimeout(request.Context(), assignmentClaimWaitLimit)
+		defer cancel()
+		if waitErr := server.service.WaitForAssignment(waitContext, probe); waitErr != nil {
+			if errors.Is(waitErr, context.DeadlineExceeded) {
+				writer.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if errors.Is(waitErr, context.Canceled) && request.Context().Err() != nil {
+				return
+			}
+			server.writeError(writer, request, waitErr)
+			return
+		}
+		response, err = server.service.ClaimAssignment(request.Context(), probe)
+		if errors.Is(err, central.ErrNoAssignment) {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
 	}
 	if err != nil {
 		server.writeError(writer, request, err)

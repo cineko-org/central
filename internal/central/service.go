@@ -10,12 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net"
 	"slices"
 	"strings"
 	"time"
 
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 	contracts "github.com/cineko-org/contracts/v3"
 
 	"golang.org/x/mod/semver"
@@ -73,10 +74,10 @@ func NewService(repository Repository, config Config) (*Service, error) {
 		config.ProbeHeartbeatTTL < config.HeartbeatInterval {
 		return nil, errors.New("central token, lease and heartbeat durations are invalid")
 	}
-	if config.MinimumRuntimeVersion != "" && !semver.IsValid(canonicalVersion(config.MinimumRuntimeVersion)) {
+	if config.MinimumRuntimeVersion != "" && !semver.IsValid(releasepolicy.CanonicalVersion(config.MinimumRuntimeVersion)) {
 		return nil, errors.New("minimum probe runtime version must be semantic versioning")
 	}
-	if config.MinimumBrowserRevision != "" && !isNumericRevision(config.MinimumBrowserRevision) {
+	if config.MinimumBrowserRevision != "" && !releasepolicy.IsNumericRevision(config.MinimumBrowserRevision) {
 		return nil, errors.New("minimum browser revision must be numeric")
 	}
 	return &Service{
@@ -279,6 +280,17 @@ func (service *Service) ClaimAssignment(
 	}, nil
 }
 
+// WaitForAssignment waits for a claimable assignment when the repository
+// supports event-driven wakeups. Memory repositories intentionally return
+// immediately through the optional capability boundary.
+func (service *Service) WaitForAssignment(ctx context.Context, probe Probe) error {
+	waiter, ok := service.repository.(AssignmentWaiter)
+	if !ok {
+		return nil
+	}
+	return waiter.WaitForAssignment(ctx, probe.ID, service.clock().UTC().Add(-service.config.ProbeHeartbeatTTL))
+}
+
 func (service *Service) HeartbeatAssignment(
 	ctx context.Context,
 	probe Probe,
@@ -307,8 +319,8 @@ func (service *Service) CommitResult(
 ) (ResultReceipt, error) {
 	if result.SeatMap != nil {
 		seatMap := *result.SeatMap
-		if err := NormalizeSeatMapVersion(&seatMap, service.clock().UTC()); err != nil {
-			return ResultReceipt{}, err
+		if err := catalogdomain.NormalizeSeatMapVersion(&seatMap, service.clock().UTC()); err != nil {
+			return ResultReceipt{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		result.SeatMap = &seatMap
 	}
@@ -368,10 +380,10 @@ func validateRuntime(runtime Runtime) error {
 		strings.TrimSpace(runtime.Platform) == "" || strings.TrimSpace(runtime.Arch) == "" {
 		return fmt.Errorf("%w: runtime is incomplete", ErrInvalid)
 	}
-	if !semver.IsValid(canonicalVersion(runtime.Version)) {
+	if !semver.IsValid(releasepolicy.CanonicalVersion(runtime.Version)) {
 		return fmt.Errorf("%w: runtime version must use semantic versioning", ErrInvalid)
 	}
-	if !isNumericRevision(runtime.BrowserRevision) {
+	if !releasepolicy.IsNumericRevision(runtime.BrowserRevision) {
 		return fmt.Errorf("%w: browser revision must be numeric", ErrInvalid)
 	}
 	return nil
@@ -407,7 +419,10 @@ func validateResultPayload(result AssignmentResult) error {
 			return fmt.Errorf("%w: catalog result must be completed without schedule captures", ErrInvalid)
 		}
 		snapshot := *result.Catalog
-		return NormalizeCatalogSnapshot(&snapshot)
+		if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		return nil
 	}
 	if result.SeatMap != nil && (result.Status != "completed" || len(result.Captures) != 0) {
 		return fmt.Errorf("%w: seat-map result must be completed without other payloads", ErrInvalid)
@@ -471,35 +486,17 @@ func networkID(remoteAddress string) string {
 }
 
 func (service *Service) runtimeCompatible(runtime Runtime) bool {
-	if !semver.IsValid(canonicalVersion(runtime.Version)) || !isNumericRevision(runtime.BrowserRevision) {
+	if !semver.IsValid(releasepolicy.CanonicalVersion(runtime.Version)) ||
+		!releasepolicy.IsNumericRevision(runtime.BrowserRevision) {
 		return false
 	}
 	if minimum := strings.TrimSpace(service.config.MinimumRuntimeVersion); minimum != "" &&
-		semver.Compare(canonicalVersion(runtime.Version), canonicalVersion(minimum)) < 0 {
+		semver.Compare(releasepolicy.CanonicalVersion(runtime.Version), releasepolicy.CanonicalVersion(minimum)) < 0 {
 		return false
 	}
 	if minimum := strings.TrimSpace(service.config.MinimumBrowserRevision); minimum != "" &&
-		compareNumericRevision(runtime.BrowserRevision, minimum) < 0 {
+		releasepolicy.CompareNumericRevision(runtime.BrowserRevision, minimum) < 0 {
 		return false
 	}
 	return true
-}
-
-func canonicalVersion(value string) string {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "v") {
-		return value
-	}
-	return "v" + value
-}
-
-func isNumericRevision(value string) bool {
-	_, ok := new(big.Int).SetString(strings.TrimSpace(value), 10)
-	return ok
-}
-
-func compareNumericRevision(left, right string) int {
-	leftValue, _ := new(big.Int).SetString(strings.TrimSpace(left), 10)
-	rightValue, _ := new(big.Int).SetString(strings.TrimSpace(right), 10)
-	return leftValue.Cmp(rightValue)
 }

@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain"
+	"github.com/cineko-org/central/internal/domain/clientresources"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -77,12 +77,12 @@ func loadExecutionTargets(ctx context.Context, tx pgx.Tx, theaterID string) ([]e
 		if err := rows.Scan(&target.userID, &monitorID, &monitorPayload, &presetID, &presetPayload); err != nil {
 			return nil, fmt.Errorf("scan Client execution target: %w", err)
 		}
-		if _, err := central.ValidateClientResourcePayload(
+		if err := clientresources.ValidatePayload(
 			target.userID, "monitors", monitorID, monitorPayload,
 		); err != nil {
 			continue
 		}
-		if _, err := central.ValidateClientResourcePayload(
+		if err := clientresources.ValidatePayload(
 			target.userID, "presets", presetID, presetPayload,
 		); err != nil {
 			continue
@@ -109,13 +109,10 @@ func executionTargetMatches(
 	location *time.Location,
 ) bool {
 	if target.preset.AuditoriumID != showtime.Auditorium.ID ||
-		!strings.EqualFold(strings.TrimSpace(target.monitor.Movie), strings.TrimSpace(showtime.Movie.Title)) ||
-		!slices.Contains(target.monitor.ResolveTargetDates(now.In(location)), targetDate) {
+		target.monitor.MovieID == "" || showtime.Movie.ID == "" || target.monitor.MovieID != showtime.Movie.ID {
 		return false
 	}
-	clock := showtime.StartsAt.In(location).Format("15:04")
-	return (target.monitor.EarliestTime == "" || clock >= target.monitor.EarliestTime) &&
-		(target.monitor.LatestTime == "" || clock <= target.monitor.LatestTime)
+	return target.monitor.MatchesSchedule(targetDate, showtime.StartsAt, now, location)
 }
 
 func insertExecutionCommand(

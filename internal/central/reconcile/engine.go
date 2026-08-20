@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	"github.com/cineko-org/central/internal/observation/planning"
 	"github.com/cineko-org/central/internal/telemetry"
 	contracts "github.com/cineko-org/contracts/v3"
 )
@@ -490,7 +491,7 @@ func (engine *Engine) scheduleDuePolicies(
 		return fmt.Errorf("list due policies: %w", err)
 	}
 	for _, policy := range policies {
-		targetDates, err := policyTargetDates(policy, now)
+		plan, err := policyPlan(policy, now)
 		if err != nil {
 			if suspendErr := cycle.SuspendPolicy(ctx, policy.ID, "invalid_policy", now); suspendErr != nil {
 				return fmt.Errorf("suspend invalid policy %s: %w", policy.ID, suspendErr)
@@ -501,13 +502,21 @@ func (engine *Engine) scheduleDuePolicies(
 				"policy_id", policy.ID, "reason", "invalid_policy", "error_type", telemetry.ErrorType(err))
 			continue
 		}
+		if len(plan.TargetDates) == 0 {
+			continue
+		}
+		if plan.Lane == planning.LaneHot {
+			if err := cycle.PreemptQueuedBaseline(ctx, policy.ID, now); err != nil {
+				return fmt.Errorf("preempt baseline for policy %s: %w", policy.ID, err)
+			}
+		}
 		candidates, err := cycle.EligibleProbes(
 			ctx, policy, now, now.Add(-engine.config.ProbeHeartbeatTTL),
 		)
 		if err != nil {
 			return fmt.Errorf("list policy %s eligible probes: %w", policy.ID, err)
 		}
-		assignment, err := engine.newAssignment(policy, targetDates, candidates, now)
+		assignment, err := engine.newAssignment(policy, plan, candidates, now)
 		if err != nil {
 			return err
 		}
@@ -532,7 +541,7 @@ func (engine *Engine) scheduleDuePolicies(
 
 func (engine *Engine) newAssignment(
 	policy Policy,
-	targetDates []string,
+	plan planning.Result,
 	candidates []CandidateProbe,
 	now time.Time,
 ) (NewAssignment, error) {
@@ -546,8 +555,9 @@ func (engine *Engine) newAssignment(
 	}
 	return NewAssignment{
 		ID: id, PolicyID: policy.ID, Priority: policy.Priority, Status: status,
+		Lane: plan.Lane, HotTargetFingerprint: plan.HotTargetFingerprint,
 		Task: central.AssignmentTask{
-			Kind: policy.TaskKind, Theater: policy.Theater, TargetDates: targetDates,
+			Kind: policy.TaskKind, Theater: policy.Theater, TargetDates: plan.TargetDates,
 			Locale: policy.Locale, TimeZone: policy.TimeZone, EgressPolicyID: policy.EgressPolicyID,
 		},
 		NotBefore: now, Deadline: now.Add(policy.ExecutionWindow), FinishedAt: finishedAt,
@@ -577,26 +587,32 @@ func (engine *Engine) advanceMissedPolicy(
 	return nil
 }
 
-func policyTargetDates(policy Policy, now time.Time) ([]string, error) {
+func policyPlan(policy Policy, now time.Time) (planning.Result, error) {
 	location, err := validatePolicyRuntime(policy)
 	if err != nil {
-		return nil, err
+		return planning.Result{}, err
 	}
-	switch policy.TargetDateMode {
-	case "explicit":
-		return explicitTargetDates(policy.TargetDates)
-	case "rolling":
-		return rollingTargetDates(policy.HorizonDays, now, location)
-	default:
-		return nil, fmt.Errorf("unsupported target date mode %q", policy.TargetDateMode)
-	}
+	return planning.Build(planning.Input{
+		Now: now, Location: location, TargetDateMode: policy.TargetDateMode,
+		ExplicitTargetDates: policy.TargetDates, HorizonDays: policy.HorizonDays,
+		HotTargets: policy.HotTargets, NextRunAt: policy.NextRunAt,
+		HotTargetFingerprint:     policy.HotTargetFingerprint,
+		LastHotFinishedAt:        policy.LastHotFinishedAt,
+		LastHotTargetDates:       policy.LastHotTargetDates,
+		LastHotTargetFingerprint: policy.LastHotTargetFingerprint,
+		HotMinimumInterval:       policy.MinimumInterval,
+		LastBaselineFinishedAt:   policy.LastBaselineFinishedAt,
+		BaselineMaximumInterval:  policy.BaselineMaximumInterval,
+		LastBaselineTargetDate:   policy.LastBaselineTargetDate,
+	})
 }
 
 func validatePolicyRuntime(policy Policy) (*time.Location, error) {
 	if strings.TrimSpace(policy.TaskKind) == "" || strings.TrimSpace(policy.Theater.ID) == "" ||
 		strings.TrimSpace(policy.Theater.ProviderID) == "" || strings.TrimSpace(policy.Theater.SourceKey) == "" ||
 		strings.TrimSpace(policy.Locale) == "" || policy.MinimumInterval <= 0 ||
-		policy.MaximumInterval < policy.MinimumInterval || policy.ExecutionWindow <= 0 {
+		policy.MaximumInterval < policy.MinimumInterval ||
+		policy.ExecutionWindow <= 0 {
 		return nil, errors.New("policy runtime configuration is incomplete")
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(policy.TimeZone))
@@ -604,35 +620,6 @@ func validatePolicyRuntime(policy Policy) (*time.Location, error) {
 		return nil, fmt.Errorf("load policy time zone: %w", err)
 	}
 	return location, nil
-}
-
-func explicitTargetDates(values []string) ([]string, error) {
-	if len(values) == 0 {
-		return nil, errors.New("explicit policy has no target dates")
-	}
-	seen := make(map[string]struct{}, len(values))
-	for _, date := range values {
-		if _, err := time.Parse(time.DateOnly, date); err != nil {
-			return nil, fmt.Errorf("invalid target date %q", date)
-		}
-		if _, duplicate := seen[date]; duplicate {
-			return nil, fmt.Errorf("duplicate target date %q", date)
-		}
-		seen[date] = struct{}{}
-	}
-	return slices.Clone(values), nil
-}
-
-func rollingTargetDates(horizonDays int, now time.Time, location *time.Location) ([]string, error) {
-	if horizonDays < 1 || horizonDays > 90 {
-		return nil, errors.New("rolling policy horizon is outside 1..90")
-	}
-	start := now.In(location)
-	dates := make([]string, horizonDays)
-	for index := range dates {
-		dates[index] = start.AddDate(0, 0, index).Format(time.DateOnly)
-	}
-	return dates, nil
 }
 
 func (engine *Engine) runAndRecord(ctx context.Context) {
