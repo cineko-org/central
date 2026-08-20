@@ -229,9 +229,9 @@ func (store *Store) UpdateAdminObservationPolicy(
 					WHERE assignment.policy_id = policy.id
 						AND assignment.status IN ('queued', 'leased', 'retry_pending')
 				) THEN NULL
-				ELSE $22
+				ELSE $22::timestamptz
 			END,
-			updated_at = $22
+			updated_at = $22::timestamptz
 		WHERE policy.id = $1 AND policy.revision = $2 AND policy.theater_id = $5
 			AND policy.deleted_at IS NULL
 	`, strings.TrimSpace(id), revision, theater.Name, input.Enabled,
