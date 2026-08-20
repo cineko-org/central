@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.2](https://github.com/cineko-org/central/compare/v2.4.1...v2.4.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **observations:** type policy update timestamp ([#11](https://github.com/cineko-org/central/issues/11)) ([b5fa984](https://github.com/cineko-org/central/commit/b5fa98417dddaa197bf04bc4cc511bf6ad2b441d))
+
 ## [2.4.1](https://github.com/cineko-org/central/compare/v2.4.0...v2.4.1) (2026-08-20)
 
 
