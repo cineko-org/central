@@ -18,23 +18,37 @@ const (
 var ErrTargetBusy = errors.New("observation target already has an active assignment")
 
 type Policy struct {
-	ID              string
-	Enabled         bool
-	TaskKind        string
-	Theater         central.Theater
-	TargetDateMode  string
-	TargetDates     []string
-	HorizonDays     int
-	Locale          string
-	TimeZone        string
-	EgressPolicyID  string
-	Priority        int
-	MinimumInterval time.Duration
-	MaximumInterval time.Duration
-	ExecutionWindow time.Duration
-	NextRunAt       time.Time
-	LastFinishedAt  time.Time
-	LastOutcome     string
+	ID       string
+	Enabled  bool
+	TaskKind string
+	Theater  central.Theater
+	// DemandActive is derived from live Client monitors for the theater. It is
+	// deliberately not persisted: the policy's configured priority remains the
+	// source of truth, while active booking demand is a scheduling class that
+	// must be placed ahead of maintenance work.
+	DemandActive bool
+	// SchedulingClass is derived from the active monitor mode: 3 opening, 2
+	// burst, 1 cancellation, and 0 baseline. It is not persisted.
+	SchedulingClass int
+	// Demand date filters are runtime scheduling inputs derived from active
+	// Client monitor JSON. The Postgres store expands each monitor's weekday
+	// horizon before unioning these dates; they are not persisted policy columns.
+	DemandTargetDates       []string
+	DemandTargetWeekdays    []int
+	DemandSearchHorizonDays int
+	TargetDateMode          string
+	TargetDates             []string
+	HorizonDays             int
+	Locale                  string
+	TimeZone                string
+	EgressPolicyID          string
+	Priority                int
+	MinimumInterval         time.Duration
+	MaximumInterval         time.Duration
+	ExecutionWindow         time.Duration
+	NextRunAt               time.Time
+	LastFinishedAt          time.Time
+	LastOutcome             string
 }
 
 type CandidateProbe struct {

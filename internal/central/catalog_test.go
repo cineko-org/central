@@ -86,6 +86,38 @@ func TestCatalogRefreshStateAndRequest(t *testing.T) {
 	}
 }
 
+func TestCatalogClientWriteAuthorization(t *testing.T) {
+	t.Parallel()
+	repository := &catalogRepositoryFake{}
+	service, err := NewCatalogService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := ClientPrincipal{UserID: "user"}
+	if err := service.AuthorizeClientWrite(
+		t.Context(), principal, " ", contracts.CapabilityCGVCatalogCapture,
+	); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("missing installation authorization = %v", err)
+	}
+	repository.err = errInjectedClient
+	if err := service.AuthorizeClientWrite(
+		t.Context(), principal, " install ", contracts.CapabilityCGVCatalogCapture,
+	); !errors.Is(err, errInjectedClient) {
+		t.Fatalf("repository authorization error = %v", err)
+	}
+	repository.err = nil
+	if err := service.AuthorizeClientWrite(
+		t.Context(), principal, " install ", contracts.CapabilityCGVCatalogCapture,
+	); err != nil {
+		t.Fatalf("authorization = %v", err)
+	}
+	if repository.authorizedUser != "user" || repository.authorizedInstallation != "install" ||
+		repository.authorizedCapability != contracts.CapabilityCGVCatalogCapture {
+		t.Fatalf("authorization boundary = %q %q %q", repository.authorizedUser,
+			repository.authorizedInstallation, repository.authorizedCapability)
+	}
+}
+
 func TestCatalogServiceRejectsBrokenRelationships(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
@@ -309,13 +341,28 @@ func validCatalogSnapshot(observedAt time.Time) contracts.CatalogSnapshot {
 }
 
 type catalogRepositoryFake struct {
-	index      contracts.CatalogIndex
-	refresh    CatalogRefreshStatus
-	requested  bool
-	snapshot   contracts.CatalogSnapshot
-	seatMap    contracts.SeatMapVersion
-	generation int64
-	err        error
+	index                  contracts.CatalogIndex
+	refresh                CatalogRefreshStatus
+	requested              bool
+	snapshot               contracts.CatalogSnapshot
+	seatMap                contracts.SeatMapVersion
+	generation             int64
+	authorizedUser         string
+	authorizedInstallation string
+	authorizedCapability   string
+	err                    error
+}
+
+func (repository *catalogRepositoryFake) AuthorizeCatalogWrite(
+	_ context.Context,
+	userID string,
+	installationID string,
+	capability string,
+) error {
+	repository.authorizedUser = userID
+	repository.authorizedInstallation = installationID
+	repository.authorizedCapability = capability
+	return repository.err
 }
 
 func (repository *catalogRepositoryFake) Catalog(context.Context) (contracts.CatalogIndex, error) {

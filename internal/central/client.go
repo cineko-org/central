@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	domainresources "github.com/cineko-org/central/internal/domain/resources"
 	contracts "github.com/cineko-org/contracts/v3"
 )
 
@@ -112,6 +113,7 @@ type ClientRepository interface {
 	ClaimClientExecution(context.Context, ExecutionClaim) (ExecutionCommand, error)
 	HeartbeatClientExecution(context.Context, string, string, [32]byte, time.Time, time.Time) error
 	CompleteClientExecution(context.Context, ExecutionCompletion) error
+	RetryClientExecution(context.Context, string, string, time.Time) error
 }
 
 type ClientService struct {
@@ -405,7 +407,7 @@ func (service *ClientService) PutResource(
 	if expectedRevision != nil && *expectedRevision < 1 {
 		return ClientResource{}, fmt.Errorf("%w: revision must be positive", ErrInvalid)
 	}
-	if _, err := ValidateClientResourcePayload(principal.UserID, kind, id, data); err != nil {
+	if err := domainresources.ValidatePayload(principal.UserID, kind, id, data); err != nil {
 		return ClientResource{}, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, kind, err)
 	}
 	return service.repository.PutClientResource(ctx, ResourceMutation{
@@ -418,7 +420,7 @@ func validateStoredClientResource(userID string, kind string, id string, resourc
 	if resource.UserID != userID || resource.Kind != kind || (id != "" && resource.ID != id) {
 		return fmt.Errorf("%w: resource storage identity is inconsistent", ErrCorruptResource)
 	}
-	if _, err := ValidateClientResourcePayload(resource.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
+	if err := domainresources.ValidatePayload(resource.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
 		return fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, resource.Kind, resource.ID, err)
 	}
 	return nil

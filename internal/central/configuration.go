@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	domainresources "github.com/cineko-org/central/internal/domain/resources"
 )
 
 // ConfigurationResource is one exportable Client resource in an atomic backup
@@ -65,7 +67,7 @@ func (service *ClientService) SnapshotConfiguration(
 		if !slices.Contains(portableConfigurationKinds, resource.Kind) {
 			return ConfigurationSnapshot{}, fmt.Errorf("%w: unexpected configuration resource", ErrCorruptResource)
 		}
-		if _, err := ValidateClientResourcePayload(principal.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
+		if err := domainresources.ValidatePayload(principal.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
 			return ConfigurationSnapshot{}, fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, resource.Kind, resource.ID, err)
 		}
 	}
@@ -96,7 +98,7 @@ func (service *ClientService) ReplaceConfiguration(
 			return 0, fmt.Errorf("%w: duplicate configuration resource", ErrInvalid)
 		}
 		seen[key] = struct{}{}
-		if _, err := ValidateClientResourcePayload(principal.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
+		if err := domainresources.ValidatePayload(principal.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
 			return 0, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, resource.Kind, err)
 		}
 	}

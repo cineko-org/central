@@ -29,6 +29,10 @@ const (
 	catalogRefreshRetryDelay    = time.Minute
 	catalogRefreshWindow        = 10 * time.Minute
 	seatMapBackfillWindow       = 10 * time.Minute
+	// Assignment priorities reserve one quarter of the 0..100 range for each
+	// scheduling class. The stored policy priority remains the tie-break within
+	// its class, while opening demand cannot be overtaken by maintenance.
+	schedulingClassWidth = 25
 )
 
 var ErrAlreadyRunning = errors.New("reconciler is already running")
@@ -203,13 +207,17 @@ func (engine *Engine) reconcile(
 	if err := engine.advanceTerminalPolicies(ctx, cycle, now, report); err != nil {
 		return err
 	}
+	if err := engine.scheduleDuePolicies(ctx, cycle, now, report); err != nil {
+		return err
+	}
+	// User-demand policy assignments are created before maintenance work. The
+	// assignment priority also keeps an already queued maintenance assignment
+	// behind demand when both are claimed in the same cycle. Catalog bootstrap
+	// remains below this path and still runs when no policy can be scheduled.
 	if err := engine.scheduleCatalogRefresh(ctx, cycle, now, report); err != nil {
 		return err
 	}
 	if err := engine.scheduleSeatMapBackfill(ctx, cycle, now, report); err != nil {
-		return err
-	}
-	if err := engine.scheduleDuePolicies(ctx, cycle, now, report); err != nil {
 		return err
 	}
 	oldestDue, err := cycle.OldestDuePolicy(ctx, now)
@@ -248,9 +256,12 @@ func (engine *Engine) scheduleSeatMapBackfill(
 	if err != nil {
 		return fmt.Errorf("generate seat-map backfill assignment id: %w", err)
 	}
-	priority := 70
+	// System work is intentionally below an active booking demand. A requested
+	// seat map is still ahead of ordinary maintenance, but neither may delay a
+	// user-facing opening scan.
+	priority := 0
 	if target.Requested {
-		priority = 95
+		priority = 1
 	}
 	assignment := NewAssignment{
 		ID: id, Priority: priority, Status: "queued", NotBefore: now,
@@ -297,7 +308,9 @@ func (engine *Engine) scheduleCatalogRefresh(
 	}
 	sourceKey := "__catalog__"
 	assignment := NewAssignment{
-		ID: id, Priority: 100, Status: "queued", NotBefore: now,
+		// Catalog bootstrap is maintenance work. Keep it below every user-demand
+		// assignment, while still allowing it to run when no demand is active.
+		ID: id, Priority: 0, Status: "queued", NotBefore: now,
 		Deadline: now.Add(catalogRefreshWindow), CreatedAt: now, Candidates: slices.Clone(candidates),
 		Task: central.AssignmentTask{
 			Kind: contracts.CapabilityCGVCatalogCapture,
@@ -507,6 +520,10 @@ func (engine *Engine) scheduleDuePolicies(
 		if err != nil {
 			return fmt.Errorf("list policy %s eligible probes: %w", policy.ID, err)
 		}
+		if len(candidates) == 0 {
+			report.DeferredPolicies++
+			continue
+		}
 		assignment, err := engine.newAssignment(policy, targetDates, candidates, now)
 		if err != nil {
 			return err
@@ -519,13 +536,6 @@ func (engine *Engine) scheduleDuePolicies(
 			return fmt.Errorf("create policy %s assignment: %w", policy.ID, err)
 		}
 		report.CreatedAssignments++
-		if assignment.Status == OutcomeMissed {
-			report.MissedAssignments++
-			if err := engine.advanceMissedPolicy(ctx, cycle, policy, assignment, now); err != nil {
-				return err
-			}
-			report.AdvancedPolicies++
-		}
 	}
 	return nil
 }
@@ -540,41 +550,33 @@ func (engine *Engine) newAssignment(
 	if err != nil {
 		return NewAssignment{}, fmt.Errorf("generate assignment id: %w", err)
 	}
-	status, reason, finishedAt := "queued", "", time.Time{}
-	if len(candidates) == 0 {
-		status, reason, finishedAt = OutcomeMissed, "no_eligible_probe", now
-	}
 	return NewAssignment{
-		ID: id, PolicyID: policy.ID, Priority: policy.Priority, Status: status,
+		ID: id, PolicyID: policy.ID, Priority: policyAssignmentPriority(policy), Status: "queued",
 		Task: central.AssignmentTask{
 			Kind: policy.TaskKind, Theater: policy.Theater, TargetDates: targetDates,
 			Locale: policy.Locale, TimeZone: policy.TimeZone, EgressPolicyID: policy.EgressPolicyID,
 		},
-		NotBefore: now, Deadline: now.Add(policy.ExecutionWindow), FinishedAt: finishedAt,
-		ReasonCode: reason, CreatedAt: now, Candidates: slices.Clone(candidates),
+		NotBefore: now, Deadline: now.Add(policy.ExecutionWindow),
+		CreatedAt: now, Candidates: slices.Clone(candidates),
 	}, nil
 }
 
-func (engine *Engine) advanceMissedPolicy(
-	ctx context.Context,
-	cycle CycleRepository,
-	policy Policy,
-	assignment NewAssignment,
-	now time.Time,
-) error {
-	interval, err := engine.randomDuration(policy.MinimumInterval, policy.MaximumInterval)
-	if err != nil {
-		return fmt.Errorf("choose policy %s interval: %w", policy.ID, err)
+func policyAssignmentPriority(policy Policy) int {
+	class := policy.SchedulingClass
+	if class < 0 {
+		class = 0
 	}
-	next := now.Add(interval)
-	run := TerminalPolicyRun{
-		PolicyID: policy.ID, Enabled: policy.Enabled, FinishedAt: assignment.FinishedAt,
-		Outcome: OutcomeMissed, MinimumInterval: policy.MinimumInterval, MaximumInterval: policy.MaximumInterval,
+	if class > 3 {
+		class = 3
 	}
-	if err := cycle.AdvancePolicy(ctx, run, &next, now); err != nil {
-		return fmt.Errorf("advance missed policy %s: %w", policy.ID, err)
+	priority := policy.Priority
+	if priority < 0 {
+		priority = 0
 	}
-	return nil
+	if priority > 100 {
+		priority = 100
+	}
+	return class*schedulingClassWidth + priority*(schedulingClassWidth-1)/100
 }
 
 func policyTargetDates(policy Policy, now time.Time) ([]string, error) {
@@ -586,10 +588,56 @@ func policyTargetDates(policy Policy, now time.Time) ([]string, error) {
 	case "explicit":
 		return explicitTargetDates(policy.TargetDates)
 	case "rolling":
-		return rollingTargetDates(policy.HorizonDays, now, location)
+		dates, err := rollingTargetDates(policy.HorizonDays, now, location)
+		if err != nil {
+			return nil, err
+		}
+		return applyDemandDateFilters(policy, dates, now, location), nil
 	default:
 		return nil, fmt.Errorf("unsupported target date mode %q", policy.TargetDateMode)
 	}
+}
+
+func applyDemandDateFilters(policy Policy, dates []string, now time.Time, location *time.Location) []string {
+	if !policy.DemandActive ||
+		(len(policy.DemandTargetDates) == 0 && len(policy.DemandTargetWeekdays) == 0) {
+		return dates
+	}
+	explicit := make(map[string]struct{}, len(policy.DemandTargetDates))
+	localNow := now.In(location)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
+	for _, value := range policy.DemandTargetDates {
+		if parsed, err := time.ParseInLocation(time.DateOnly, value, location); err == nil &&
+			!parsed.Before(today) {
+			explicit[value] = struct{}{}
+		}
+	}
+	weekdays := make(map[time.Weekday]struct{}, len(policy.DemandTargetWeekdays))
+	for _, weekday := range policy.DemandTargetWeekdays {
+		if weekday >= int(time.Sunday) && weekday <= int(time.Saturday) {
+			weekdays[time.Weekday(weekday)] = struct{}{}
+		}
+	}
+	filtered := make([]string, 0, len(dates))
+	weekdayHorizon := policy.DemandSearchHorizonDays
+	if weekdayHorizon <= 0 || weekdayHorizon > len(dates) {
+		weekdayHorizon = len(dates)
+	}
+	for index, value := range dates {
+		if _, ok := explicit[value]; ok {
+			filtered = append(filtered, value)
+			continue
+		}
+		parsed, err := time.ParseInLocation(time.DateOnly, value, location)
+		if err == nil {
+			if index < weekdayHorizon {
+				if _, ok := weekdays[parsed.Weekday()]; ok {
+					filtered = append(filtered, value)
+				}
+			}
+		}
+	}
+	return filtered
 }
 
 func validatePolicyRuntime(policy Policy) (*time.Location, error) {

@@ -10,12 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	centralapi "github.com/cineko-org/central/internal/central/api"
 	"github.com/cineko-org/central/internal/central/bootstrap"
 	"github.com/cineko-org/central/internal/central/reconcile"
 	"github.com/cineko-org/central/internal/domain"
@@ -420,8 +422,8 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 	if err := store.DeleteAdminProbe(ctx, onlineID); !errors.Is(err, central.ErrConflict) {
 		t.Fatalf("delete online Probe = %v", err)
 	}
-	if err := store.DeleteAdminProbe(ctx, historyID); !errors.Is(err, central.ErrConflict) {
-		t.Fatalf("delete Probe with history = %v", err)
+	if err := store.DeleteAdminProbe(ctx, historyID); err != nil {
+		t.Fatalf("delete retired Probe with history: %v", err)
 	}
 	if err := store.DeleteAdminProbe(ctx, offlineID); err != nil {
 		t.Fatalf("delete offline Probe: %v", err)
@@ -620,7 +622,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	monitor := domain.MonitorJob{
 		ID: "execution_monitor", UserID: userID, PresetID: preset.ID,
-		Mode: domain.MonitorModeOpening, Movie: "Execution Movie",
+		Mode: domain.MonitorModeCancellation, MovieID: "movie_execution", Movie: "Execution Movie",
 		TargetDates: []string{"2026-08-20"}, EarliestTime: "18:00", LatestTime: "22:00",
 		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
 	}
@@ -651,7 +653,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	observedAt := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
 	showtime := central.Showtime{
-		ID: "show_execution", Movie: central.Movie{Title: monitor.Movie},
+		ID: "show_execution", Movie: central.Movie{ID: monitor.MovieID, Title: monitor.Movie},
 		Auditorium:     central.Auditorium{ID: preset.AuditoriumID, Name: "IMAX관"},
 		StartsAt:       time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC),
 		EndsAt:         time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC),
@@ -683,6 +685,13 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	`, userID).Scan(&queuedCommands); err != nil || queuedCommands != 1 {
 		t.Fatalf("queued commands after corrupt target quarantine = %d, %v", queuedCommands, err)
 	}
+	var readyEvents int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM client_events
+		WHERE user_id = $1 AND event_type = 'execution.ready.v1'
+	`, userID).Scan(&readyEvents); err != nil || readyEvents != 1 {
+		t.Fatalf("execution-ready events after replay = %d, %v", readyEvents, err)
+	}
 	first, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
 		InstallationID: "execution_install_a",
 	})
@@ -704,6 +713,12 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM client_events
+		WHERE user_id = $1 AND event_type = 'execution.ready.v1'
+	`, userID).Scan(&readyEvents); err != nil || readyEvents != 2 {
+		t.Fatalf("execution-ready events after automatic retry = %d, %v", readyEvents, err)
+	}
 	second, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
 		InstallationID: "execution_install_b",
 	})
@@ -724,6 +739,34 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 		InstallationID: "execution_install_a",
 	}); err != nil || empty != nil {
 		t.Fatalf("terminal execution claim = %+v, %v", empty, err)
+	}
+	if err := service.RetryExecution(ctx, principal, second.ID); !errors.Is(err, central.ErrConflict) {
+		t.Fatalf("retry completed execution = %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE client_execution_commands SET status = 'failed', attempt_count = 3,
+			reason_code = 'terminal_test_failure', completed_at = now(), updated_at = now()
+		WHERE id = $1 AND user_id = $2
+	`, second.ID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RetryExecution(ctx, principal, second.ID); err != nil {
+		t.Fatalf("retry failed execution: %v", err)
+	}
+	if err := service.RetryExecution(ctx, principal, second.ID); err != nil {
+		t.Fatalf("replay queued execution retry: %v", err)
+	}
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM client_events
+		WHERE user_id = $1 AND event_type = 'execution.ready.v1'
+	`, userID).Scan(&readyEvents); err != nil || readyEvents != 3 {
+		t.Fatalf("execution-ready events after explicit retry replay = %d, %v", readyEvents, err)
+	}
+	retried, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
+		InstallationID: "execution_install_a",
+	})
+	if err != nil || retried == nil || retried.Attempt != 1 {
+		t.Fatalf("retried execution claim = %+v, %v", retried, err)
 	}
 }
 
@@ -1079,11 +1122,24 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 	if _, err := engine.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	missedAssignment := assignmentForPolicy(t, store, policyIDs[2])
-	if missedAssignment.Status != reconcile.OutcomeMissed {
-		t.Fatalf("missed assignment = %+v", missedAssignment)
+	var deferredAssignments int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM observation_assignments WHERE policy_id = $1
+	`, policyIDs[2]).Scan(&deferredAssignments); err != nil {
+		t.Fatal(err)
 	}
-	assertPolicyOutcome(t, store, policyIDs[2], reconcile.OutcomeMissed)
+	if deferredAssignments != 0 {
+		t.Fatalf("assignments created without an eligible Probe = %d", deferredAssignments)
+	}
+	var deferredNextRun *time.Time
+	if err := store.pool.QueryRow(ctx, `
+		SELECT next_run_at FROM observation_policies WHERE id = $1
+	`, policyIDs[2]).Scan(&deferredNextRun); err != nil {
+		t.Fatal(err)
+	}
+	if deferredNextRun == nil || deferredNextRun.After(time.Now().UTC()) {
+		t.Fatalf("deferred policy should remain due, next_run_at = %v", deferredNextRun)
+	}
 
 	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], central.ProbeHeartbeatRequest{
 		AvailableSlots: 1, Health: "healthy",
@@ -1409,7 +1465,7 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 	cleanup()
 	t.Cleanup(cleanup)
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	demandTheaterID := seedIntegrationPolicy(t, store, policyIDs[0], "theater_lane_demand", now.Add(-time.Minute))
 	burstTheaterID := seedIntegrationPolicy(t, store, policyIDs[1], "theater_lane_burst", now.Add(-time.Minute))
 	cancellationTheaterID := seedIntegrationPolicy(t, store, policyIDs[2], "theater_lane_cancellation", now.Add(-time.Minute))
@@ -1435,7 +1491,7 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 		t.Fatal(err)
 	}
 	presetPayload := fmt.Sprintf(`{"id":"preset_lane","userId":%q,"name":"lane","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, demandTheaterID)
-	monitorPayload := fmt.Sprintf(`{"id":"monitor_lane","userId":%q,"presetId":"preset_lane","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"opening"}`, userID)
+	monitorPayload := fmt.Sprintf(`{"id":"monitor_lane","userId":%q,"presetId":"preset_lane","movie":"Movie","targetDates":["2026-08-20"],"targetWeekdays":[6],"searchHorizonDays":3,"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"opening"}`, userID)
 	cancellationPresetPayload := fmt.Sprintf(`{"id":"preset_cancellation","userId":%q,"name":"cancellation","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, cancellationTheaterID)
 	cancellationPayload := fmt.Sprintf(`{"id":"monitor_cancellation","userId":%q,"presetId":"preset_cancellation","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"cancellation"}`, userID)
 	triggeredPayload := fmt.Sprintf(`{"id":"monitor_triggered","userId":%q,"presetId":"preset_triggered","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"triggered","mode":"opening"}`, userID)
@@ -1466,28 +1522,140 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 	if len(due) != 4 {
 		t.Fatalf("due policies = %d, want 4", len(due))
 	}
-	if due[0].ID != policyIDs[0] || due[0].Priority != 90 {
+	if due[0].ID != policyIDs[0] || due[0].Priority != 0 {
 		t.Fatalf("booking demand policy = %+v", due[0])
 	}
-	if due[1].ID != policyIDs[1] || due[1].Priority != 60 {
+	if due[1].ID != policyIDs[1] || due[1].Priority != 0 {
 		t.Fatalf("change burst policy = %+v", due[1])
 	}
-	if due[2].ID != policyIDs[2] || due[2].Priority != 40 {
+	if due[2].ID != policyIDs[2] || due[2].Priority != 0 {
 		t.Fatalf("cancellation demand policy = %+v", due[2])
 	}
-	if due[3].ID != policyIDs[3] || due[3].Priority != 10 {
+	if due[3].ID != policyIDs[3] || due[3].Priority != 100 {
 		t.Fatalf("baseline policy = %+v", due[3])
 	}
 	if due[0].MinimumInterval != 2*time.Second || due[0].MaximumInterval != 5*time.Second ||
 		due[1].MinimumInterval != 15*time.Second || due[1].MaximumInterval != 30*time.Second ||
 		due[2].MinimumInterval != 30*time.Second || due[2].MaximumInterval != 45*time.Second ||
-		due[3].MinimumInterval != 5*time.Minute || due[3].MaximumInterval != 15*time.Minute ||
+		due[3].MinimumInterval != 60*time.Second || due[3].MaximumInterval != 61*time.Second ||
 		due[3].HorizonDays != 14 {
 		t.Fatalf("automatic observation cadence = %+v", due[:3])
 	}
 	if due[0].Theater.ID != demandTheaterID || due[1].Theater.ID != burstTheaterID ||
 		due[2].Theater.ID != cancellationTheaterID {
 		t.Fatalf("unexpected lane theaters: demand=%q burst=%q", due[0].Theater.ID, due[1].Theater.ID)
+	}
+	if !due[0].DemandActive || due[0].SchedulingClass != 3 ||
+		!reflect.DeepEqual(due[0].DemandTargetDates, []string{"2026-08-20", "2026-08-22"}) ||
+		len(due[0].DemandTargetWeekdays) != 0 || due[0].DemandSearchHorizonDays != 0 {
+		t.Fatalf("booking demand runtime filters = %+v", due[0])
+	}
+}
+
+func TestPostgresClientExecutionClaimPrioritizesTargetAndNewest(t *testing.T) {
+	databaseURL := testDatabaseURL
+	if databaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	const userID = "user_execution_claim_order"
+	cleanup := func() {
+		for _, statement := range []string{
+			`DELETE FROM client_execution_commands WHERE user_id = $1`,
+			`DELETE FROM client_resources WHERE user_id = $1`,
+			`DELETE FROM client_devices WHERE user_id = $1`,
+			`DELETE FROM client_users WHERE id = $1`,
+		} {
+			if _, cleanupErr := store.pool.Exec(ctx, statement, userID); cleanupErr != nil {
+				t.Errorf("execution ordering cleanup: %v", cleanupErr)
+			}
+		}
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO client_users (id, display_name, created_at, updated_at)
+		VALUES ($1, 'execution order', $2, $2)
+	`, userID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO client_devices (
+			installation_id, user_id, device_id, platform, architecture, app_version,
+			last_seen_at, created_at, updated_at
+		) VALUES ('execution_order_install', $1, 'execution_order_device', 'darwin', 'arm64', '1.0.0', $2, $2, $2)
+	`, userID, now); err != nil {
+		t.Fatal(err)
+	}
+	preset := domain.Preset{
+		ID: "execution_order_preset", UserID: userID, Name: "target", TheaterID: "theater-order",
+		AuditoriumID: "auditorium-target", SeatCount: 1,
+	}
+	monitor := domain.MonitorJob{
+		ID: "execution_order_monitor", UserID: userID, PresetID: preset.ID,
+		MovieID: "movie-order", Movie: "Order movie", TargetDates: []string{"2026-08-20"},
+		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
+	}
+	presetPayload, err := json.Marshal(preset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorPayload, err := json.Marshal(monitor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
+		VALUES ($1, 'presets', $2, 1, $3, $4, $4),
+		       ($1, 'monitors', $5, 1, $6, $4, $4)
+	`, userID, preset.ID, presetPayload, now, monitor.ID, monitorPayload); err != nil {
+		t.Fatal(err)
+	}
+	showtime := func(id, auditorium string, startsAt time.Time) central.Showtime {
+		return central.Showtime{
+			ID: id, Movie: central.Movie{ID: "movie-order", Title: "Order movie"},
+			Auditorium: central.Auditorium{ID: auditorium, Name: auditorium}, StartsAt: startsAt,
+			EndsAt: startsAt.Add(2 * time.Hour), AvailableSeats: 10, Capacity: 100,
+		}
+	}
+	commands := []struct {
+		id, monitorID string
+		showtime      central.Showtime
+		createdAt     time.Time
+	}{
+		{"execution_target_old", monitor.ID, showtime("show-target-old", preset.AuditoriumID, now.Add(time.Hour)), now.Add(-3 * time.Minute)},
+		{"execution_unrelated_new", "other-monitor", showtime("show-unrelated", "auditorium-other", now.Add(2*time.Hour)), now.Add(-2 * time.Minute)},
+		{"execution_target_new", monitor.ID, showtime("show-target-new", preset.AuditoriumID, now.Add(3*time.Hour)), now.Add(-time.Minute)},
+	}
+	for _, command := range commands {
+		payload, marshalErr := json.Marshal(central.ExecutionPayload{Showtime: command.showtime, ObservedAt: command.createdAt})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO client_execution_commands (
+				id, user_id, monitor_id, showtime_id, starts_at, payload, status, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $7)
+		`, command.id, userID, command.monitorID, command.showtime.ID, command.showtime.StartsAt, payload, command.createdAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, expectedID := range []string{"execution_target_new", "execution_target_old"} {
+		leaseHash := sha256.Sum256([]byte(fmt.Sprintf("order-lease-%d", index)))
+		command, claimErr := store.ClaimClientExecution(ctx, central.ExecutionClaim{
+			UserID: userID, InstallationID: "execution_order_install", LeaseHash: leaseHash,
+			LeaseExpiresAt: now.Add(time.Hour), Now: now.Add(time.Duration(index) * time.Second),
+		})
+		if claimErr != nil || command.ID != expectedID {
+			t.Fatalf("execution claim %d = %q, %v; want %q", index, command.ID, claimErr, expectedID)
+		}
 	}
 }
 
@@ -1536,6 +1704,180 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 	}
 	if policyID != nil {
 		t.Fatalf("system assignment policy = %q", *policyID)
+	}
+}
+
+func TestPostgresCreateAdminObservationPolicyTypesNextRunAt(t *testing.T) {
+	databaseURL := testDatabaseURL
+	if databaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	const theaterSourceKey = "integration/admin-observation-policy"
+	provider := contracts.Provider{ID: contracts.ProviderCGV, Name: "CGV"}
+	theater := contracts.Theater{
+		ID: contracts.CatalogID(provider.ID, "theater", theaterSourceKey), ProviderID: provider.ID,
+		SourceKey: theaterSourceKey, Region: "integration", Name: "Observation policy integration",
+	}
+	policyID := adminObservationPolicyID(theater.ID)
+	cleanup := func() {
+		for _, operation := range []struct {
+			statement string
+			argument  string
+		}{
+			{`DELETE FROM observation_assignments WHERE policy_id = $1`, policyID},
+			{`DELETE FROM observation_policies WHERE id = $1`, policyID},
+			{`DELETE FROM theaters WHERE id = $1`, theater.ID},
+			{`DELETE FROM providers WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM theaters WHERE provider_id = $1)`, provider.ID},
+		} {
+			if _, cleanupErr := store.pool.Exec(
+				context.Background(), operation.statement, operation.argument,
+			); cleanupErr != nil {
+				t.Errorf("observation policy cleanup: %v", cleanupErr)
+			}
+		}
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if _, err := store.UpsertCatalogSnapshot(ctx, contracts.CatalogSnapshot{
+		Provider: provider, Theaters: []contracts.Theater{theater}, ObservedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	input := centralapi.AdminObservationPolicyInput{
+		TheaterID: theater.ID, Enabled: true, HorizonDays: 14, Priority: 50,
+		BaselineMinSeconds: 300, BaselineMaxSeconds: 900,
+		DemandMinSeconds: 30, DemandMaxSeconds: 45,
+		BurstMinSeconds: 15, BurstMaxSeconds: 30, BurstDurationSeconds: 1800,
+		Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: "direct",
+	}
+	created, err := store.CreateAdminObservationPolicy(ctx, input)
+	if err != nil {
+		t.Fatalf("CreateAdminObservationPolicy() error = %v", err)
+	}
+	if created.ID != policyID || created.NextRunAt == nil {
+		t.Fatalf("created policy = %+v", created)
+	}
+	assignmentID := "assignment_disable_" + policyID
+	now := time.Now().UTC()
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO observation_assignments (
+			id, policy_id, task_kind, theater_id, theater_provider_id, theater_source_key,
+			theater_region, theater_name, target_dates, locale, time_zone, egress_policy_id,
+			status, not_before, deadline, priority, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, ARRAY[$9::date], $10, $11, $12,
+			'queued', $13, $14, 50, $13, $13
+		)
+	`, assignmentID, policyID, contracts.CapabilityCGVScheduleCapture,
+		theater.ID, theater.ProviderID, theater.SourceKey, theater.Region, theater.Name,
+		now.Format("2006-01-02"), input.Locale, input.TimeZone, input.EgressPolicyID,
+		now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	input.Enabled = false
+	if _, err := store.UpdateAdminObservationPolicy(ctx, policyID, created.Revision, input); err != nil {
+		t.Fatalf("disable policy: %v", err)
+	}
+	var status, reason string
+	if err := store.pool.QueryRow(ctx, `
+		SELECT status, terminal_reason FROM observation_assignments WHERE id = $1
+	`, assignmentID).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != reconcile.OutcomeMissed || reason != "policy_disabled" {
+		t.Fatalf("disabled policy assignment = %s, %s", status, reason)
+	}
+}
+
+func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T) {
+	databaseURL := testDatabaseURL
+	if databaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	snapshot := contracts.CatalogSnapshot{
+		Provider: contracts.Provider{ID: "catalog_refresh_integration", Name: "Catalog refresh integration"},
+		Theaters: []contracts.Theater{{
+			ID: "catalog_refresh_theater", ProviderID: "catalog_refresh_integration",
+			SourceKey: "catalog-refresh-theater", Region: "Seoul", Name: "Catalog refresh theater",
+		}},
+		ObservedAt: time.Now().UTC(),
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, snapshot.Provider.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, snapshot.Provider.ID)
+	})
+	if err := store.RequestCatalogRefresh(ctx, snapshot.ObservedAt); err != nil {
+		t.Fatal(err)
+	}
+	firstGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedGeneration != firstGeneration {
+		t.Fatalf("identical catalog replay changed generation: first=%d replay=%d", firstGeneration, replayedGeneration)
+	}
+	var requestedAt *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt == nil {
+		t.Fatal("partial catalog write cleared the pending full refresh")
+	}
+	empty := snapshot
+	empty.Theaters = nil
+	invalidTx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeCatalogResult(ctx, invalidTx, central.AssignmentResult{Catalog: &empty}); !errors.Is(err, central.ErrInvalid) {
+		_ = invalidTx.Rollback(ctx)
+		t.Fatalf("provider-only full catalog result = %v", err)
+	}
+	if err := invalidTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt == nil {
+		t.Fatal("invalid provider-only catalog result cleared the pending refresh")
+	}
+
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := storeCatalogResult(ctx, tx, central.AssignmentResult{Catalog: &snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt != nil {
+		t.Fatalf("completed catalog assignment left refresh pending at %v", requestedAt)
 	}
 }
 

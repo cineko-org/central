@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const DefaultSearchHorizonDays = 28
+const DefaultSearchHorizonDays = 14
 
 type MonitorMode string
 
@@ -30,9 +30,12 @@ const (
 )
 
 type MonitorJob struct {
-	ID                string        `json:"id"`
-	UserID            string        `json:"userId"`
-	PresetID          string        `json:"presetId"`
+	ID       string `json:"id"`
+	UserID   string `json:"userId"`
+	PresetID string `json:"presetId"`
+	// MovieID is the canonical catalog identity. Movie title is retained only
+	// for display and is never authoritative for execution matching.
+	MovieID           string        `json:"movieId"`
 	Mode              MonitorMode   `json:"mode"`
 	Movie             string        `json:"movie"`
 	TargetDates       []string      `json:"targetDates"`
@@ -54,8 +57,9 @@ func (job MonitorJob) Validate() error {
 	if job.ID == "" || job.UserID == "" || job.PresetID == "" {
 		return errors.New("monitor id, user id, and preset id are required")
 	}
-	if strings.TrimSpace(job.Movie) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
-		return errors.New("monitor movie and at least one target date or weekday are required")
+	if strings.TrimSpace(job.MovieID) == "" || strings.TrimSpace(job.Movie) == "" ||
+		len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
+		return errors.New("monitor movie id, movie title, and at least one target date or weekday are required")
 	}
 	if err := job.validateMode(); err != nil {
 		return err
@@ -105,8 +109,8 @@ func validateTargetWeekdays(weekdays []int, horizon int) error {
 		}
 		seen[weekday] = struct{}{}
 	}
-	if len(weekdays) > 0 && (horizon < 1 || horizon > 365) {
-		return errors.New("weekday search horizon must be between 1 and 365 days")
+	if len(weekdays) > 0 && (horizon < 1 || horizon > DefaultSearchHorizonDays) {
+		return fmt.Errorf("weekday search horizon must be between 1 and %d days", DefaultSearchHorizonDays)
 	}
 	return nil
 }
@@ -116,14 +120,66 @@ func validateTimeWindow(earliest, latest string) error {
 		if value == "" {
 			continue
 		}
-		if _, err := time.Parse("15:04", value); err != nil {
-			return fmt.Errorf("invalid %s %q: %w", name, value, err)
+		if _, ok := parseClockMinutes(value); !ok {
+			return fmt.Errorf("invalid %s %q: expected HH:MM", name, value)
 		}
 	}
-	if earliest != "" && latest != "" && earliest > latest {
-		return errors.New("earliest time cannot be later than latest time")
+	if earliest != "" && latest != "" && earliest == latest {
+		return errors.New("time window cannot be empty")
 	}
 	return nil
+}
+
+// TimeWindowContains reports whether a showtime start belongs to the monitor's
+// half-open time window [earliest, latest). A missing bound is unbounded. When
+// both bounds exist and earliest is later than latest, the window crosses
+// midnight and is the union [earliest, 24:00) + [00:00, latest).
+func TimeWindowContains(showtime, earliest, latest string) bool {
+	minute, ok := parseClockMinutes(showtime)
+	if !ok {
+		return false
+	}
+	start, hasStart := parseClockMinutes(earliest)
+	end, hasEnd := parseClockMinutes(latest)
+	if (earliest != "" && !hasStart) || (latest != "" && !hasEnd) {
+		return false
+	}
+	if !hasStart && !hasEnd {
+		return true
+	}
+	if hasStart && !hasEnd {
+		return minute >= start
+	}
+	if !hasStart && hasEnd {
+		return minute < end
+	}
+	if start < end {
+		return minute >= start && minute < end
+	}
+	if start > end {
+		return minute >= start || minute < end
+	}
+	// Equal bounds are an empty half-open interval.
+	return false
+}
+
+func parseClockMinutes(value string) (int, bool) {
+	if len(value) != len("15:04") || value[2] != ':' {
+		return 0, false
+	}
+	for index, character := range value {
+		if index == 2 {
+			continue
+		}
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		return 0, false
+	}
+	return parsed.Hour()*60 + parsed.Minute(), true
 }
 
 func (job MonitorJob) ResolveTargetDates(now time.Time) []string {

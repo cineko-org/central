@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -153,6 +154,7 @@ func New(service *central.Service, options ...Option) (*Server, error) {
 	mux.HandleFunc("POST /v1/executions:claim", server.claimClientExecution)
 	mux.HandleFunc("PUT /v1/executions/{executionId}/heartbeat", server.heartbeatClientExecution)
 	mux.HandleFunc("PUT /v1/executions/{executionId}/result", server.completeClientExecution)
+	mux.HandleFunc("POST /v1/executions/{executionId}/retry", server.retryClientExecution)
 	mux.HandleFunc("PUT /v1/devices/{installationId}", server.upsertClientDevice)
 	mux.HandleFunc("GET /v1/client/bootstrap", server.clientBootstrap)
 	mux.HandleFunc("GET /v1/events/stream", server.streamClientEvents)
@@ -319,7 +321,7 @@ func (server *Server) commitResult(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	if request.Header.Get("Idempotency-Key") != input.RunID {
-		server.writeError(writer, request, fmt.Errorf("%w: Idempotency-Key must equal runId", central.ErrInvalid))
+		server.writeError(writer, request, central.InvalidRequest("Idempotency-Key must equal runId"))
 		return
 	}
 	receipt, err := server.service.CommitResult(
@@ -400,7 +402,12 @@ func (server *Server) writeError(writer http.ResponseWriter, request *http.Reque
 		writer.Header().Set("Retry-After", "600")
 		server.writeAPIError(writer, request, http.StatusTooManyRequests, "rate_limited", "try again in 10 minutes", true)
 	case errors.Is(err, central.ErrInvalid):
-		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", err.Error(), false)
+		message := "request is invalid"
+		var public interface{ PublicMessage() string }
+		if errors.As(err, &public) {
+			message = public.PublicMessage()
+		}
+		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", message, false)
 	case errors.Is(err, central.ErrNotFound):
 		server.writeAPIError(writer, request, http.StatusNotFound, "not_found", "resource was not found", false)
 	case errors.Is(err, central.ErrLeaseExpired):
@@ -414,10 +421,22 @@ func (server *Server) writeError(writer http.ResponseWriter, request *http.Reque
 	case errors.Is(err, central.ErrStaleRelease):
 		server.writeAPIError(writer, request, http.StatusConflict, "stale_release", "runtime release is no longer current", true)
 	case errors.Is(err, central.ErrCorruptResource):
+		logHTTPFailure(request, writer.Header().Get("X-Request-Id"), err)
 		server.writeAPIError(writer, request, http.StatusInternalServerError, "corrupt_resource", "stored resource is invalid", false)
 	default:
+		logHTTPFailure(request, writer.Header().Get("X-Request-Id"), err)
 		server.writeAPIError(writer, request, http.StatusInternalServerError, "internal_error", "internal server error", true)
 	}
+}
+
+func logHTTPFailure(request *http.Request, requestID string, err error) {
+	slog.ErrorContext(
+		request.Context(), "HTTP request failed",
+		"request_id", requestID,
+		"method", request.Method,
+		"route", request.Pattern,
+		"error", err,
+	)
 }
 
 func (server *Server) writeAPIError(

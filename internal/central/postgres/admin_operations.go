@@ -58,10 +58,6 @@ func (store *Store) DeleteAdminProbe(ctx context.Context, probeID string) error 
 				SELECT 1 FROM observation_assignments AS assignment
 				WHERE assignment.probe_id = probe.id AND assignment.status = 'leased'
 			)
-			AND NOT EXISTS (
-				SELECT 1 FROM assignment_attempts AS attempt
-				WHERE attempt.probe_id = probe.id
-			)
 	`, probeID)
 	if err != nil {
 		return fmt.Errorf("delete admin probe: %w", err)
@@ -158,7 +154,8 @@ func (store *Store) CreateAdminObservationPolicy(
 		) VALUES (
 			$1, $2, $3, 1, $4, $5, $6, $7, $8, $9, 'rolling', '{}', $10, $11, $12, $13,
 			$14, $15, $16, $17, $18, $19, $20, $21, $22,
-			CASE WHEN $3 THEN $23 ELSE NULL END, $23, $23
+			CASE WHEN $3 THEN $23::timestamptz ELSE NULL::timestamptz END,
+			$23::timestamptz, $23::timestamptz
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			display_name = EXCLUDED.display_name, enabled = EXCLUDED.enabled,
@@ -210,7 +207,12 @@ func (store *Store) UpdateAdminObservationPolicy(
 	if err != nil {
 		return centralapi.AdminObservationPolicy{}, err
 	}
-	tag, err := store.pool.Exec(ctx, `
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return centralapi.AdminObservationPolicy{}, fmt.Errorf("begin observation policy update: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE observation_policies AS policy SET
 			display_name = $3, enabled = $4, revision = revision + 1,
 			theater_provider_id = $6, theater_source_key = $7,
@@ -244,6 +246,14 @@ func (store *Store) UpdateAdminObservationPolicy(
 	if tag.RowsAffected() != 1 {
 		return centralapi.AdminObservationPolicy{}, central.ErrRevisionConflict
 	}
+	if !input.Enabled {
+		if err := cancelActivePolicyAssignments(ctx, tx, id, "policy_disabled", now); err != nil {
+			return centralapi.AdminObservationPolicy{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return centralapi.AdminObservationPolicy{}, fmt.Errorf("commit observation policy update: %w", err)
+	}
 	return store.adminObservationPolicy(ctx, id, now)
 }
 
@@ -253,7 +263,12 @@ func (store *Store) DeleteAdminObservationPolicy(
 	revision int64,
 ) error {
 	now := time.Now().UTC()
-	tag, err := store.pool.Exec(ctx, `
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin observation policy deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE observation_policies SET enabled = false, revision = revision + 1,
 			next_run_at = NULL, deleted_at = $3, updated_at = $3
 		WHERE id = $1 AND revision = $2 AND deleted_at IS NULL
@@ -263,6 +278,39 @@ func (store *Store) DeleteAdminObservationPolicy(
 	}
 	if tag.RowsAffected() != 1 {
 		return central.ErrRevisionConflict
+	}
+	if err := cancelActivePolicyAssignments(ctx, tx, id, "policy_deleted", now); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit observation policy deletion: %w", err)
+	}
+	return nil
+}
+
+func cancelActivePolicyAssignments(
+	ctx context.Context,
+	tx pgx.Tx,
+	policyID string,
+	reason string,
+	now time.Time,
+) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE observation_assignments SET
+			status = 'missed', terminal_reason = $2, finished_at = $3, updated_at = $3,
+			probe_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL
+		WHERE policy_id = $1 AND status IN ('queued', 'leased', 'retry_pending')
+	`, strings.TrimSpace(policyID), reason, now); err != nil {
+		return fmt.Errorf("cancel disabled policy assignments: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE assignment_attempts AS attempt
+		SET status = 'failed', finished_at = $3, error_code = $2
+		FROM observation_assignments AS assignment
+		WHERE assignment.id = attempt.assignment_id AND assignment.policy_id = $1
+			AND attempt.status = 'leased'
+	`, strings.TrimSpace(policyID), reason, now); err != nil {
+		return fmt.Errorf("finish disabled policy assignment attempts: %w", err)
 	}
 	return nil
 }
@@ -303,23 +351,18 @@ const adminObservationPolicySelect = `
 				WHEN COALESCE(demand.cancellation_active, false) THEN 'cancellation'
 				ELSE 'baseline'
 			END AS effective_mode,
+			policy.priority AS effective_priority,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 90
-				WHEN policy.burst_until > $1 THEN 60
-				WHEN COALESCE(demand.cancellation_active, false) THEN 40
-				ELSE 10
-			END AS effective_priority,
-			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 2
-				WHEN policy.burst_until > $1 THEN 15
-				WHEN COALESCE(demand.cancellation_active, false) THEN 30
-				ELSE 300
+				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+					THEN policy.demand_min_interval_seconds
+				WHEN policy.burst_until > $1 THEN policy.burst_min_interval_seconds
+				ELSE policy.min_interval_seconds
 			END AS effective_min_seconds,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 5
-				WHEN policy.burst_until > $1 THEN 30
-				WHEN COALESCE(demand.cancellation_active, false) THEN 45
-				ELSE 900
+				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+					THEN policy.demand_max_interval_seconds
+				WHEN policy.burst_until > $1 THEN policy.burst_max_interval_seconds
+				ELSE policy.max_interval_seconds
 			END AS effective_max_seconds
 		FROM observation_policies AS policy
 		LEFT JOIN demand_theaters AS demand ON demand.theater_id = policy.theater_id

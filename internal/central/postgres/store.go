@@ -492,11 +492,19 @@ func storeCatalogResult(ctx context.Context, tx pgx.Tx, result central.Assignmen
 		return fmt.Errorf("%w: catalog assignment result is incomplete", central.ErrInvalid)
 	}
 	snapshot := *result.Catalog
+	// A full-provider refresh must prove that the upstream catalog was actually
+	// enumerated. Accepting a provider-only payload would turn an upstream
+	// parser failure into a successful refresh and suppress the next retry.
+	if len(snapshot.Theaters) == 0 {
+		return fmt.Errorf("%w: catalog assignment contains no theaters", central.ErrInvalid)
+	}
 	if err := central.NormalizeCatalogSnapshot(&snapshot); err != nil {
 		return fmt.Errorf("validate Probe catalog snapshot: %w", err)
 	}
-	_, err := upsertCatalogSnapshotTx(ctx, tx, snapshot)
-	return err
+	if _, err := upsertCatalogSnapshotTx(ctx, tx, snapshot); err != nil {
+		return err
+	}
+	return completeCatalogRefresh(ctx, tx)
 }
 
 func storeSeatMapResult(

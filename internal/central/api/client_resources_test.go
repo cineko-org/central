@@ -65,7 +65,7 @@ func TestClientResourceAPISavesSettingsPresetsAndMonitors(t *testing.T) {
 	monitorHeaders["Idempotency-Key"] = "create-monitor"
 	monitor := request(t, server.Handler(), http.MethodPost, "/v1/monitors", map[string]any{
 		"id": "monitor", "data": map[string]any{
-			"id": "monitor", "userId": "user", "presetId": "preset", "movie": "Movie",
+			"id": "monitor", "userId": "user", "presetId": "preset", "movieId": "movie", "movie": "Movie",
 			"targetDates": []string{"2026-08-12"}, "pollInterval": int64(2 * time.Second),
 			"pollIntervalMax": int64(3 * time.Second), "status": "pending",
 		},
@@ -98,12 +98,20 @@ func TestClientResourceAPISavesSettingsPresetsAndMonitors(t *testing.T) {
 		},
 	}, foreignHeaders)
 	assertAPIError(t, foreign, http.StatusBadRequest, "invalid_request")
+
+	retryHeaders := cloneHeaders(headers)
+	delete(retryHeaders, "If-None-Match")
+	retry := request(t, server.Handler(), http.MethodPost, "/v1/executions/execution/retry", nil, retryHeaders)
+	if retry.Code != http.StatusNoContent || repository.retriedExecution != "execution" {
+		t.Fatalf("retry execution = %d, %s, command %q", retry.Code, retry.Body.String(), repository.retriedExecution)
+	}
 }
 
 type apiResourceRepository struct {
 	central.ClientRepository
-	principal central.ClientPrincipal
-	resources map[string]central.ClientResource
+	principal        central.ClientPrincipal
+	resources        map[string]central.ClientResource
+	retriedExecution string
 }
 
 func (repository *apiResourceRepository) AuthenticateClientSession(
@@ -147,4 +155,17 @@ func (repository *apiResourceRepository) GetClientResource(
 		return central.ClientResource{}, central.ErrNotFound
 	}
 	return resource, nil
+}
+
+func (repository *apiResourceRepository) RetryClientExecution(
+	_ context.Context,
+	userID string,
+	commandID string,
+	_ time.Time,
+) error {
+	if userID != repository.principal.UserID {
+		return central.ErrNotFound
+	}
+	repository.retriedExecution = commandID
+	return nil
 }

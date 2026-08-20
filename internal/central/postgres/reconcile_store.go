@@ -64,10 +64,6 @@ func (store *cycleStore) DeleteRetiredProbes(ctx context.Context, cutoff time.Ti
 				SELECT 1 FROM observation_assignments AS assignment
 				WHERE assignment.probe_id = probe.id AND assignment.status = 'leased'
 			)
-			AND NOT EXISTS (
-				SELECT 1 FROM assignment_attempts AS attempt
-				WHERE attempt.probe_id = probe.id
-			)
 	`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("delete retired probe runtimes: %w", err)
@@ -99,30 +95,40 @@ func (store *cycleStore) DeleteExpiredClientEvents(
 	if err != nil {
 		return 0, fmt.Errorf("delete expired Client events: %w", err)
 	}
-	defer rows.Close()
+	type prunedUser struct {
+		userID  string
+		through int64
+		count   int64
+	}
+	pruned := make([]prunedUser, 0)
 	var deleted int64
 	for rows.Next() {
-		var userID string
-		var through, count int64
-		if err := rows.Scan(&userID, &through, &count); err != nil {
+		var user prunedUser
+		if err := rows.Scan(&user.userID, &user.through, &user.count); err != nil {
+			rows.Close()
 			return 0, fmt.Errorf("scan expired Client events: %w", err)
 		}
+		pruned = append(pruned, user)
+		deleted += user.count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate expired Client events: %w", err)
+	}
+	rows.Close()
+	for _, user := range pruned {
 		if _, err := store.tx.Exec(ctx, `
 			INSERT INTO client_event_cursors (user_id, pruned_through, updated_at)
 			VALUES ($1, $2, now())
 			ON CONFLICT (user_id) DO UPDATE SET
 				pruned_through = GREATEST(client_event_cursors.pruned_through, EXCLUDED.pruned_through),
 				updated_at = EXCLUDED.updated_at
-		`, userID, through); err != nil {
+		`, user.userID, user.through); err != nil {
 			return 0, fmt.Errorf("advance Client event prune cursor: %w", err)
 		}
-		if _, err := store.tx.Exec(ctx, `SELECT pg_notify($1, $2)`, clientEventNotifyChannel, userID); err != nil {
+		if _, err := store.tx.Exec(ctx, `SELECT pg_notify($1, $2)`, clientEventNotifyChannel, user.userID); err != nil {
 			return 0, fmt.Errorf("notify Client event retention: %w", err)
 		}
-		deleted += count
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate expired Client events: %w", err)
 	}
 	return deleted, nil
 }
@@ -324,16 +330,16 @@ func (store *cycleStore) TerminalPolicyRuns(
 		)
 		SELECT policy.id, policy.enabled, terminal.finished_at, terminal.status,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 2
-				WHEN policy.burst_until > $1 THEN 15
-				WHEN COALESCE(demand.cancellation_active, false) THEN 30
-				ELSE 300
+				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+					THEN policy.demand_min_interval_seconds
+				WHEN policy.burst_until > $1 THEN policy.burst_min_interval_seconds
+				ELSE policy.min_interval_seconds
 			END,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 5
-				WHEN policy.burst_until > $1 THEN 30
-				WHEN COALESCE(demand.cancellation_active, false) THEN 45
-				ELSE 900
+				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+					THEN policy.demand_max_interval_seconds
+				WHEN policy.burst_until > $1 THEN policy.burst_max_interval_seconds
+				ELSE policy.max_interval_seconds
 			END
 		FROM observation_policies AS policy
 		LEFT JOIN demand_theaters AS demand ON demand.theater_id = policy.theater_id
@@ -401,41 +407,79 @@ func (store *cycleStore) DuePolicies(
 	limit int,
 ) ([]reconcile.Policy, error) {
 	rows, err := store.tx.Query(ctx, `
-		WITH demand_theaters AS (
+		WITH monitor_targets AS (
 			SELECT preset.payload->>'theaterId' AS theater_id,
-				BOOL_OR(COALESCE(monitor.payload->>'mode', 'opening') IN ('', 'opening')) AS opening_active,
-				BOOL_OR(monitor.payload->>'mode' = 'cancellation') AS cancellation_active
+				COALESCE(monitor.payload->>'mode', 'opening') AS mode,
+				target_date.value AS target_date
 			FROM client_resources AS monitor
 			JOIN client_resources AS preset
 				ON preset.user_id = monitor.user_id
 				AND preset.kind = 'presets'
 				AND preset.id = monitor.payload->>'presetId'
 				AND preset.deleted_at IS NULL
+			LEFT JOIN LATERAL (
+				SELECT value
+				FROM jsonb_array_elements_text(CASE
+					WHEN jsonb_typeof(monitor.payload->'targetDates') = 'array'
+						THEN monitor.payload->'targetDates' ELSE '[]'::jsonb END)
+				WHERE value ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+				UNION
+				SELECT to_char(day, 'YYYY-MM-DD')
+				FROM generate_series(
+					(($1 AT TIME ZONE 'Asia/Seoul')::date)::timestamp,
+					(($1 AT TIME ZONE 'Asia/Seoul')::date + LEAST(CASE
+						WHEN monitor.payload->>'searchHorizonDays' ~ '^[0-9]+$'
+							THEN (monitor.payload->>'searchHorizonDays')::int
+						ELSE 0
+					END, 14) - 1)::timestamp,
+					'1 day'::interval
+				) AS day
+				WHERE EXISTS (
+					SELECT 1
+					FROM jsonb_array_elements_text(CASE
+						WHEN jsonb_typeof(monitor.payload->'targetWeekdays') = 'array'
+							THEN monitor.payload->'targetWeekdays' ELSE '[]'::jsonb END) AS weekday(value)
+					WHERE value ~ '^[0-6]$'
+						AND value::int = EXTRACT(DOW FROM day)::int
+				)
+			) AS target_date(value) ON true
 			WHERE monitor.kind = 'monitors' AND monitor.deleted_at IS NULL
 				AND monitor.payload->>'status' IN ('pending', 'running')
-			GROUP BY preset.payload->>'theaterId'
+		), demand_theaters AS (
+			SELECT theater_id,
+				BOOL_OR(mode IN ('', 'opening')) AS opening_active,
+				BOOL_OR(mode = 'cancellation') AS cancellation_active,
+				COALESCE(ARRAY_AGG(DISTINCT target_date ORDER BY target_date) FILTER (WHERE target_date IS NOT NULL), '{}') AS target_dates,
+				'{}'::integer[] AS target_weekdays,
+				0 AS search_horizon_days
+			FROM monitor_targets
+			GROUP BY theater_id
 		)
 		SELECT policy.id, policy.enabled, policy.task_kind, policy.theater_id,
 			policy.theater_provider_id, policy.theater_source_key, policy.theater_region,
 			policy.theater_name, policy.target_date_mode, policy.target_dates::text[], LEAST(policy.horizon_days, 14),
 			policy.locale, policy.time_zone, policy.egress_policy_id,
+			COALESCE(demand.opening_active OR demand.cancellation_active, false),
+			COALESCE(demand.target_dates, '{}'), COALESCE(demand.target_weekdays, '{}'),
+			COALESCE(demand.search_horizon_days, 0),
+			policy.priority,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 90
-				WHEN policy.burst_until > $1 THEN 60
-				WHEN COALESCE(demand.cancellation_active, false) THEN 40
-				ELSE 10
-			END AS effective_priority,
-			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 2
-				WHEN policy.burst_until > $1 THEN 15
-				WHEN COALESCE(demand.cancellation_active, false) THEN 30
-				ELSE 300
+				WHEN COALESCE(demand.opening_active, false) THEN 3
+				WHEN policy.burst_until > $1 THEN 2
+				WHEN COALESCE(demand.cancellation_active, false) THEN 1
+				ELSE 0
 			END,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 5
-				WHEN policy.burst_until > $1 THEN 30
-				WHEN COALESCE(demand.cancellation_active, false) THEN 45
-				ELSE 900
+				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+					THEN policy.demand_min_interval_seconds
+				WHEN policy.burst_until > $1 THEN policy.burst_min_interval_seconds
+				ELSE policy.min_interval_seconds
+			END,
+			CASE
+				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+					THEN policy.demand_max_interval_seconds
+				WHEN policy.burst_until > $1 THEN policy.burst_max_interval_seconds
+				ELSE policy.max_interval_seconds
 			END,
 			policy.execution_window_seconds,
 			policy.next_run_at, policy.last_finished_at, COALESCE(policy.last_outcome, '')
@@ -446,7 +490,13 @@ func (store *cycleStore) DuePolicies(
 				SELECT 1 FROM observation_assignments AS active
 				WHERE active.policy_id = policy.id AND active.status IN ('queued', 'leased', 'retry_pending')
 			)
-		ORDER BY effective_priority DESC, policy.next_run_at, policy.id
+		ORDER BY
+			CASE
+				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN policy.burst_until > $1 OR COALESCE(demand.cancellation_active, false) THEN 1
+				ELSE 0
+			END DESC,
+			policy.priority DESC, policy.next_run_at, policy.id
 		FOR UPDATE OF policy SKIP LOCKED
 		LIMIT $2
 	`, now, limit)
@@ -702,12 +752,15 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	var policy reconcile.Policy
 	var horizonDays *int
 	var minimumSeconds, maximumSeconds, executionWindowSeconds int
+	var demandTargetWeekdays []int32
 	var lastFinishedAt *time.Time
 	err := row.Scan(
 		&policy.ID, &policy.Enabled, &policy.TaskKind, &policy.Theater.ID,
 		&policy.Theater.ProviderID, &policy.Theater.SourceKey, &policy.Theater.Region,
 		&policy.Theater.Name, &policy.TargetDateMode, &policy.TargetDates, &horizonDays,
-		&policy.Locale, &policy.TimeZone, &policy.EgressPolicyID, &policy.Priority,
+		&policy.Locale, &policy.TimeZone, &policy.EgressPolicyID, &policy.DemandActive,
+		&policy.DemandTargetDates, &demandTargetWeekdays, &policy.DemandSearchHorizonDays,
+		&policy.Priority, &policy.SchedulingClass,
 		&minimumSeconds, &maximumSeconds, &executionWindowSeconds,
 		&policy.NextRunAt, &lastFinishedAt, &policy.LastOutcome,
 	)
@@ -719,6 +772,10 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	}
 	if lastFinishedAt != nil {
 		policy.LastFinishedAt = *lastFinishedAt
+	}
+	policy.DemandTargetWeekdays = make([]int, len(demandTargetWeekdays))
+	for index, weekday := range demandTargetWeekdays {
+		policy.DemandTargetWeekdays[index] = int(weekday)
 	}
 	policy.MinimumInterval = time.Duration(minimumSeconds) * time.Second
 	policy.MaximumInterval = time.Duration(maximumSeconds) * time.Second

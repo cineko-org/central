@@ -56,7 +56,7 @@ func validConfigurationPreset() json.RawMessage {
 }
 
 func validConfigurationMonitor() json.RawMessage {
-	return json.RawMessage(`{"id":"monitor","userId":"user","presetId":"preset","movie":"Movie","targetDates":["2026-08-12"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`)
+	return json.RawMessage(`{"id":"monitor","userId":"user","presetId":"preset","movieId":"movie","movie":"Movie","targetDates":["2026-08-12"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`)
 }
 
 type configurationRepositoryFake struct {

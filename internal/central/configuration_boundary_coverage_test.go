@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/cineko-org/central/internal/domain/resources"
 )
 
 func TestConfigurationSnapshotBoundaryCoverage(t *testing.T) {
@@ -146,13 +148,13 @@ func TestUntypedClientResourceValidationBoundaryCoverage(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"theaters", "booking-catalogs", "auditoriums", "reservations", "unknown-kind"} {
 		t.Run(kind+" normal", func(t *testing.T) {
-			if _, err := ValidateClientResourcePayload("user", kind, "resource", json.RawMessage(`{"ok":true}`)); err != nil {
-				t.Fatalf("ValidateClientResourcePayload(%q) error = %v", kind, err)
+			if err := resources.ValidatePayload("user", kind, "resource", json.RawMessage(`{"ok":true}`)); err != nil {
+				t.Fatalf("resources.ValidatePayload(%q) error = %v", kind, err)
 			}
 		})
 		t.Run(kind+" invalid json", func(t *testing.T) {
-			if _, err := ValidateClientResourcePayload("user", kind, "resource", json.RawMessage(`{`)); err == nil {
-				t.Fatalf("ValidateClientResourcePayload(%q) accepted invalid JSON", kind)
+			if err := resources.ValidatePayload("user", kind, "resource", json.RawMessage(`{`)); err == nil {
+				t.Fatalf("resources.ValidatePayload(%q) accepted invalid JSON", kind)
 			}
 		})
 	}

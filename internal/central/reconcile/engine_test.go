@@ -45,6 +45,7 @@ func TestReconcileCycleDecisions(t *testing.T) {
 		validPolicy("busy", "theater_busy", now, "explicit"),
 	}
 	cycle.candidates["queued"] = []CandidateProbe{{ID: "probe_1", NetworkID: "net_1"}}
+	cycle.candidates["busy"] = []CandidateProbe{{ID: "probe_4", NetworkID: "net_4"}}
 	cycle.busyPolicies["busy"] = true
 	oldestDue := now.Add(-5 * time.Second)
 	cycle.oldestDue = &oldestDue
@@ -63,9 +64,9 @@ func TestReconcileCycleDecisions(t *testing.T) {
 	}
 	if !report.Leader || report.StaleProbes != 2 || report.DeletedProbes != 1 ||
 		report.ExpiredLeases != 3 || report.RequeuedAssignments != 1 ||
-		report.FailedAssignments != 3 || report.MissedAssignments != 2 ||
-		report.AdvancedPolicies != 3 || report.CreatedAssignments != 2 ||
-		report.DeferredPolicies != 1 || report.SuspendedPolicies != 1 || report.OldestDueAgeSeconds != 5 {
+		report.FailedAssignments != 3 || report.MissedAssignments != 1 ||
+		report.AdvancedPolicies != 2 || report.CreatedAssignments != 1 ||
+		report.DeferredPolicies != 2 || report.SuspendedPolicies != 1 || report.OldestDueAgeSeconds != 5 {
 		t.Fatalf("report = %+v", report)
 	}
 	if got := cycle.requeued["retry"]; got != now.Add(2*time.Second) {
@@ -75,7 +76,7 @@ func TestReconcileCycleDecisions(t *testing.T) {
 		cycle.finished["never_claimed"] != OutcomeMissed || cycle.finished["attempted"] != OutcomeFailed {
 		t.Fatalf("finished assignments = %+v", cycle.finished)
 	}
-	if len(cycle.created) != 2 {
+	if len(cycle.created) != 1 {
 		t.Fatalf("created assignments = %+v", cycle.created)
 	}
 	queued := cycle.created[0]
@@ -83,17 +84,11 @@ func TestReconcileCycleDecisions(t *testing.T) {
 		len(queued.Candidates) != 1 {
 		t.Fatalf("queued assignment = %+v", queued)
 	}
-	missed := cycle.created[1]
-	if missed.Status != OutcomeMissed || missed.ReasonCode != "no_eligible_probe" ||
-		!slices.Equal(missed.Task.TargetDates, []string{"2026-08-20"}) {
-		t.Fatalf("missed assignment = %+v", missed)
-	}
 	if cycle.suspended["invalid"] != "invalid_policy" {
 		t.Fatalf("suspended policies = %+v", cycle.suspended)
 	}
-	if len(cycle.advanced) != 3 || cycle.advanced[0].next == nil ||
-		*cycle.advanced[0].next != now.Add(10*time.Second) || cycle.advanced[1].next != nil ||
-		cycle.advanced[2].next == nil || *cycle.advanced[2].next != now.Add(10*time.Second) {
+	if len(cycle.advanced) != 2 || cycle.advanced[0].next == nil ||
+		*cycle.advanced[0].next != now.Add(10*time.Second) || cycle.advanced[1].next != nil {
 		t.Fatalf("advanced policies = %+v", cycle.advanced)
 	}
 }
@@ -105,6 +100,78 @@ func TestReconcileFollowerSkipsCycle(t *testing.T) {
 	report, err := engine.RunOnce(context.Background())
 	if err != nil || report.Leader || repository.calls != 1 {
 		t.Fatalf("report = %+v, error = %v, calls = %d", report, err, repository.calls)
+	}
+}
+
+func TestPolicyAssignmentPriorityPromotesOnlyActiveDemand(t *testing.T) {
+	t.Parallel()
+	if got := policyAssignmentPriority(Policy{Priority: 7}); got != 1 {
+		t.Fatalf("baseline assignment priority = %d, want stored priority band for 7", got)
+	}
+	if got := policyAssignmentPriority(Policy{Priority: 7, DemandActive: true, SchedulingClass: 3}); got != 76 {
+		t.Fatalf("opening assignment priority = %d, want opening class band", got)
+	}
+	if got := policyAssignmentPriority(Policy{Priority: 100, SchedulingClass: 0}); got != 24 {
+		t.Fatalf("baseline assignment priority = %d, want baseline class 24", got)
+	}
+	if got := policyAssignmentPriority(Policy{Priority: 0, SchedulingClass: 1}); got != 25 {
+		t.Fatalf("cancellation assignment priority = %d, want cancellation class 25", got)
+	}
+}
+
+func TestPolicyTargetDatesPruneActiveDemandToUnionOfDatesAndWeekdays(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.FixedZone("KST", 9*60*60))
+	dates, err := policyTargetDates(Policy{
+		TaskKind: "cgv.schedule.capture.v2", Theater: central.Theater{ID: "theater", ProviderID: "cgv", SourceKey: "source"},
+		TargetDateMode: "rolling", HorizonDays: 14, Locale: "ko-KR", TimeZone: "Asia/Seoul",
+		DemandActive: true, DemandTargetDates: []string{"2026-08-21"},
+		DemandTargetWeekdays: []int{int(time.Saturday)}, DemandSearchHorizonDays: 3,
+		MinimumInterval: time.Minute, MaximumInterval: 2 * time.Minute, ExecutionWindow: time.Minute,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dates, []string{"2026-08-21", "2026-08-22"}) {
+		t.Fatalf("demand target dates = %v", dates)
+	}
+}
+
+func TestPolicyTargetDatesKeepPerMonitorExpandedUnionWithoutMaxHorizonOverScan(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.FixedZone("KST", 9*60*60))
+	dates, err := policyTargetDates(Policy{
+		TaskKind: "cgv.schedule.capture.v2", Theater: central.Theater{ID: "theater", ProviderID: "cgv", SourceKey: "source"},
+		TargetDateMode: "rolling", HorizonDays: 14, Locale: "ko-KR", TimeZone: "Asia/Seoul",
+		DemandActive: true,
+		// The SQL store expands each monitor's weekday horizon before unioning.
+		// A Monday/7-day monitor and Tuesday/14-day monitor must not become
+		// Monday/14-day coverage through a MAX(horizon) cross-product.
+		DemandTargetDates: []string{"2026-08-24", "2026-08-25"},
+		MinimumInterval:   time.Minute, MaximumInterval: 2 * time.Minute, ExecutionWindow: time.Minute,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dates, []string{"2026-08-24", "2026-08-25"}) {
+		t.Fatalf("per-monitor demand union = %v", dates)
+	}
+}
+
+func TestPolicyTargetDatesKeepFullBaselineWhenDemandHasNoDateFilter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.FixedZone("KST", 9*60*60))
+	dates, err := policyTargetDates(Policy{
+		TaskKind: "cgv.schedule.capture.v2", Theater: central.Theater{ID: "theater", ProviderID: "cgv", SourceKey: "source"},
+		TargetDateMode: "rolling", HorizonDays: 3, Locale: "ko-KR", TimeZone: "Asia/Seoul",
+		DemandActive:    true,
+		MinimumInterval: time.Minute, MaximumInterval: 2 * time.Minute, ExecutionWindow: time.Minute,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dates, []string{"2026-08-20", "2026-08-21", "2026-08-22"}) {
+		t.Fatalf("unfiltered demand dates = %v", dates)
 	}
 }
 
@@ -203,7 +270,7 @@ func TestSeatMapBackfillWaitsForAuthenticatedClientAndPrioritizesRequest(t *test
 		t.Fatalf("created seat-map report = %+v, assignments = %+v, error = %v", report, ready.created, err)
 	}
 	assignment := ready.created[0]
-	if assignment.Priority != 95 || assignment.Task.Auditorium == nil ||
+	if assignment.Priority != 1 || assignment.Task.Auditorium == nil ||
 		assignment.Task.Auditorium.ID != "auditorium" || len(assignment.Candidates) != 1 {
 		t.Fatalf("seat-map assignment = %+v", assignment)
 	}
@@ -256,7 +323,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 	normal.seatMapTarget = &SeatMapBackfillTarget{Task: task}
 	normal.candidates[""] = []CandidateProbe{{ID: "client", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: normal, leader: true}, now)
-	if _, err := engine.RunOnce(context.Background()); err != nil || len(normal.created) != 1 || normal.created[0].Priority != 70 {
+	if _, err := engine.RunOnce(context.Background()); err != nil || len(normal.created) != 1 || normal.created[0].Priority != 0 {
 		t.Fatalf("normal seat-map assignment = %+v, %v", normal.created, err)
 	}
 }
@@ -267,7 +334,7 @@ func TestReconcilePropagatesCycleFailures(t *testing.T) {
 		"mark_stale", "delete_retired", "expired_leases", "expire_lease", "retryable_failures", "retry_availability",
 		"requeue", "finish_expired", "timed_out", "finish_timed_out", "terminal_runs",
 		"advance_terminal", "catalog_refresh", "due_policies", "eligible_probes", "create_assignment", "suspend_policy",
-		"advance_missed", "oldest_due",
+		"oldest_due",
 	}
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
@@ -310,14 +377,10 @@ func TestReconcileRandomnessAndIDFailures(t *testing.T) {
 			}}
 			return cycle
 		}()},
-		{name: "missed interval", cycle: func() *memoryCycle {
-			cycle := newMemoryCycle()
-			cycle.due = []Policy{validPolicy("missed", "theater", now, "explicit")}
-			return cycle
-		}()},
 		{name: "assignment id", cycle: func() *memoryCycle {
 			cycle := newMemoryCycle()
 			cycle.due = []Policy{validPolicy("policy", "theater", now, "explicit")}
+			cycle.candidates["policy"] = []CandidateProbe{{ID: "probe", NetworkID: "network"}}
 			return cycle
 		}(), idErr: true},
 	}
@@ -393,6 +456,7 @@ func TestEngineConfigurationLifecycleAndHealth(t *testing.T) {
 		t.Fatalf("failed status = %+v", status)
 	}
 	repository.err = nil
+	repository.cycle.staleProbes = 1
 	engine.runAndRecord(context.Background())
 	now = now.Add(4 * time.Hour)
 	engine.clock = func() time.Time { return now }
@@ -536,10 +600,11 @@ func failureCycle(stage string, now time.Time) *memoryCycle {
 		}}
 	case "eligible_probes", "create_assignment":
 		cycle.due = []Policy{validPolicy("due", "theater", now, "explicit")}
+		if stage == "create_assignment" {
+			cycle.candidates["due"] = []CandidateProbe{{ID: "probe", NetworkID: "network"}}
+		}
 	case "suspend_policy":
 		cycle.due = []Policy{validPolicy("invalid", "theater", now, "invalid")}
-	case "advance_missed":
-		cycle.due = []Policy{validPolicy("missed", "theater", now, "explicit")}
 	}
 	return cycle
 }
