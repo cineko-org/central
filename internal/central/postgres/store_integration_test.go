@@ -650,10 +650,12 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 		ID: "execution_preset", UserID: userID, Name: "IMAX", TheaterID: "0013",
 		AuditoriumID: "imax", SeatCount: 2,
 	}
+	showtimeStart := time.Now().UTC().Add(2 * time.Hour)
+	targetDate := showtimeStart.In(time.FixedZone("KST", 9*60*60)).Format(time.DateOnly)
 	monitor := domain.MonitorJob{
 		ID: "execution_monitor", UserID: userID, PresetID: preset.ID,
 		Mode: domain.MonitorModeOpening, MovieID: "movie_execution", Movie: "Execution Movie",
-		TargetDates: []string{"2026-08-20"}, EarliestTime: "18:00", LatestTime: "22:00",
+		TargetDates: []string{targetDate}, EarliestTime: "00:00", LatestTime: "23:59",
 		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
 	}
 	for _, resource := range []struct {
@@ -685,14 +687,14 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	showtime := central.Showtime{
 		ID: "show_execution", Movie: central.Movie{ID: monitor.MovieID, Title: monitor.Movie},
 		Auditorium:     central.Auditorium{ID: preset.AuditoriumID, Name: "IMAX관"},
-		StartsAt:       time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC),
-		EndsAt:         time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC),
+		StartsAt:       showtimeStart,
+		EndsAt:         showtimeStart.Add(150 * time.Minute),
 		AvailableSeats: 300, Capacity: 624,
 	}
 	commit := central.ResultCommit{
 		CommittedAt: observedAt,
 		Result: central.AssignmentResult{Captures: []central.Capture{{
-			TargetDate: "2026-08-20", Complete: true, ObservedAt: observedAt,
+			TargetDate: targetDate, Complete: true, ObservedAt: observedAt,
 			Showtimes: []central.Showtime{showtime},
 		}}},
 	}
