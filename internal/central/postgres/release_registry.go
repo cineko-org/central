@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/cineko-org/central/internal/central"
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -92,7 +93,7 @@ func loadReleasePublishState(
 	if err != nil {
 		return 0, nil, "", err
 	}
-	if resolverVersion != central.ActiveDesktopResolverVersion {
+	if resolverVersion != releasepolicy.ActiveDesktopResolverVersion {
 		return 0, nil, "", fmt.Errorf("unsupported active desktop resolver version %d", resolverVersion)
 	}
 	storedRecords, err := listReleaseRecords(ctx, tx)

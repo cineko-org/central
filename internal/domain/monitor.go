@@ -30,10 +30,13 @@ const (
 )
 
 type MonitorJob struct {
-	ID                string        `json:"id"`
-	UserID            string        `json:"userId"`
-	PresetID          string        `json:"presetId"`
-	Mode              MonitorMode   `json:"mode"`
+	ID       string      `json:"id"`
+	UserID   string      `json:"userId"`
+	PresetID string      `json:"presetId"`
+	Mode     MonitorMode `json:"mode"`
+	// MovieID is the canonical catalog identity used for execution matching.
+	MovieID string `json:"movieId"`
+	// Movie is a display snapshot and is not an execution identity.
 	Movie             string        `json:"movie"`
 	TargetDates       []string      `json:"targetDates"`
 	TargetWeekdays    []int         `json:"targetWeekdays"`
@@ -54,8 +57,8 @@ func (job MonitorJob) Validate() error {
 	if job.ID == "" || job.UserID == "" || job.PresetID == "" {
 		return errors.New("monitor id, user id, and preset id are required")
 	}
-	if strings.TrimSpace(job.Movie) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
-		return errors.New("monitor movie and at least one target date or weekday are required")
+	if strings.TrimSpace(job.MovieID) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
+		return errors.New("monitor movie id and at least one target date or weekday are required")
 	}
 	if err := job.validateMode(); err != nil {
 		return err
@@ -120,10 +123,70 @@ func validateTimeWindow(earliest, latest string) error {
 			return fmt.Errorf("invalid %s %q: %w", name, value, err)
 		}
 	}
-	if earliest != "" && latest != "" && earliest > latest {
-		return errors.New("earliest time cannot be later than latest time")
+	if earliest != "" && latest != "" && earliest == latest {
+		return errors.New("time window cannot be empty")
 	}
 	return nil
+}
+
+// MatchesTimeWindow applies the monitor's local start-time window. The start
+// is inclusive and the end is exclusive; an end before the start represents
+// an overnight window. The caller supplies the theater's local timezone so a
+// Saturday 01:00 showtime remains Saturday 01:00.
+func (job MonitorJob) MatchesTimeWindow(start time.Time, location *time.Location) bool {
+	if start.IsZero() || location == nil {
+		return false
+	}
+	earliest, hasEarliest, earliestValid := parseOptionalClock(job.EarliestTime)
+	latest, hasLatest, latestValid := parseOptionalClock(job.LatestTime)
+	if !earliestValid || !latestValid {
+		return false
+	}
+	if !hasEarliest && !hasLatest {
+		return true
+	}
+	if hasEarliest && hasLatest && earliest == latest {
+		return false
+	}
+	localStart := start.In(location)
+	minutes := localStart.Hour()*60 + localStart.Minute()
+	if !hasEarliest {
+		return minutes < latest
+	}
+	if !hasLatest {
+		return minutes >= earliest
+	}
+	if earliest < latest {
+		return minutes >= earliest && minutes < latest
+	}
+	return minutes >= earliest || minutes < latest
+}
+
+// MatchesSchedule reports whether a showtime belongs to the requested local
+// calendar date and monitor schedule. Date matching is local, so an early
+// Saturday showtime is never attributed to Friday by an overnight window.
+func (job MonitorJob) MatchesSchedule(
+	targetDate string,
+	start time.Time,
+	now time.Time,
+	location *time.Location,
+) bool {
+	if location == nil || start.IsZero() || start.In(location).Format("2006-01-02") != targetDate {
+		return false
+	}
+	return slices.Contains(job.ResolveTargetDates(now.In(location)), targetDate) &&
+		job.MatchesTimeWindow(start, location)
+}
+
+func parseOptionalClock(value string) (minutes int, set bool, valid bool) {
+	if value == "" {
+		return 0, false, true
+	}
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		return 0, true, false
+	}
+	return parsed.Hour()*60 + parsed.Minute(), true, true
 }
 
 func (job MonitorJob) ResolveTargetDates(now time.Time) []string {

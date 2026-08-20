@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 )
 
 func TestClientReleaseConfiguration(t *testing.T) {
@@ -50,8 +52,9 @@ func TestClientReleaseConfiguration(t *testing.T) {
 	if err := service.ConfigureReleases([]ClientRelease{release}); err != nil {
 		t.Fatal(err)
 	}
-	if !supportedPlatform("windows", "amd64") || !supportedPlatform("linux", "amd64") ||
-		supportedPlatform("linux", "arm64") {
+	if !releasepolicy.IsSupportedDesktopTarget("windows", "amd64") ||
+		!releasepolicy.IsSupportedDesktopTarget("linux", "amd64") ||
+		releasepolicy.IsSupportedDesktopTarget("linux", "arm64") {
 		t.Fatal("supported platform matrix is incorrect")
 	}
 }
@@ -505,10 +508,6 @@ func TestReleaseValidationFailures(t *testing.T) {
 	if err := validateBrowserRelease(browser); err == nil {
 		t.Fatal("invalid browser artifact accepted")
 	}
-	if containsString([]string{"one"}, "two") {
-		t.Fatal("unexpected string match")
-	}
-
 	playwright := validPlaywrightRelease()
 	playwright.Version = ""
 	if err := validatePlaywrightRelease(playwright); err == nil {

@@ -13,10 +13,24 @@ describe('Central API client', () => {
       .resolves.toEqual({ ready: true });
     expect(fetchMock).toHaveBeenCalledWith('/status', expect.objectContaining({
       credentials: 'same-origin',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       method: 'POST',
       body: '{}',
     }));
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get('Accept')).toBe('application/json');
+    expect(headers.get('Content-Type')).toBe('application/json');
+  });
+
+  it('preserves caller precondition headers while adding JSON defaults', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await request('/policies', {
+      method: 'POST', headers: { Accept: 'application/problem+json', 'If-None-Match': '*' }, body: '{}',
+    });
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get('If-None-Match')).toBe('*');
+    expect(headers.get('Accept')).toBe('application/problem+json');
+    expect(headers.get('Content-Type')).toBe('application/json');
   });
 
   it('keeps bodyless requests bodyless', async () => {
@@ -32,5 +46,16 @@ describe('Central API client', () => {
     const error = await request('/status').catch((value: unknown) => value);
     expect(error).toBeInstanceOf(CentralAPIError);
     expect(error).toMatchObject({ status, message });
+  });
+
+  it('retains the safe API error contract and request id', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'revision_conflict', message: 'resource revision does not match', retryable: false, requestId: 'req_1' },
+    }), { status: 409, headers: { 'Content-Type': 'application/json' } })));
+    const error = await request('/policies').catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      status: 409, code: 'revision_conflict', message: 'resource revision does not match',
+      retryable: false, requestId: 'req_1',
+    });
   });
 });

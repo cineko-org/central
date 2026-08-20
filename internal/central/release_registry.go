@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 	"golang.org/x/mod/semver"
 )
 
@@ -40,19 +41,6 @@ type ReleaseRepository interface {
 	InsertReleaseSet(context.Context, []ReleaseRecord) (int64, bool, error)
 }
 
-// ActiveDesktopResolverVersion identifies the deterministic selection policy
-// persisted alongside the active desktop manifest fingerprint.
-const ActiveDesktopResolverVersion = 1
-
-var supportedDesktopReleaseTargetOrder = []struct {
-	platform string
-	arch     string
-}{
-	{platform: "darwin", arch: "arm64"},
-	{platform: "linux", arch: "amd64"},
-	{platform: "windows", arch: "amd64"},
-}
-
 type activeDesktopManifest struct {
 	ResolverVersion int                           `json:"resolverVersion"`
 	Targets         []activeDesktopTargetManifest `json:"targets"`
@@ -63,14 +51,6 @@ type activeDesktopTargetManifest struct {
 	Arch     string           `json:"arch"`
 	Launcher *LauncherRelease `json:"launcher"`
 	Runtime  *RuntimeRelease  `json:"runtime"`
-}
-
-type releaseCatalog struct {
-	clients    map[string]ClientRelease
-	browsers   map[string]BrowserRelease
-	playwright map[string]PlaywrightRelease
-	launchers  map[string]LauncherRelease
-	probes     map[string]ProbeRelease
 }
 
 type ReleaseRegistry struct {
@@ -120,13 +100,14 @@ func (service *ClientService) CurrentRuntimeReleaseSnapshot(
 	platform string,
 	arch string,
 ) (RuntimeRelease, int64, error) {
-	return currentReleaseSnapshot(
+	return currentDesktopReleaseSnapshot(
 		ctx,
 		service,
-		func() (RuntimeRelease, error) { return service.CurrentRuntimeRelease(channel, platform, arch) },
-		func(catalog releaseCatalog) (RuntimeRelease, error) {
-			return currentRuntimeReleaseFromCatalog(catalog, channel, platform, arch)
-		},
+		channel,
+		platform,
+		arch,
+		service.CurrentRuntimeRelease,
+		releasepolicy.CurrentRuntime,
 	)
 }
 
@@ -136,13 +117,14 @@ func (service *ClientService) CurrentLauncherReleaseSnapshot(
 	platform string,
 	arch string,
 ) (LauncherRelease, int64, error) {
-	return currentReleaseSnapshot(
+	return currentDesktopReleaseSnapshot(
 		ctx,
 		service,
-		func() (LauncherRelease, error) { return service.CurrentLauncherRelease(channel, platform, arch) },
-		func(catalog releaseCatalog) (LauncherRelease, error) {
-			return currentLauncherReleaseFromCatalog(catalog, channel, platform, arch)
-		},
+		channel,
+		platform,
+		arch,
+		service.CurrentLauncherRelease,
+		releasepolicy.CurrentLauncher,
 	)
 }
 
@@ -150,24 +132,26 @@ func (service *ClientService) CurrentProbeReleaseSnapshot(
 	ctx context.Context,
 	channel string,
 ) (ProbeRelease, int64, error) {
-	return currentReleaseSnapshot(
+	return currentChannelReleaseSnapshot(
 		ctx,
 		service,
-		func() (ProbeRelease, error) { return service.CurrentProbeRelease(channel) },
-		func(catalog releaseCatalog) (ProbeRelease, error) {
-			return currentProbeReleaseFromCatalog(catalog, channel)
-		},
+		channel,
+		service.CurrentProbeRelease,
+		releasepolicy.CurrentProbe,
 	)
 }
 
-func currentReleaseSnapshot[Release any](
+func currentDesktopReleaseSnapshot[Release any](
 	ctx context.Context,
 	service *ClientService,
-	fallback func() (Release, error),
-	resolve func(releaseCatalog) (Release, error),
+	channel string,
+	platform string,
+	arch string,
+	fallback func(string, string, string) (Release, error),
+	resolve func(releasepolicy.Catalog, string, string, string) (Release, bool),
 ) (Release, int64, error) {
 	if service.releaseRepository == nil {
-		release, err := fallback()
+		release, err := fallback(channel, platform, arch)
 		return release, service.ReleaseGeneration(), err
 	}
 	catalog, generation, err := service.currentReleaseCatalog(ctx)
@@ -175,25 +159,53 @@ func currentReleaseSnapshot[Release any](
 		var zero Release
 		return zero, 0, err
 	}
-	release, err := resolve(catalog)
-	return release, generation, err
+	release, ok := resolve(catalog, channel, platform, arch)
+	if !ok {
+		var zero Release
+		return zero, generation, ErrNotFound
+	}
+	return release, generation, nil
 }
 
-func (service *ClientService) currentReleaseCatalog(ctx context.Context) (releaseCatalog, int64, error) {
+func currentChannelReleaseSnapshot[Release any](
+	ctx context.Context,
+	service *ClientService,
+	channel string,
+	fallback func(string) (Release, error),
+	resolve func(releasepolicy.Catalog, string) (Release, bool),
+) (Release, int64, error) {
 	if service.releaseRepository == nil {
-		return releaseCatalog{}, 0, errors.New("release repository is unavailable")
+		release, err := fallback(channel)
+		return release, service.ReleaseGeneration(), err
+	}
+	catalog, generation, err := service.currentReleaseCatalog(ctx)
+	if err != nil {
+		var zero Release
+		return zero, 0, err
+	}
+	release, ok := resolve(catalog, channel)
+	if !ok {
+		var zero Release
+		return zero, generation, ErrNotFound
+	}
+	return release, generation, nil
+}
+
+func (service *ClientService) currentReleaseCatalog(ctx context.Context) (releasepolicy.Catalog, int64, error) {
+	if service.releaseRepository == nil {
+		return releasepolicy.Catalog{}, 0, errors.New("release repository is unavailable")
 	}
 	records, generation, err := service.releaseRepository.ListReleases(ctx)
 	if err != nil {
-		return releaseCatalog{}, 0, err
+		return releasepolicy.Catalog{}, 0, err
 	}
 	snapshot, err := decodeReleaseRegistry(records)
 	if err != nil {
-		return releaseCatalog{}, 0, err
+		return releasepolicy.Catalog{}, 0, err
 	}
 	catalog, err := configuredReleaseCatalog(snapshot)
 	if err != nil {
-		return releaseCatalog{}, 0, err
+		return releasepolicy.Catalog{}, 0, err
 	}
 	return catalog, generation, nil
 }
@@ -251,18 +263,18 @@ func ActiveDesktopManifestFingerprint(records []ReleaseRecord) (string, error) {
 		return "", err
 	}
 	manifest := activeDesktopManifest{
-		ResolverVersion: ActiveDesktopResolverVersion,
-		Targets:         make([]activeDesktopTargetManifest, 0, len(supportedDesktopReleaseTargetOrder)),
+		ResolverVersion: releasepolicy.ActiveDesktopResolverVersion,
+		Targets:         make([]activeDesktopTargetManifest, 0, len(releasepolicy.SupportedDesktopTargets())),
 	}
-	for _, target := range supportedDesktopReleaseTargetOrder {
-		resolved := activeDesktopTargetManifest{Platform: target.platform, Arch: target.arch}
-		if launcher, exists := selectCurrentLauncherRelease(
-			catalog, "stable", target.platform, target.arch,
+	for _, target := range releasepolicy.SupportedDesktopTargets() {
+		resolved := activeDesktopTargetManifest{Platform: target.Platform, Arch: target.Arch}
+		if launcher, exists := releasepolicy.CurrentLauncher(
+			catalog, "stable", target.Platform, target.Arch,
 		); exists {
 			resolved.Launcher = &launcher
 		}
-		if runtime, exists := selectCurrentRuntimeRelease(
-			catalog, "stable", target.platform, target.arch,
+		if runtime, exists := releasepolicy.CurrentRuntime(
+			catalog, "stable", target.Platform, target.Arch,
 		); exists {
 			resolved.Runtime = &runtime
 		}
@@ -280,7 +292,7 @@ type releaseRegistrySnapshot struct {
 	probes     []ProbeRelease
 }
 
-func configuredReleaseCatalog(snapshot releaseRegistrySnapshot) (releaseCatalog, error) {
+func configuredReleaseCatalog(snapshot releaseRegistrySnapshot) (releasepolicy.Catalog, error) {
 	candidate := ClientService{
 		clients: make(map[string]ClientRelease), browsers: make(map[string]BrowserRelease),
 		playwright: make(map[string]PlaywrightRelease), launchers: make(map[string]LauncherRelease),
@@ -288,32 +300,32 @@ func configuredReleaseCatalog(snapshot releaseRegistrySnapshot) (releaseCatalog,
 	}
 	if len(snapshot.clients) > 0 {
 		if err := candidate.ConfigureReleases(snapshot.clients); err != nil {
-			return releaseCatalog{}, err
+			return releasepolicy.Catalog{}, err
 		}
 	}
 	if len(snapshot.browsers) > 0 {
 		if err := candidate.ConfigureBrowserReleases(snapshot.browsers); err != nil {
-			return releaseCatalog{}, err
+			return releasepolicy.Catalog{}, err
 		}
 	}
 	if len(snapshot.playwright) > 0 {
 		if err := candidate.ConfigurePlaywrightReleases(snapshot.playwright); err != nil {
-			return releaseCatalog{}, err
+			return releasepolicy.Catalog{}, err
 		}
 	}
 	if len(snapshot.launchers) > 0 {
 		if err := candidate.ConfigureLauncherReleases(snapshot.launchers); err != nil {
-			return releaseCatalog{}, err
+			return releasepolicy.Catalog{}, err
 		}
 	}
 	if len(snapshot.probes) > 0 {
 		if err := candidate.ConfigureProbeReleases(snapshot.probes); err != nil {
-			return releaseCatalog{}, err
+			return releasepolicy.Catalog{}, err
 		}
 	}
-	return releaseCatalog{
-		clients: candidate.clients, browsers: candidate.browsers, playwright: candidate.playwright,
-		launchers: candidate.launchers, probes: candidate.probes,
+	return releasepolicy.Catalog{
+		Clients: candidate.clients, Browsers: candidate.browsers, Playwright: candidate.playwright,
+		Launchers: candidate.launchers, Probes: candidate.probes,
 	}, nil
 }
 
@@ -405,7 +417,7 @@ func validateStoredReleaseSets(records []ReleaseRecord) error {
 					continue
 				}
 			}
-		} else if completeDesktopTargetSet(set.targets) {
+		} else if releasepolicy.CompleteDesktopTargetSet(set.targets) {
 			continue
 		}
 		return fmt.Errorf("stored release set %s is incomplete", identity)
@@ -541,22 +553,10 @@ func validateReleaseSet(kind string, records []ReleaseRecord) error {
 		}
 		targets[target] = struct{}{}
 	}
-	if kind != "probe" && !completeDesktopTargetSet(targets) {
+	if kind != "probe" && !releasepolicy.CompleteDesktopTargetSet(targets) {
 		return fmt.Errorf("%w: desktop release set must contain every supported target", ErrInvalid)
 	}
 	return nil
-}
-
-func completeDesktopTargetSet(targets map[string]struct{}) bool {
-	if len(targets) != len(supportedDesktopReleaseTargets) {
-		return false
-	}
-	for target := range supportedDesktopReleaseTargets {
-		if _, exists := targets[target]; !exists {
-			return false
-		}
-	}
-	return true
 }
 
 func toAny[Value any](values []Value) []any {
@@ -737,13 +737,13 @@ func (service *ClientService) configureAvailableReleases(
 	return nil
 }
 
-func (service *ClientService) applyReleaseCatalog(catalog releaseCatalog, generation int64) {
+func (service *ClientService) applyReleaseCatalog(catalog releasepolicy.Catalog, generation int64) {
 	service.releaseMu.Lock()
-	service.clients = catalog.clients
-	service.browsers = catalog.browsers
-	service.playwright = catalog.playwright
-	service.launchers = catalog.launchers
-	service.probes = catalog.probes
+	service.clients = catalog.Clients
+	service.browsers = catalog.Browsers
+	service.playwright = catalog.Playwright
+	service.launchers = catalog.Launchers
+	service.probes = catalog.Probes
 	service.releaseGeneration.Store(generation)
 	service.releaseMu.Unlock()
 }

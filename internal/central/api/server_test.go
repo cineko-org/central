@@ -6,9 +6,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +95,37 @@ func TestProbeRegistrationAndHeartbeatContract(t *testing.T) {
 	)
 	if claim.Code != http.StatusNoContent {
 		t.Fatalf("empty claim status = %d, body = %s", claim.Code, claim.Body.String())
+	}
+}
+
+func TestWriteErrorExposesOnlyExplicitPublicValidationMessages(t *testing.T) {
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	server := &Server{}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/test", nil)
+
+	public := httptest.NewRecorder()
+	public.Header().Set("X-Request-Id", "req_public")
+	server.writeError(public, request, central.InvalidRequest("theater id is required"))
+	if public.Code != http.StatusBadRequest || !strings.Contains(public.Body.String(), "theater id is required") {
+		t.Fatalf("public validation response = %d %s", public.Code, public.Body.String())
+	}
+
+	wrapped := httptest.NewRecorder()
+	wrapped.Header().Set("X-Request-Id", "req_wrapped")
+	server.writeError(wrapped, request, fmt.Errorf("%w: internal relation detail", central.ErrInvalid))
+	if wrapped.Code != http.StatusBadRequest || strings.Contains(wrapped.Body.String(), "relation") ||
+		!strings.Contains(wrapped.Body.String(), "request is invalid") {
+		t.Fatalf("wrapped validation response = %d %s", wrapped.Code, wrapped.Body.String())
+	}
+
+	internal := httptest.NewRecorder()
+	internal.Header().Set("X-Request-Id", "req_internal")
+	server.writeError(internal, request, errors.New("secret database detail"))
+	if internal.Code != http.StatusInternalServerError || strings.Contains(internal.Body.String(), "database") ||
+		!strings.Contains(internal.Body.String(), "req_internal") {
+		t.Fatalf("internal response = %d %s", internal.Code, internal.Body.String())
 	}
 }
 

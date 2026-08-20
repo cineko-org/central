@@ -15,6 +15,30 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func (store *Store) AuthorizeCatalogWrite(
+	ctx context.Context,
+	userID string,
+	installationID string,
+	capability string,
+) error {
+	var authorized bool
+	if err := store.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM probe_runtimes
+			WHERE owner_user_id = $1 AND installation_id = $2 AND kind = 'client'
+				AND status = 'online' AND NOT draining AND health = 'healthy'
+				AND COALESCE(last_heartbeat_at, updated_at) >= now() - ($4::bigint * interval '1 second')
+				AND token_expires_at > now() AND $3 = ANY(available_capabilities)
+		)
+	`, userID, installationID, capability, int64(central.DefaultProbeHeartbeatTTL/time.Second)).Scan(&authorized); err != nil {
+		return fmt.Errorf("authorize Client catalog write: %w", err)
+	}
+	if !authorized {
+		return central.ErrUnauthorized
+	}
+	return nil
+}
+
 func (store *Store) Catalog(ctx context.Context) (contracts.CatalogIndex, error) {
 	var result contracts.CatalogIndex
 	if err := store.pool.QueryRow(ctx, `SELECT generation FROM catalog_state WHERE id = 1`).Scan(&result.Generation); err != nil {
@@ -146,13 +170,17 @@ func upsertCatalogSnapshotTx(
 		}
 		changed = changed || group.changed
 	}
-	if _, err := tx.Exec(ctx, `UPDATE catalog_state SET refresh_requested_at = NULL WHERE id = 1`); err != nil {
-		return 0, fmt.Errorf("complete catalog refresh: %w", err)
-	}
 	if !changed {
 		return generation, nil
 	}
 	return incrementCatalogGeneration(ctx, tx, snapshot.ObservedAt)
+}
+
+func completeCatalogRefresh(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `UPDATE catalog_state SET refresh_requested_at = NULL WHERE id = 1`); err != nil {
+		return fmt.Errorf("complete catalog refresh: %w", err)
+	}
+	return nil
 }
 
 type catalogMutationResult struct {

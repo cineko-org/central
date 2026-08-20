@@ -65,7 +65,7 @@ func TestClientResourceAPISavesSettingsPresetsAndMonitors(t *testing.T) {
 	monitorHeaders["Idempotency-Key"] = "create-monitor"
 	monitor := request(t, server.Handler(), http.MethodPost, "/v1/monitors", map[string]any{
 		"id": "monitor", "data": map[string]any{
-			"id": "monitor", "userId": "user", "presetId": "preset", "movie": "Movie",
+			"id": "monitor", "userId": "user", "presetId": "preset", "movieId": "movie_1", "movie": "Movie",
 			"targetDates": []string{"2026-08-12"}, "pollInterval": int64(2 * time.Second),
 			"pollIntervalMax": int64(3 * time.Second), "status": "pending",
 		},
@@ -73,6 +73,16 @@ func TestClientResourceAPISavesSettingsPresetsAndMonitors(t *testing.T) {
 	if monitor.Code != http.StatusCreated {
 		t.Fatalf("create monitor = %d, %s", monitor.Code, monitor.Body.String())
 	}
+	invalidMonitorHeaders := cloneHeaders(headers)
+	invalidMonitorHeaders["Idempotency-Key"] = "create-invalid-monitor"
+	invalidMonitor := request(t, server.Handler(), http.MethodPost, "/v1/monitors", map[string]any{
+		"id": "invalid-monitor", "data": map[string]any{
+			"id": "invalid-monitor", "userId": "user", "presetId": "preset", "movie": "Movie",
+			"targetDates": []string{"2026-08-12"}, "pollInterval": int64(2 * time.Second),
+			"pollIntervalMax": int64(3 * time.Second), "status": "pending",
+		},
+	}, invalidMonitorHeaders)
+	assertAPIError(t, invalidMonitor, http.StatusBadRequest, "invalid_request")
 
 	settingsHeaders := cloneHeaders(headers)
 	settingsHeaders["Idempotency-Key"] = "save-settings"

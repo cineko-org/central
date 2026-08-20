@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	contracts "github.com/cineko-org/contracts/v3"
 
 	"github.com/jackc/pgx/v5"
@@ -164,8 +165,21 @@ func (store *Store) HeartbeatProbe(
 	heartbeat central.ProbeHeartbeatRequest,
 	now time.Time,
 ) (central.Probe, error) {
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return central.Probe{}, fmt.Errorf("begin probe heartbeat: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var previousSlots int
+	if err := tx.QueryRow(ctx, `
+		SELECT available_slots FROM probe_runtimes WHERE id = $1 FOR UPDATE
+	`, probeID).Scan(&previousSlots); errors.Is(err, pgx.ErrNoRows) {
+		return central.Probe{}, central.ErrNotFound
+	} else if err != nil {
+		return central.Probe{}, fmt.Errorf("lock probe heartbeat: %w", err)
+	}
 	var probe central.Probe
-	err := store.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE probe_runtimes
 		SET status = 'online', draining = $2, available_slots = $3, health = $4,
 			reason_code = $5, available_capabilities = COALESCE($6::text[], capabilities),
@@ -179,6 +193,14 @@ func (store *Store) HeartbeatProbe(
 	}
 	if err != nil {
 		return central.Probe{}, fmt.Errorf("heartbeat probe: %w", err)
+	}
+	if previousSlots < 1 && heartbeat.AvailableSlots > 0 && heartbeat.Health == "healthy" && !heartbeat.Draining {
+		if err := notifyAssignmentAvailability(ctx, tx); err != nil {
+			return central.Probe{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return central.Probe{}, fmt.Errorf("commit probe heartbeat: %w", err)
 	}
 	return probe, nil
 }
@@ -462,6 +484,9 @@ func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommi
 			return central.ResultReceipt{}, err
 		}
 	}
+	if err := notifyAssignmentAvailability(ctx, tx); err != nil {
+		return central.ResultReceipt{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return central.ResultReceipt{}, fmt.Errorf("commit assignment result: %w", err)
 	}
@@ -492,11 +517,18 @@ func storeCatalogResult(ctx context.Context, tx pgx.Tx, result central.Assignmen
 		return fmt.Errorf("%w: catalog assignment result is incomplete", central.ErrInvalid)
 	}
 	snapshot := *result.Catalog
-	if err := central.NormalizeCatalogSnapshot(&snapshot); err != nil {
+	// A full refresh must enumerate at least one theater. Otherwise an upstream
+	// parser failure could suppress the retry while leaving the catalog empty.
+	if len(snapshot.Theaters) == 0 {
+		return fmt.Errorf("%w: catalog assignment contains no theaters", central.ErrInvalid)
+	}
+	if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
 		return fmt.Errorf("validate Probe catalog snapshot: %w", err)
 	}
-	_, err := upsertCatalogSnapshotTx(ctx, tx, snapshot)
-	return err
+	if _, err := upsertCatalogSnapshotTx(ctx, tx, snapshot); err != nil {
+		return err
+	}
+	return completeCatalogRefresh(ctx, tx)
 }
 
 func storeSeatMapResult(
@@ -525,7 +557,7 @@ func storeScheduleResult(
 		return fmt.Errorf("%w: schedule assignment cannot include another result type", central.ErrInvalid)
 	}
 	snapshot := catalogSnapshotFromResult(state.theater, commit.Result, commit.CommittedAt)
-	if err := central.NormalizeCatalogSnapshot(&snapshot); err != nil {
+	if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
 		return fmt.Errorf("validate Probe catalog snapshot: %w", err)
 	}
 	if _, err := upsertCatalogSnapshotTx(ctx, tx, snapshot); err != nil {

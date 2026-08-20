@@ -244,7 +244,7 @@ func TestMonitorValidationAndStateHelpers(t *testing.T) {
 	}
 	mutations := []func(*MonitorJob){
 		func(value *MonitorJob) { value.ID = "" },
-		func(value *MonitorJob) { value.Movie = "" },
+		func(value *MonitorJob) { value.MovieID = "" },
 		func(value *MonitorJob) { value.Mode = "bad" },
 		func(value *MonitorJob) {
 			value.Mode = MonitorModeCancellation
@@ -268,7 +268,7 @@ func TestMonitorValidationAndStateHelpers(t *testing.T) {
 		},
 		func(value *MonitorJob) { value.EarliestTime = "bad" },
 		func(value *MonitorJob) { value.LatestTime = "bad" },
-		func(value *MonitorJob) { value.EarliestTime, value.LatestTime = "20:00", "10:00" },
+		func(value *MonitorJob) { value.EarliestTime, value.LatestTime = "20:00", "20:00" },
 	}
 	for index, mutate := range mutations {
 		candidate := job
@@ -363,6 +363,6 @@ func validPreset() Preset {
 func validMonitorJob() MonitorJob {
 	return MonitorJob{
 		ID: "monitor", UserID: "user", PresetID: "preset", Mode: MonitorModeOpening,
-		Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 2 * time.Second,
+		MovieID: "movie_1", Movie: "Movie", TargetDates: []string{"2026-08-10"}, PollInterval: 2 * time.Second,
 	}
 }

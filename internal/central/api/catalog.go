@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +8,8 @@ import (
 	"github.com/cineko-org/central/internal/central"
 	contracts "github.com/cineko-org/contracts/v3"
 )
+
+const clientInstallationHeader = "X-Cineko-Installation-Id"
 
 func (server *Server) getClientCatalog(writer http.ResponseWriter, request *http.Request) {
 	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
@@ -37,6 +38,9 @@ func (server *Server) getAdminCatalogRefresh(writer http.ResponseWriter, request
 }
 
 func (server *Server) requestAdminCatalogRefresh(writer http.ResponseWriter, request *http.Request) {
+	if !server.sameOriginAdminRequest(writer, request) {
+		return
+	}
 	if _, ok := server.authenticatedAdmin(writer, request); !ok || !server.requireCatalog(writer, request) {
 		return
 	}
@@ -66,7 +70,15 @@ func (server *Server) putClientCatalogSnapshot(writer http.ResponseWriter, reque
 	if !server.requireIdempotencyKey(writer, request) {
 		return
 	}
-	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
+	principal, ok := server.authenticatedClient(writer, request)
+	if !ok || !server.requireCatalog(writer, request) {
+		return
+	}
+	if err := server.catalog.AuthorizeClientWrite(
+		request.Context(), principal, request.Header.Get(clientInstallationHeader),
+		contracts.CapabilityCGVCatalogCapture,
+	); err != nil {
+		server.writeError(writer, request, err)
 		return
 	}
 	var snapshot contracts.CatalogSnapshot
@@ -86,7 +98,15 @@ func (server *Server) putClientSeatMapVersion(writer http.ResponseWriter, reques
 	if !server.requireIdempotencyKey(writer, request) {
 		return
 	}
-	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
+	principal, ok := server.authenticatedClient(writer, request)
+	if !ok || !server.requireCatalog(writer, request) {
+		return
+	}
+	if err := server.catalog.AuthorizeClientWrite(
+		request.Context(), principal, request.Header.Get(clientInstallationHeader),
+		contracts.CapabilityCGVSeatMapCapture,
+	); err != nil {
+		server.writeError(writer, request, err)
 		return
 	}
 	var version contracts.SeatMapVersion
@@ -95,7 +115,7 @@ func (server *Server) putClientSeatMapVersion(writer http.ResponseWriter, reques
 	}
 	versionID := strings.TrimSpace(request.PathValue("versionId"))
 	if versionID == "" || strings.TrimSpace(version.ID) != versionID {
-		server.writeError(writer, request, fmt.Errorf("%w: seat map version id does not match request path", central.ErrInvalid))
+		server.writeError(writer, request, central.InvalidRequest("seat map version id does not match request path"))
 		return
 	}
 	generation, err := server.catalog.PutSeatMapVersion(request.Context(), version)

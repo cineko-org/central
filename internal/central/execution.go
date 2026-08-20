@@ -123,3 +123,19 @@ func (service *ClientService) CompleteExecution(
 		ReasonCode: request.ReasonCode, Now: service.clock().UTC(),
 	})
 }
+
+// RetryExecution requeues one terminally failed command. The user boundary is
+// part of the mutation key so one Client can never reopen another user's work.
+func (service *ClientService) RetryExecution(
+	ctx context.Context,
+	principal ClientPrincipal,
+	commandID string,
+) error {
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return ErrInvalid
+	}
+	return service.repository.RetryClientExecution(
+		ctx, principal.UserID, commandID, service.clock().UTC(),
+	)
+}

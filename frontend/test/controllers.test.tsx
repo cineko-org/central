@@ -397,7 +397,10 @@ describe('Central page controllers', () => {
     expect(container.querySelector<HTMLElement>('[data-testid="observations-view"]')?.dataset.editing).toBe('policy / 1');
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-save"]')!.click());
     await settle();
-    expect(fetchMock).toHaveBeenCalledWith('/v1/admin/observation-policies/policy%20%2F%201', expect.objectContaining({ method: 'PUT', headers: { 'If-Match': '"2"' } }));
+    const updateCall = fetchMock.mock.calls.find(([path, init]) =>
+      path === '/v1/admin/observation-policies/policy%20%2F%201' && init?.method === 'PUT');
+    expect(updateCall).toBeDefined();
+    expect(new Headers(updateCall?.[1]?.headers).get('If-Match')).toBe('"2"');
 
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-edit-policy / 1"]')!.click());
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-delete-policy / 1"]')!.click());
@@ -406,7 +409,10 @@ describe('Central page controllers', () => {
 
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-save"]')!.click());
     await settle();
-    expect(fetchMock).toHaveBeenCalledWith('/v1/admin/observation-policies', expect.objectContaining({ method: 'POST', headers: { 'If-None-Match': '*' } }));
+    const createCall = fetchMock.mock.calls.find(([path, init]) =>
+      path === '/v1/admin/observation-policies' && init?.method === 'POST');
+    expect(createCall).toBeDefined();
+    expect(new Headers(createCall?.[1]?.headers).get('If-None-Match')).toBe('*');
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-cancel"]')!.click());
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-refresh"]')!.click());
     await settle();

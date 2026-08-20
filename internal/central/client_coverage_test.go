@@ -558,3 +558,12 @@ func (repository *clientRepositoryFake) CompleteClientExecution(
 	repository.hash = completion.LeaseHash
 	return repository.err
 }
+
+func (repository *clientRepositoryFake) RetryClientExecution(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ time.Time,
+) error {
+	return repository.err
+}

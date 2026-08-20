@@ -234,7 +234,7 @@ func TestPostgresClientPlaneLifecycle(t *testing.T) {
 		t.Fatalf("replay client resource = %+v, %v", replayed, err)
 	}
 	if _, err := service.PutResource(
-		ctx, principal, "monitors", "other", json.RawMessage(`{"id":"other","userId":"`+userID+`","presetId":"preset_integration","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`), nil, "create_preset",
+		ctx, principal, "monitors", "other", json.RawMessage(`{"id":"other","userId":"`+userID+`","presetId":"preset_integration","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`), nil, "create_preset",
 	); !errors.Is(err, central.ErrIdempotencyConflict) {
 		t.Fatalf("reused client command error = %v", err)
 	}
@@ -372,14 +372,16 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 	t.Cleanup(store.Close)
 
 	const (
-		onlineID     = "probe_admin_delete_online"
-		offlineID    = "probe_admin_delete_offline"
-		historyID    = "probe_admin_delete_history"
-		assignmentID = "assignment_admin_delete_history"
+		onlineID           = "probe_admin_delete_online"
+		offlineID          = "probe_admin_delete_offline"
+		historyID          = "probe_admin_delete_history"
+		assignmentID       = "assignment_admin_delete_history"
+		leasedAssignmentID = "assignment_admin_delete_leased"
 	)
 	probeIDs := []string{onlineID, offlineID, historyID}
 	cleanup := func() {
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM assignment_attempts WHERE assignment_id = $1`, assignmentID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM observation_assignments WHERE id = $1`, leasedAssignmentID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM observation_assignments WHERE id = $1`, assignmentID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM probe_runtimes WHERE id = ANY($1)`, probeIDs)
 	}
@@ -420,8 +422,38 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 	if err := store.DeleteAdminProbe(ctx, onlineID); !errors.Is(err, central.ErrConflict) {
 		t.Fatalf("delete online Probe = %v", err)
 	}
-	if err := store.DeleteAdminProbe(ctx, historyID); !errors.Is(err, central.ErrConflict) {
+	if err := store.DeleteAdminProbe(ctx, historyID); err != nil {
 		t.Fatalf("delete Probe with history = %v", err)
+	}
+	var attempts int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT count(*) FROM assignment_attempts WHERE assignment_id = $1 AND probe_id = $2
+	`, assignmentID, historyID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("historical Probe attempts = %d, want 1", attempts)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE probe_runtimes SET status = 'offline' WHERE id = $1`, onlineID); err != nil {
+		t.Fatal(err)
+	}
+	leaseTokenHash := sha256.Sum256([]byte("lease_" + onlineID))
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO observation_assignments (
+			id, task_kind, theater_id, theater_provider_id, theater_source_key,
+			theater_region, theater_name, target_dates, locale, time_zone, egress_policy_id,
+			status, not_before, deadline, probe_id, lease_token_hash, lease_expires_at,
+			created_at, updated_at
+		) VALUES (
+			$1, 'cgv.schedule.capture.v2', 'theater_admin_delete_leased', 'cgv', 'admin-delete-leased',
+			'서울', '관리 시험관', ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
+			'leased', $2, $3, $4, $5, $3, $2, $3
+		)
+	`, leasedAssignmentID, now.Add(-time.Minute), now.Add(time.Minute), onlineID, leaseTokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAdminProbe(ctx, onlineID); !errors.Is(err, central.ErrConflict) {
+		t.Fatalf("delete Probe with active assignment = %v", err)
 	}
 	if err := store.DeleteAdminProbe(ctx, offlineID); err != nil {
 		t.Fatalf("delete offline Probe: %v", err)
@@ -620,7 +652,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	monitor := domain.MonitorJob{
 		ID: "execution_monitor", UserID: userID, PresetID: preset.ID,
-		Mode: domain.MonitorModeOpening, Movie: "Execution Movie",
+		Mode: domain.MonitorModeOpening, MovieID: "movie_execution", Movie: "Execution Movie",
 		TargetDates: []string{"2026-08-20"}, EarliestTime: "18:00", LatestTime: "22:00",
 		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
 	}
@@ -645,13 +677,13 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 			($1, 'presets', 'corrupt_execution_preset', 1,
 			 '{"id":"corrupt_execution_preset","userId":"foreign_user","name":"Poison","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}', now(), now()),
 			($1, 'monitors', 'corrupt_execution_monitor', 1,
-			 '{"id":"corrupt_execution_monitor","userId":"foreign_user","presetId":"corrupt_execution_preset","movie":"Execution Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}', now(), now())
+			 '{"id":"corrupt_execution_monitor","userId":"foreign_user","presetId":"corrupt_execution_preset","movieId":"movie_execution","movie":"Execution Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}', now(), now())
 	`, userID); err != nil {
 		t.Fatal(err)
 	}
 	observedAt := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
 	showtime := central.Showtime{
-		ID: "show_execution", Movie: central.Movie{Title: monitor.Movie},
+		ID: "show_execution", Movie: central.Movie{ID: monitor.MovieID, Title: monitor.Movie},
 		Auditorium:     central.Auditorium{ID: preset.AuditoriumID, Name: "IMAX관"},
 		StartsAt:       time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC),
 		EndsAt:         time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC),
@@ -988,7 +1020,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 		t.Fatalf("initial reconcile report = %+v", report)
 	}
 	retryAssignment := assignmentForPolicy(t, store, policyIDs[0])
-	if retryAssignment.Status != "queued" || len(retryAssignment.Task.TargetDates) != 2 {
+	if retryAssignment.Status != "queued" || len(retryAssignment.Task.TargetDates) != 1 {
 		t.Fatalf("scheduled assignment = %+v", retryAssignment)
 	}
 	var eligibleCount int
@@ -1435,10 +1467,10 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 		t.Fatal(err)
 	}
 	presetPayload := fmt.Sprintf(`{"id":"preset_lane","userId":%q,"name":"lane","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, demandTheaterID)
-	monitorPayload := fmt.Sprintf(`{"id":"monitor_lane","userId":%q,"presetId":"preset_lane","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"opening"}`, userID)
+	monitorPayload := fmt.Sprintf(`{"id":"monitor_lane","userId":%q,"presetId":"preset_lane","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"opening"}`, userID)
 	cancellationPresetPayload := fmt.Sprintf(`{"id":"preset_cancellation","userId":%q,"name":"cancellation","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, cancellationTheaterID)
-	cancellationPayload := fmt.Sprintf(`{"id":"monitor_cancellation","userId":%q,"presetId":"preset_cancellation","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"cancellation"}`, userID)
-	triggeredPayload := fmt.Sprintf(`{"id":"monitor_triggered","userId":%q,"presetId":"preset_triggered","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"triggered","mode":"opening"}`, userID)
+	cancellationPayload := fmt.Sprintf(`{"id":"monitor_cancellation","userId":%q,"presetId":"preset_cancellation","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending","mode":"cancellation"}`, userID)
+	triggeredPayload := fmt.Sprintf(`{"id":"monitor_triggered","userId":%q,"presetId":"preset_triggered","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"triggered","mode":"opening"}`, userID)
 	triggeredPresetPayload := fmt.Sprintf(`{"id":"preset_triggered","userId":%q,"name":"triggered","theaterId":%q,"auditoriumId":"imax","seatCount":1,"seatPreference":{}}`, userID, baselineTheaterID)
 	if _, err := store.pool.Exec(ctx, `
 		INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
@@ -1536,6 +1568,93 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 	}
 	if policyID != nil {
 		t.Fatalf("system assignment policy = %q", *policyID)
+	}
+}
+
+func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T) {
+	databaseURL := testDatabaseURL
+	if databaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	fixtureID := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	providerID := "catalog_refresh_integration_" + fixtureID
+	sourceKey := "catalog-refresh-theater-" + fixtureID
+	snapshot := contracts.CatalogSnapshot{
+		Provider: contracts.Provider{ID: providerID, Name: "Catalog refresh integration"},
+		Theaters: []contracts.Theater{{
+			ID: contracts.CatalogID(providerID, "theater", sourceKey), ProviderID: providerID,
+			SourceKey: sourceKey, Region: "Seoul", Name: "Catalog refresh theater",
+		}},
+		ObservedAt: time.Now().UTC(),
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, snapshot.Provider.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, snapshot.Provider.ID)
+	})
+	if err := store.RequestCatalogRefresh(ctx, snapshot.ObservedAt); err != nil {
+		t.Fatal(err)
+	}
+	firstGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayedGeneration != firstGeneration {
+		t.Fatalf("identical catalog replay changed generation: first=%d replay=%d", firstGeneration, replayedGeneration)
+	}
+	var requestedAt *time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt == nil {
+		t.Fatal("partial catalog write cleared the pending full refresh")
+	}
+	empty := snapshot
+	empty.Theaters = nil
+	invalidTx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeCatalogResult(ctx, invalidTx, central.AssignmentResult{Catalog: &empty}); !errors.Is(err, central.ErrInvalid) {
+		_ = invalidTx.Rollback(ctx)
+		t.Fatalf("provider-only full catalog result = %v", err)
+	}
+	if err := invalidTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt == nil {
+		t.Fatal("invalid provider-only catalog result cleared the pending refresh")
+	}
+
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := storeCatalogResult(ctx, tx, central.AssignmentResult{Catalog: &snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT refresh_requested_at FROM catalog_state WHERE id = 1`).Scan(&requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt != nil {
+		t.Fatalf("completed catalog assignment left refresh pending at %v", requestedAt)
 	}
 }
 
@@ -1757,18 +1876,18 @@ func integrationResultCommit(
 }
 
 func integrationShowtime(theater central.Theater, now time.Time) central.Showtime {
-	movieSourceKey := "movie_integration"
+	movieSourceKey := "00001234"
 	movie := central.Movie{
 		ID:         contracts.CatalogID(theater.ProviderID, "movie", movieSourceKey),
 		ProviderID: theater.ProviderID, SourceKey: movieSourceKey, Title: "통합 시험 영화",
 	}
-	auditoriumSourceKey := theater.SourceKey + "/imax"
+	auditoriumSourceKey := theater.SourceKey + "/0007"
 	auditorium := central.Auditorium{
 		ID:        contracts.CatalogID(theater.ProviderID, "auditorium", auditoriumSourceKey),
 		TheaterID: theater.ID, SourceKey: auditoriumSourceKey, Name: "IMAX관",
 		ScreenTypes: []string{"IMAX"}, Capacity: 624,
 	}
-	showtimeSourceKey := theater.SourceKey + "/showtime_integration"
+	showtimeSourceKey := theater.SourceKey + "/2026-08-20/0007/0003"
 	return central.Showtime{
 		ID:         contracts.CatalogID(theater.ProviderID, "showtime", showtimeSourceKey),
 		ProviderID: theater.ProviderID, SourceKey: showtimeSourceKey, TheaterID: theater.ID,

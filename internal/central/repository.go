@@ -3,6 +3,8 @@ package central
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,6 +20,25 @@ var (
 	ErrRateLimited         = errors.New("rate limited")
 	ErrCorruptResource     = errors.New("corrupt client resource")
 )
+
+// PublicError marks a message as safe to return across the HTTP boundary while
+// retaining a stable sentinel for errors.Is. Internal errors must not use this type.
+type PublicError struct {
+	cause   error
+	message string
+}
+
+func (err *PublicError) Error() string         { return fmt.Sprintf("%v: %s", err.cause, err.message) }
+func (err *PublicError) Unwrap() error         { return err.cause }
+func (err *PublicError) PublicMessage() string { return err.message }
+
+func InvalidRequest(message string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "request is invalid"
+	}
+	return &PublicError{cause: ErrInvalid, message: message}
+}
 
 type ResultCommit struct {
 	AssignmentID string
@@ -39,4 +60,11 @@ type Repository interface {
 	ClaimAssignment(context.Context, string, [32]byte, time.Time, time.Time, time.Time) (Assignment, error)
 	HeartbeatAssignment(context.Context, string, string, [32]byte, time.Time, time.Time) error
 	CommitResult(context.Context, ResultCommit) (ResultReceipt, error)
+}
+
+// AssignmentWaiter is an optional repository capability for event-driven
+// probe claims. Implementations re-check durable claim eligibility before and
+// after waiting so a PostgreSQL notification cannot lose a state transition.
+type AssignmentWaiter interface {
+	WaitForAssignment(context.Context, string, time.Time) error
 }

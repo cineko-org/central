@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	"github.com/cineko-org/central/internal/observation/planning"
 )
 
 const (
@@ -18,23 +19,31 @@ const (
 var ErrTargetBusy = errors.New("observation target already has an active assignment")
 
 type Policy struct {
-	ID              string
-	Enabled         bool
-	TaskKind        string
-	Theater         central.Theater
-	TargetDateMode  string
-	TargetDates     []string
-	HorizonDays     int
-	Locale          string
-	TimeZone        string
-	EgressPolicyID  string
-	Priority        int
-	MinimumInterval time.Duration
-	MaximumInterval time.Duration
-	ExecutionWindow time.Duration
-	NextRunAt       time.Time
-	LastFinishedAt  time.Time
-	LastOutcome     string
+	ID                       string
+	Enabled                  bool
+	TaskKind                 string
+	Theater                  central.Theater
+	TargetDateMode           string
+	TargetDates              []string
+	HorizonDays              int
+	Locale                   string
+	TimeZone                 string
+	EgressPolicyID           string
+	Priority                 int
+	MinimumInterval          time.Duration
+	MaximumInterval          time.Duration
+	ExecutionWindow          time.Duration
+	NextRunAt                time.Time
+	LastFinishedAt           time.Time
+	LastOutcome              string
+	HotTargets               []planning.MonitorTarget
+	HotTargetFingerprint     string
+	LastHotTargetFingerprint string
+	LastHotFinishedAt        time.Time
+	LastHotTargetDates       []string
+	LastBaselineFinishedAt   time.Time
+	LastBaselineTargetDate   string
+	BaselineMaximumInterval  time.Duration
 }
 
 type CandidateProbe struct {
@@ -72,17 +81,19 @@ type TerminalPolicyRun struct {
 }
 
 type NewAssignment struct {
-	ID         string
-	PolicyID   string
-	Task       central.AssignmentTask
-	Priority   int
-	Status     string
-	NotBefore  time.Time
-	Deadline   time.Time
-	FinishedAt time.Time
-	ReasonCode string
-	CreatedAt  time.Time
-	Candidates []CandidateProbe
+	ID                   string
+	PolicyID             string
+	Task                 central.AssignmentTask
+	Lane                 planning.Lane
+	HotTargetFingerprint string
+	Priority             int
+	Status               string
+	NotBefore            time.Time
+	Deadline             time.Time
+	FinishedAt           time.Time
+	ReasonCode           string
+	CreatedAt            time.Time
+	Candidates           []CandidateProbe
 }
 
 type SeatMapBackfillTarget struct {
@@ -128,6 +139,7 @@ type CycleRepository interface {
 	CatalogRefreshRequired(context.Context, time.Time) (bool, error)
 	SeatMapBackfillTarget(context.Context, time.Time) (*SeatMapBackfillTarget, error)
 	DuePolicies(context.Context, time.Time, int) ([]Policy, error)
+	PreemptQueuedBaseline(context.Context, string, time.Time) error
 	EligibleProbes(context.Context, Policy, time.Time, time.Time) ([]CandidateProbe, error)
 	CreateAssignment(context.Context, NewAssignment) error
 	SuspendPolicy(context.Context, string, string, time.Time) error
