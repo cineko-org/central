@@ -42,5 +42,6 @@ contract-release-check:
 
 workflow-check:
 	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION) .github/workflows/*.yml
+	python3 scripts/verify-release-metadata.py
 
 check: lint security coverage test integration frontend-check contract-release-check workflow-check
