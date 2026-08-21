@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.1](https://github.com/cineko-org/central/compare/v2.6.0...v2.6.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* assign seat map scan policy ([#18](https://github.com/cineko-org/central/issues/18)) ([1a2e03f](https://github.com/cineko-org/central/commit/1a2e03fba3644fbb12e506f702a936f7ddb93c45))
+
 ## [2.6.0](https://github.com/cineko-org/central/compare/v2.5.0...v2.6.0) (2026-08-21)
 
 
