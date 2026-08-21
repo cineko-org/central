@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.14.0",
-    "@cineko/contracts": "git+https://github.com/cineko-org/contracts.git#3ce1fdcc56411c0fcc03e59030ae0f449bcc959f",
+    "@cineko/contracts": "git+https://github.com/cineko-org/contracts.git#7caf5c3d2d0e4db6887c8f6ec37b5fd620b11e48",
     "@mantine/core": "9.5.1",
     "@tabler/icons-react": "3.46.0",
     "react": "19.2.8",

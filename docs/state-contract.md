@@ -87,7 +87,7 @@ stateDiagram-v2
   booking command; title text is display-only and may change without changing identity.
 - The unique user/monitor/showtime/start key prevents duplicate commands for the same
   execution identity. New, availability-rearm, automatic-retry, and explicit-retry transitions emit one
-  durable `execution.ready.v1` event; conflict/queued replay emits none. A database
+  durable `execution.ready` event; conflict/queued replay emits none. A database
   trigger notifies the user-scoped event stream only when that transaction commits.
 - The lease is bound to one user installation and an opaque token hash. Another device
   cannot heartbeat or complete it. User deletion cascades execution commands.

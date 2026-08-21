@@ -14,6 +14,8 @@ service points in total.
   generated Cineko protobuf message directly. Handwritten DTOs, aliases that rename
   generated messages, schema/protocol version fields, and compatibility envelopes are
   prohibited; ProtoJSON is only the HTTP and JSONB encoding of that message.
+- Event discriminators are exact current-contract values. In particular, execution
+  availability is `execution.ready`; version-suffixed legacy names are not accepted.
 - `client` and `probe` routes require a Bearer credential. `admin` routes require the
   strict admin session cookie.
 - `publisher` routes require the release-publisher Bearer credential. Authentication

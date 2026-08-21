@@ -72,6 +72,43 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	}
 }
 
+func TestOwnedBoundariesRejectDTOsAliasesAndLegacyEvents(t *testing.T) {
+	root := contractRepositoryRoot(t)
+	dtoDeclaration := regexp.MustCompile(`\btype\s+\w+(?:Request|Response|Payload|Envelope|DTO|Dto)\s+(?:struct|=)`)
+	generatedAlias := regexp.MustCompile(`\btype\s+\w+\s*=\s*\*?\w+pb\.\w+`)
+	versionedExecutionEvent := regexp.MustCompile(`execution\.ready\.[[:alnum:]]`)
+
+	for _, relativeRoot := range []string{"cmd", "internal", "frontend/src", "docs"} {
+		walkRoot := filepath.Join(root, relativeRoot)
+		err := filepath.Walk(walkRoot, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.IsDir() || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			extension := filepath.Ext(path)
+			if extension != ".go" && extension != ".ts" && extension != ".tsx" && extension != ".md" {
+				return nil
+			}
+			contents := contractReadFile(t, path)
+			if dtoDeclaration.MatchString(contents) {
+				t.Errorf("Cineko-owned boundary declares a DTO in %s", path)
+			}
+			if generatedAlias.MatchString(contents) {
+				t.Errorf("generated protobuf alias found in %s", path)
+			}
+			if versionedExecutionEvent.MatchString(contents) {
+				t.Errorf("legacy execution event name found in %s", path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 	root := contractRepositoryRoot(t)
 	document := contractReadFile(t, filepath.Join(root, "docs/schema-contract.md"))
