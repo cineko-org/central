@@ -800,7 +800,7 @@ func (store *Store) ClientEventPage(
 			deleted.SetRevision(revision)
 			deleted.SetKind(kindMessage)
 			event.SetDeleted(deleted)
-		case eventType == "execution.ready" || eventType == "execution.ready.v1":
+		case eventType == "execution.ready":
 			ready := &clientpb.ExecutionReady{}
 			if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, ready); err != nil {
 				return central.ClientEventBatch{}, fmt.Errorf("decode execution-ready client event: %w", err)
