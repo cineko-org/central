@@ -8,43 +8,29 @@ import (
 	"time"
 
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	contracts "github.com/cineko-org/contracts/v3"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type CatalogRepository interface {
 	AuthorizeCatalogWrite(context.Context, string, string, string) error
-	Catalog(context.Context) (contracts.CatalogIndex, error)
-	CatalogRefreshStatus(context.Context, time.Time, time.Time) (CatalogRefreshStatus, error)
+	Catalog(context.Context) (*catalogpb.CatalogIndex, error)
+	CatalogRefreshStatus(context.Context, time.Time, time.Time) (*adminpb.CatalogRefreshStatus, error)
 	RequestCatalogRefresh(context.Context, time.Time) error
-	UpsertCatalogSnapshot(context.Context, contracts.CatalogSnapshot) (int64, error)
-	PutSeatMapVersion(context.Context, contracts.SeatMapVersion) (int64, error)
-	SeatMapVersion(context.Context, string) (contracts.SeatMapVersion, error)
+	UpsertCatalogSnapshot(context.Context, *catalogpb.CatalogSnapshot) (int64, error)
+	PutSeatMap(context.Context, *seatmappb.Snapshot) (int64, error)
+	SeatMap(context.Context, string) (*seatmappb.Snapshot, error)
 	RequestSeatMapBackfill(context.Context, string, time.Time) error
 }
 
-func (service *CatalogService) AuthorizeClientWrite(
-	ctx context.Context,
-	principal ClientPrincipal,
-	installationID string,
-	capability string,
-) error {
+func (service *CatalogService) AuthorizeClientWrite(ctx context.Context, principal ClientPrincipal, installationID, capability string) error {
 	installationID = strings.TrimSpace(installationID)
 	if installationID == "" {
 		return ErrUnauthorized
 	}
-	return service.repository.AuthorizeCatalogWrite(
-		ctx, principal.UserID, installationID, capability,
-	)
-}
-
-type CatalogRefreshStatus struct {
-	State           string     `json:"state"`
-	CatalogEmpty    bool       `json:"catalogEmpty"`
-	RequestedAt     *time.Time `json:"requestedAt,omitempty"`
-	Active          bool       `json:"active"`
-	EligibleProbes  int        `json:"eligibleProbes"`
-	LastStatus      string     `json:"lastStatus,omitempty"`
-	LastAttemptedAt *time.Time `json:"lastAttemptedAt,omitempty"`
+	return service.repository.AuthorizeCatalogWrite(ctx, principal.UserID, installationID, capability)
 }
 
 type CatalogService struct {
@@ -59,27 +45,25 @@ func NewCatalogService(repository CatalogRepository) (*CatalogService, error) {
 	return &CatalogService{repository: repository, clock: time.Now}, nil
 }
 
-func (service *CatalogService) Catalog(ctx context.Context) (contracts.CatalogIndex, error) {
+func (service *CatalogService) Catalog(ctx context.Context) (*catalogpb.CatalogIndex, error) {
 	return service.repository.Catalog(ctx)
 }
 
-func (service *CatalogService) RefreshStatus(ctx context.Context) (CatalogRefreshStatus, error) {
+func (service *CatalogService) RefreshStatus(ctx context.Context) (*adminpb.CatalogRefreshStatus, error) {
 	now := service.clock().UTC()
-	status, err := service.repository.CatalogRefreshStatus(
-		ctx, now, now.Add(-DefaultProbeHeartbeatTTL),
-	)
+	status, err := service.repository.CatalogRefreshStatus(ctx, now, now.Add(-DefaultProbeHeartbeatTTL))
 	if err != nil {
-		return CatalogRefreshStatus{}, err
+		return nil, err
 	}
 	switch {
-	case status.Active:
-		status.State = "running"
-	case !status.CatalogEmpty && status.RequestedAt == nil:
-		status.State = "ready"
-	case status.EligibleProbes == 0:
-		status.State = "waiting_for_probe"
+	case status.GetActive():
+		status.SetRunning(&adminpb.CatalogRefreshRunning{})
+	case !status.GetCatalogEmpty() && status.GetRequestedAt() == nil:
+		status.SetReady(&adminpb.CatalogRefreshReady{})
+	case status.GetEligibleProbes() == 0:
+		status.SetWaitingForProbe(&adminpb.CatalogRefreshWaitingForProbe{})
 	default:
-		status.State = "queued"
+		status.SetQueued(&adminpb.CatalogRefreshQueued{})
 	}
 	return status, nil
 }
@@ -88,44 +72,39 @@ func (service *CatalogService) RequestRefresh(ctx context.Context) error {
 	return service.repository.RequestCatalogRefresh(ctx, service.clock().UTC())
 }
 
-func (service *CatalogService) PutSnapshot(
-	ctx context.Context,
-	snapshot contracts.CatalogSnapshot,
-) (int64, error) {
+func (service *CatalogService) PutSnapshot(ctx context.Context, snapshot *catalogpb.CatalogSnapshot) (int64, error) {
 	now := service.clock().UTC()
-	if snapshot.ObservedAt.IsZero() {
-		snapshot.ObservedAt = now
+	if snapshot == nil {
+		return 0, fmt.Errorf("%w: catalog snapshot is required", ErrInvalid)
 	}
-	snapshot.ObservedAt = snapshot.ObservedAt.UTC()
-	if err := catalogdomain.ValidateObservationTime(snapshot.ObservedAt, now); err != nil {
+	if snapshot.GetObservedAt() == nil {
+		snapshot.SetObservedAt(timestamppb.New(now))
+	}
+	if err := snapshot.GetObservedAt().CheckValid(); err != nil {
+		return 0, fmt.Errorf("%w: catalog observation time is invalid", ErrInvalid)
+	}
+	if err := catalogdomain.ValidateObservationTime(snapshot.GetObservedAt().AsTime(), now); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
+	if err := catalogdomain.NormalizeSnapshot(snapshot); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return service.repository.UpsertCatalogSnapshot(ctx, snapshot)
 }
 
-func (service *CatalogService) PutSeatMapVersion(
-	ctx context.Context,
-	version contracts.SeatMapVersion,
-) (int64, error) {
-	now := service.clock().UTC()
-	if err := catalogdomain.NormalizeSeatMapVersion(&version, now); err != nil {
+func (service *CatalogService) PutSeatMap(ctx context.Context, snapshot *seatmappb.Snapshot) (int64, error) {
+	if err := catalogdomain.NormalizeSeatMap(snapshot, service.clock().UTC()); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	return service.repository.PutSeatMapVersion(ctx, version)
+	return service.repository.PutSeatMap(ctx, snapshot)
 }
 
-func (service *CatalogService) SeatMapVersion(
-	ctx context.Context,
-	auditoriumID string,
-) (contracts.SeatMapVersion, error) {
+func (service *CatalogService) SeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Snapshot, error) {
 	auditoriumID = strings.TrimSpace(auditoriumID)
 	if auditoriumID == "" {
-		return contracts.SeatMapVersion{}, fmt.Errorf("%w: auditorium id is required", ErrInvalid)
+		return nil, fmt.Errorf("%w: auditorium id is required", ErrInvalid)
 	}
-	return service.repository.SeatMapVersion(ctx, auditoriumID)
+	return service.repository.SeatMap(ctx, auditoriumID)
 }
 
 func (service *CatalogService) RequestSeatMapBackfill(ctx context.Context, auditoriumID string) error {
@@ -136,23 +115,19 @@ func (service *CatalogService) RequestSeatMapBackfill(ctx context.Context, audit
 	return service.repository.RequestSeatMapBackfill(ctx, auditoriumID, service.clock().UTC())
 }
 
-// ResolveSeatMap returns Central's current layout or schedules its collection
-// when no stored layout exists.
-func (service *CatalogService) ResolveSeatMap(
-	ctx context.Context,
-	auditoriumID string,
-) (contracts.SeatMapResolution, error) {
-	version, err := service.SeatMapVersion(ctx, auditoriumID)
+// ResolveSeatMap returns the current layout or a typed capture state.
+func (service *CatalogService) ResolveSeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Resolution, error) {
+	snapshot, err := service.SeatMap(ctx, auditoriumID)
 	if err == nil {
-		return contracts.SeatMapResolution{
-			Status: contracts.SeatMapResolutionReady, SeatMap: &version,
-		}, nil
+		return seatmappb.Resolution_builder{Ready: seatmappb.Ready_builder{Snapshot: snapshot}.Build()}.Build(), nil
 	}
 	if !errors.Is(err, ErrNotFound) {
-		return contracts.SeatMapResolution{}, err
+		return nil, err
 	}
 	if err := service.RequestSeatMapBackfill(ctx, auditoriumID); err != nil {
-		return contracts.SeatMapResolution{}, err
+		return nil, err
 	}
-	return contracts.SeatMapResolution{Status: contracts.SeatMapResolutionWaiting}, nil
+	queued := seatmappb.CaptureQueued_builder{NextCheckAt: timestamppb.New(service.clock().UTC().Add(2 * time.Second))}.Build()
+	queued.SetTaskId(auditoriumID)
+	return seatmappb.Resolution_builder{CaptureQueued: queued}.Build(), nil
 }

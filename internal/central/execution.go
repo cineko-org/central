@@ -7,32 +7,11 @@ import (
 	"strings"
 	"time"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const DefaultExecutionLeaseTTL = 90 * time.Second
-
-type ExecutionCommand struct {
-	ID             string           `json:"id"`
-	UserID         string           `json:"-"`
-	MonitorID      string           `json:"monitorId"`
-	InstallationID string           `json:"installationId"`
-	Attempt        int              `json:"attempt"`
-	Payload        ExecutionPayload `json:"payload"`
-	LeaseToken     string           `json:"leaseToken"`
-	LeaseExpiresAt time.Time        `json:"leaseExpiresAt"`
-	CreatedAt      time.Time        `json:"createdAt"`
-}
-
-type ExecutionPayload = contracts.ExecutionPayload
-
-type ExecutionClaimRequest = contracts.ExecutionClaimRequest
-
-type ExecutionHeartbeatRequest = contracts.ExecutionHeartbeatRequest
-
-type ExecutionHeartbeatResponse = contracts.ExecutionHeartbeatResponse
-
-type ExecutionResultRequest = contracts.ExecutionResultRequest
 
 type ExecutionClaim struct {
 	UserID         string
@@ -54,13 +33,13 @@ type ExecutionCompletion struct {
 func (service *ClientService) ClaimExecution(
 	ctx context.Context,
 	principal ClientPrincipal,
-	request ExecutionClaimRequest,
-) (*ExecutionCommand, error) {
-	request.InstallationID = strings.TrimSpace(request.InstallationID)
-	if request.InstallationID == "" {
+	request *executionpb.ClaimRequest,
+) (*executionpb.ClaimResponse, error) {
+	installationID := strings.TrimSpace(request.GetInstallationId())
+	if installationID == "" {
 		return nil, ErrInvalid
 	}
-	if _, err := service.repository.GetClientDevice(ctx, principal.UserID, request.InstallationID); err != nil {
+	if _, err := service.repository.GetClientDevice(ctx, principal.UserID, installationID); err != nil {
 		return nil, ErrUnauthorized
 	}
 	token, leaseHash, err := service.secret("exl_")
@@ -69,59 +48,76 @@ func (service *ClientService) ClaimExecution(
 	}
 	now := service.clock().UTC()
 	command, err := service.repository.ClaimClientExecution(ctx, ExecutionClaim{
-		UserID: principal.UserID, InstallationID: request.InstallationID,
+		UserID: principal.UserID, InstallationID: installationID,
 		LeaseHash: leaseHash, LeaseExpiresAt: now.Add(DefaultExecutionLeaseTTL), Now: now,
 	})
 	if errors.Is(err, ErrNotFound) {
-		return nil, nil
+		response := &executionpb.ClaimResponse{}
+		response.SetNoCommand(&executionpb.NoCommand{})
+		return response, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	command.LeaseToken = token
-	return &command, nil
+	command.SetLeaseToken(token)
+	response := &executionpb.ClaimResponse{}
+	response.SetCommand(command)
+	return response, nil
 }
 
 func (service *ClientService) HeartbeatExecution(
 	ctx context.Context,
 	principal ClientPrincipal,
-	commandID string,
-	request ExecutionHeartbeatRequest,
-) (ExecutionHeartbeatResponse, error) {
-	commandID = strings.TrimSpace(commandID)
-	request.LeaseToken = strings.TrimSpace(request.LeaseToken)
-	if commandID == "" || request.LeaseToken == "" {
-		return ExecutionHeartbeatResponse{}, ErrInvalid
+	request *executionpb.HeartbeatRequest,
+) (*executionpb.HeartbeatResponse, error) {
+	commandID := strings.TrimSpace(request.GetCommandId())
+	leaseToken := strings.TrimSpace(request.GetLeaseToken())
+	if commandID == "" || leaseToken == "" {
+		return nil, ErrInvalid
 	}
 	now := service.clock().UTC()
 	expiresAt := now.Add(DefaultExecutionLeaseTTL)
 	if err := service.repository.HeartbeatClientExecution(
-		ctx, principal.UserID, commandID, sha256.Sum256([]byte(request.LeaseToken)), now, expiresAt,
+		ctx, principal.UserID, commandID, sha256.Sum256([]byte(leaseToken)), now, expiresAt,
 	); err != nil {
-		return ExecutionHeartbeatResponse{}, err
+		return nil, err
 	}
-	return ExecutionHeartbeatResponse{LeaseExpiresAt: expiresAt}, nil
+	response := &executionpb.HeartbeatResponse{}
+	response.SetLeaseExpiresAt(timestamppb.New(expiresAt))
+	return response, nil
 }
 
 func (service *ClientService) CompleteExecution(
 	ctx context.Context,
 	principal ClientPrincipal,
-	commandID string,
-	request ExecutionResultRequest,
+	request *executionpb.ResultRequest,
 ) error {
-	commandID = strings.TrimSpace(commandID)
-	request.LeaseToken = strings.TrimSpace(request.LeaseToken)
-	request.Status = strings.TrimSpace(request.Status)
-	request.ReasonCode = strings.TrimSpace(request.ReasonCode)
-	if commandID == "" || request.LeaseToken == "" ||
-		(request.Status != "completed" && request.Status != "failed") {
+	commandID := strings.TrimSpace(request.GetCommandId())
+	leaseToken := strings.TrimSpace(request.GetLeaseToken())
+	status, reasonCode := executionResult(request)
+	if commandID == "" || leaseToken == "" || status == "" {
 		return ErrInvalid
 	}
 	return service.repository.CompleteClientExecution(ctx, ExecutionCompletion{
 		UserID: principal.UserID, CommandID: commandID,
-		LeaseHash: sha256.Sum256([]byte(request.LeaseToken)), Status: request.Status,
-		ReasonCode: request.ReasonCode, Now: service.clock().UTC(),
+		LeaseHash: sha256.Sum256([]byte(leaseToken)), Status: status,
+		ReasonCode: reasonCode, Now: service.clock().UTC(),
 	})
+}
+
+func executionResult(request *executionpb.ResultRequest) (string, string) {
+	switch {
+	case request == nil:
+		return "", ""
+	case request.GetCompleted() != nil:
+		return "completed", ""
+	case request.GetFailed() != nil:
+		return "failed", strings.TrimSpace(request.GetFailed().GetReasonCode())
+	case request.GetRetryRequested() != nil:
+		return "failed", strings.TrimSpace(request.GetRetryRequested().GetReasonCode())
+	default:
+		return "", ""
+	}
 }
 
 // RetryExecution requeues one terminally failed command. The user boundary is

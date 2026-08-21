@@ -1,19 +1,46 @@
 import { act, type FormEventHandler } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type {
-  AdminConfiguration,
-  AdminDataSummary,
-  CatalogIndex,
-  ObservationIntelligence,
-  AdminProbe,
-  AdminObservationPolicy,
-  AdminReleases,
-  AdminSession,
-  AdminStatus,
-  ClientPINIssue,
-  ClientPINUser,
-} from '../src/central/types';
+import { create, toJson, type DescMessage, type MessageShape } from '@bufbuild/protobuf';
+import {
+  ClientPinIssueSchema,
+  ClientPinUserSchema,
+  CatalogRefreshStatusSchema,
+  ConfigurationSchema,
+  CreateClientUserResponseSchema,
+  CreateObservationPolicyResponseSchema,
+  DataSummarySchema,
+  GetCatalogRefreshStatusResponseSchema,
+  GetConfigurationResponseSchema,
+  GetDataSummaryResponseSchema,
+  GetObservationIntelligenceResponseSchema,
+  GetStatusResponseSchema,
+  ListClientUsersResponseSchema,
+  ListObservationPoliciesResponseSchema,
+  ListProbesResponseSchema,
+  LoginResponseSchema,
+  ObservationIntelligenceSchema,
+  ObservationPolicyInputSchema,
+  ObservationPolicySchema,
+  PrincipalSchema,
+  ProbeSchema,
+  RequestCatalogRefreshResponseSchema,
+  RotateClientPinResponseSchema,
+  StatusSchema,
+  UpdateObservationPolicyResponseSchema,
+  type ClientPinIssue,
+  type ClientPinUser,
+  type Configuration,
+  type DataSummary,
+  type ObservationIntelligence,
+  type ObservationPolicy,
+  type Principal,
+  type Probe,
+  type Status,
+} from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { CatalogSnapshotSchema, TheaterSchema } from '@cineko/contracts/gen/ts/cineko/catalog/catalog_pb';
+import { UserSchema } from '@cineko/contracts/gen/ts/cineko/client/client_pb';
+import { RegistrySchema, type Registry } from '@cineko/contracts/gen/ts/cineko/release/release_pb';
 
 vi.mock('../src/central/ui/LoginPageView', () => ({
   LoginPageView: (props: {
@@ -34,7 +61,7 @@ vi.mock('../src/central/ui/LoginPageView', () => ({
 }));
 
 vi.mock('../src/central/ui/StatusPageView', () => ({
-  StatusPageView: (props: { status?: AdminStatus; releases?: AdminReleases; updatedAt?: Date; failed: boolean; onRefresh: () => void }) => (
+  StatusPageView: (props: { status?: Status; releases?: Registry; updatedAt?: Date; failed: boolean; onRefresh: () => void }) => (
     <section data-testid="status-view" data-ready={String(props.status?.ready)} data-generation={String(props.releases?.generation)} data-updated={String(Boolean(props.updatedAt))} data-failed={String(props.failed)}>
       <button data-testid="status-refresh" onClick={props.onRefresh}>refresh</button>
     </section>
@@ -42,15 +69,15 @@ vi.mock('../src/central/ui/StatusPageView', () => ({
 }));
 
 vi.mock('../src/central/ui/ReleasesPageView', () => ({
-  ReleasesPageView: (props: { releases?: AdminReleases; failed: boolean; onRefresh: () => void }) => (
-    <section data-testid="releases-view" data-generation={String(props.releases?.generation)} data-records={String(props.releases ? Object.values(props.releases.components).flat().length : -1)} data-failed={String(props.failed)}>
+  ReleasesPageView: (props: { releases?: Registry; failed: boolean; onRefresh: () => void }) => (
+    <section data-testid="releases-view" data-generation={String(props.releases?.generation)} data-records={String(props.releases ? (props.releases.clients?.releases.length ?? 0) + (props.releases.browsers?.releases.length ?? 0) + (props.releases.playwright?.releases.length ?? 0) + (props.releases.launchers?.releases.length ?? 0) + (props.releases.probes?.releases.length ?? 0) : -1)} data-failed={String(props.failed)}>
       <button data-testid="releases-refresh" onClick={props.onRefresh}>refresh</button>
     </section>
   ),
 }));
 
 vi.mock('../src/central/ui/SettingsPageView', () => ({
-  SettingsPageView: (props: { configuration?: AdminConfiguration; releases?: AdminReleases; failed: boolean; onRefresh: () => void }) => (
+  SettingsPageView: (props: { configuration?: Configuration; releases?: Registry; failed: boolean; onRefresh: () => void }) => (
     <section data-testid="settings-view" data-listen={props.configuration?.listenAddress} data-generation={String(props.releases?.generation)} data-failed={String(props.failed)}>
       <button data-testid="settings-refresh" onClick={props.onRefresh}>refresh</button>
     </section>
@@ -59,12 +86,12 @@ vi.mock('../src/central/ui/SettingsPageView', () => ({
 
 vi.mock('../src/central/ui/ProbesPageView', () => ({
   ProbesPageView: (props: {
-    probes?: AdminProbe[];
-    removing?: AdminProbe;
+    probes?: Probe[];
+    removing?: Probe;
     busy: boolean;
     failure?: 'load' | 'remove';
     onRefresh: () => void;
-    onRemoveRequest: (probe: AdminProbe) => void;
+    onRemoveRequest: (probe: Probe) => void;
     onRemoveCancel: () => void;
     onRemove: () => void;
   }) => (
@@ -78,7 +105,7 @@ vi.mock('../src/central/ui/ProbesPageView', () => ({
 }));
 
 vi.mock('../src/central/ui/DataPageView', () => ({
-  DataPageView: (props: { summary?: AdminDataSummary; intelligence?: ObservationIntelligence; failed: boolean; onRefresh: () => void }) => (
+  DataPageView: (props: { summary?: DataSummary; intelligence?: ObservationIntelligence; failed: boolean; onRefresh: () => void }) => (
     <section data-testid="data-view" data-captures={String(props.summary?.scheduleCaptures)} data-snapshots={String(props.intelligence?.snapshotCount)} data-failed={String(props.failed)}>
       <button data-testid="data-refresh" onClick={props.onRefresh}>refresh</button>
     </section>
@@ -87,16 +114,16 @@ vi.mock('../src/central/ui/DataPageView', () => ({
 
 vi.mock('../src/central/ui/ObservationsPageView', () => ({
   ObservationsPageView: (props: {
-    policies?: AdminObservationPolicy[];
-    editing?: AdminObservationPolicy;
+    policies?: ObservationPolicy[];
+    editing?: ObservationPolicy;
     failed: boolean;
     saving: boolean;
     onSave: () => void;
     onRefresh: () => void;
     onRequestCatalogRefresh: () => void;
-    onEdit: (policy: AdminObservationPolicy) => void;
+    onEdit: (policy: ObservationPolicy) => void;
     onCancel: () => void;
-    onDelete: (policy: AdminObservationPolicy) => void;
+    onDelete: (policy: ObservationPolicy) => void;
   }) => (
     <section data-testid="observations-view" data-count={String(props.policies?.length)} data-editing={props.editing?.id} data-failed={String(props.failed)} data-saving={String(props.saving)}>
       <button data-testid="observations-save" onClick={props.onSave}>save</button>
@@ -110,27 +137,27 @@ vi.mock('../src/central/ui/ObservationsPageView', () => ({
 
 vi.mock('../src/central/ui/UsersPageView', () => ({
   UsersPageView: (props: {
-    users: ClientPINUser[];
+    users: ClientPinUser[];
     displayName: string;
-    issued?: ClientPINIssue;
-    deleting?: ClientPINUser;
+    issued?: ClientPinIssue;
+    deleting?: ClientPinUser;
     loading: boolean;
     failure: boolean;
     onDisplayNameChange: (value: string) => void;
     onCreate: FormEventHandler<HTMLFormElement>;
     onRotate: (userId: string) => void;
-    onDeleteRequest: (user: ClientPINUser) => void;
+    onDeleteRequest: (user: ClientPinUser) => void;
     onDeleteCancel: () => void;
     onDelete: () => void;
     onDismissIssue: () => void;
   }) => (
-    <section data-testid="users-view" data-count={String(props.users.length)} data-name={props.displayName} data-pin={props.issued?.pin} data-deleting={props.deleting?.user.id} data-loading={String(props.loading)} data-failure={String(props.failure)}>
+    <section data-testid="users-view" data-count={String(props.users.length)} data-name={props.displayName} data-pin={props.issued?.pin} data-deleting={props.deleting?.user?.id} data-loading={String(props.loading)} data-failure={String(props.failure)}>
       <input data-testid="display-name" value={props.displayName} onChange={(event) => props.onDisplayNameChange(event.currentTarget.value)} />
       <form data-testid="create-user" onSubmit={props.onCreate}><button type="submit">create</button></form>
       {props.users.map((user) => (
-        <span key={user.user.id}>
-          <button data-testid={`rotate-${user.user.id}`} onClick={() => props.onRotate(user.user.id)}>rotate</button>
-          <button data-testid={`delete-request-${user.user.id}`} onClick={() => props.onDeleteRequest(user)}>request delete</button>
+        <span key={user.user?.id}>
+          <button data-testid={`rotate-${user.user?.id}`} onClick={() => user.user && props.onRotate(user.user.id)}>rotate</button>
+          <button data-testid={`delete-request-${user.user?.id}`} onClick={() => props.onDeleteRequest(user)}>request delete</button>
         </span>
       ))}
       <button data-testid="delete-cancel" onClick={props.onDeleteCancel}>cancel</button>
@@ -151,50 +178,55 @@ import { UsersView } from '../src/central/UsersView';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const emptyReleases: AdminReleases = { generation: 0, components: { launcher: [], client: [], browser: [], playwright: [], probe: [] } };
-const configuration: AdminConfiguration = {
-  listenAddress: ':8080', clientSessionSeconds: 60, clientRefreshSeconds: 60, adminSessionSeconds: 60,
-  reconcileIntervalSeconds: 5, probeHeartbeatTtlSeconds: 90, probeOfflineRetentionDays: 30,
-  assignmentRetryMinSeconds: 1, assignmentRetryMaxSeconds: 5, reconcileBatchSize: 100,
-};
-const summary: AdminDataSummary = {
-  providers: 1, theaters: 2, auditoriums: 3, movies: 4, showtimes: 5, seatMapVersions: 6,
-  scheduleCaptures: 3, showtimeObservations: 2, observationPolicies: 4, activeObservationPolicies: 3,
-  queuedAssignments: 1, leasedAssignments: 1, completedAssignments: 1, failedAssignments: 0,
-};
-const intelligence: ObservationIntelligence = { snapshotCount: 3, showtimeObservations: 2, openingPatterns: [], demandPatterns: [] };
-const policy: AdminObservationPolicy = {
-  id: 'policy / 1', revision: 2, theaterId: 'theater_0013', enabled: true,
-  theater: { id: 'theater_0013', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' }, horizonDays: 14, priority: 50,
-  baselineMinSeconds: 900, baselineMaxSeconds: 1800, demandMinSeconds: 120, demandMaxSeconds: 300,
-  burstMinSeconds: 30, burstMaxSeconds: 90, burstDurationSeconds: 3600,
-  locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default', effectiveMode: 'baseline',
-  effectivePriority: 50, effectiveMinSeconds: 900, effectiveMaxSeconds: 1800, demandActive: false,
-  createdAt: '2026-08-12T00:00:00Z', updatedAt: '2026-08-12T00:00:00Z',
-};
-const catalog: CatalogIndex = {
-  generation: 1,
-  providers: [{ id: 'cgv', name: 'CGV' }],
-  theaters: [policy.theater],
-  movies: [],
-  auditoriums: [],
-  showtimes: [],
-};
-const probe: AdminProbe = {
-  id: 'probe-1', kind: 'container', networkId: 'direct', runtimeVersion: '1.0.0', browserRevision: '1228',
-  platform: 'linux', arch: 'amd64', status: 'online', draining: false, availableSlots: 1, maxConcurrency: 1,
-  health: 'healthy', updatedAt: '2026-08-12T00:00:00Z',
-};
-const offlineProbe: AdminProbe = { ...probe, id: 'probe / offline', status: 'offline', availableSlots: 0 };
-const user: ClientPINUser = {
-  user: { id: 'user / 1', displayName: 'User', createdAt: '2026-08-12T00:00:00Z', updatedAt: '2026-08-12T00:00:00Z' },
-  pinActive: true,
-  deviceCount: 1,
-};
-const issue: ClientPINIssue = { user: user.user, pin: '123456' };
+const emptyReleases = create(RegistrySchema);
+const configuration = create(ConfigurationSchema, {
+  listenAddress: ':8080', clientSessionSeconds: 60n, clientRefreshSeconds: 60n, adminSessionSeconds: 60n,
+  reconcileIntervalSeconds: 5n, probeHeartbeatTtlSeconds: 90n, probeOfflineRetentionDays: 30n,
+  assignmentRetryMinSeconds: 1n, assignmentRetryMaxSeconds: 5n, reconcileBatchSize: 100,
+});
+const summary = create(DataSummarySchema, {
+  providers: 1n, theaters: 2n, auditoriums: 3n, movies: 4n, showtimes: 5n, seatMapVersions: 6n,
+  scheduleCaptures: 3n, showtimeObservations: 2n, observationPolicies: 4n, activeObservationPolicies: 3n,
+  queuedAssignments: 1n, leasedAssignments: 1n, completedAssignments: 1n,
+});
+const intelligence = create(ObservationIntelligenceSchema, { snapshotCount: 3, showtimeObservations: 2 });
+const theater = create(TheaterSchema, { id: 'theater_0013', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' });
+const policyInput = create(ObservationPolicyInputSchema, { theaterId: theater.id, enabled: true, horizonDays: 14, priority: 50, baselineMinSeconds: 900, baselineMaxSeconds: 1_800, demandMinSeconds: 120, demandMaxSeconds: 300, burstMinSeconds: 30, burstMaxSeconds: 90, burstDurationSeconds: 3_600, locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default' });
+const policy = create(ObservationPolicySchema, { id: 'policy / 1', revision: 2n, theater, input: policyInput, effectiveMode: { mode: { case: 'baseline', value: {} } }, effectivePriority: 50, effectiveMinSeconds: 900, effectiveMaxSeconds: 1_800 });
+const catalog = create(CatalogSnapshotSchema, { generation: 1n, theaters: [theater] });
+const probe = create(ProbeSchema, { id: 'probe-1', kind: { kind: { case: 'container', value: {} } }, networkId: 'direct', runtime: { componentVersion: '1.0.0', browserRevision: '1228', platform: 'linux', architecture: 'amd64' }, state: { state: { case: 'online', value: {} } }, availableSlots: 1, maxConcurrency: 1, health: { health: { case: 'healthy', value: {} } } });
+const offlineProbe = create(ProbeSchema, {
+  id: 'probe / offline',
+  kind: { kind: { case: 'container', value: {} } },
+  networkId: 'direct',
+  runtime: {
+    componentVersion: '1.0.0',
+    browserRevision: '1228',
+    platform: 'linux',
+    architecture: 'amd64',
+  },
+  state: { state: { case: 'offline', value: {} } },
+  availableSlots: 0,
+  maxConcurrency: 1,
+  health: { health: { case: 'healthy', value: {} } },
+});
+const user = create(ClientPinUserSchema, { user: create(UserSchema, { id: 'user / 1', displayName: 'User' }), pinActive: true, deviceCount: 1 });
+const issue = create(ClientPinIssueSchema, { user: user.user, pin: '123456' });
+const catalogReady = create(CatalogRefreshStatusSchema, {
+  state: { case: 'ready', value: {} },
+  eligibleProbes: 1,
+});
+const catalogQueued = create(CatalogRefreshStatusSchema, {
+  state: { case: 'queued', value: {} },
+  eligibleProbes: 1,
+});
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+function protoJSON<T extends DescMessage>(schema: T, value: MessageShape<T>, status = 200): Response {
+  return json(toJson(schema, value), status);
 }
 
 async function settle(): Promise<void> {
@@ -230,9 +262,11 @@ describe('Central page controllers', () => {
   it('maps login fields, request body, loading, success, and failure', async () => {
     let resolveLogin!: (response: Response) => void;
     const pending = new Promise<Response>((resolve) => { resolveLogin = resolve; });
-    const session: AdminSession = { userId: 'admin', displayName: 'Admin', expiresAt: 1 };
-    const onLogin = vi.fn<(session: AdminSession) => void>();
-    const fetchMock = vi.fn<typeof fetch>().mockReturnValueOnce(pending).mockResolvedValueOnce(json({}, 500));
+    const session = create(PrincipalSchema, { userId: 'admin', displayName: 'Admin' });
+    const onLogin = vi.fn<(session: Principal) => void>();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockReturnValueOnce(pending)
+      .mockResolvedValueOnce(protoJSON(LoginResponseSchema, create(LoginResponseSchema)));
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<LoginView onLogin={onLogin} />));
 
@@ -244,7 +278,7 @@ describe('Central page controllers', () => {
     });
     await act(async () => container.querySelector<HTMLFormElement>('[data-testid="login-view"]')!.requestSubmit());
     expect(container.querySelector<HTMLElement>('[data-testid="login-view"]')?.dataset.loading).toBe('true');
-    resolveLogin(json(session));
+    resolveLogin(protoJSON(LoginResponseSchema, create(LoginResponseSchema, { principal: session })));
     await settle();
     expect(onLogin).toHaveBeenCalledWith(session);
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/v1/admin/login', expect.objectContaining({ method: 'POST', body: JSON.stringify({ userId: 'admin', password: 'secret' }) }));
@@ -259,7 +293,9 @@ describe('Central page controllers', () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const path = String(input);
-      return Promise.resolve(path.endsWith('/status') ? json({ ready: true }) : json({ ...emptyReleases, generation: 7 }));
+      return Promise.resolve(path.endsWith('/status')
+        ? protoJSON(GetStatusResponseSchema, create(GetStatusResponseSchema, { status: create(StatusSchema, { ready: true }) }))
+        : protoJSON(RegistrySchema, create(RegistrySchema, { generation: 7n })));
     });
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<StatusView onUnauthorized={vi.fn<() => void>()} />));
@@ -301,7 +337,7 @@ describe('Central page controllers', () => {
 
   it('maps release, settings, probe, and data responses including empty inventory', async () => {
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(json(emptyReleases));
+      .mockResolvedValueOnce(protoJSON(RegistrySchema, emptyReleases));
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<ReleasesView onUnauthorized={vi.fn<() => void>()} />));
     await settle();
@@ -309,21 +345,21 @@ describe('Central page controllers', () => {
 
     await act(async () => root.unmount());
     root = createRoot(container);
-    fetchMock.mockResolvedValueOnce(json(configuration)).mockResolvedValueOnce(json({ ...emptyReleases, generation: 4 }));
+    fetchMock.mockResolvedValueOnce(protoJSON(GetConfigurationResponseSchema, create(GetConfigurationResponseSchema, { configuration }))).mockResolvedValueOnce(protoJSON(RegistrySchema, create(RegistrySchema, { generation: 4n })));
     await act(async () => root.render(<SettingsView onUnauthorized={vi.fn<() => void>()} />));
     await settle();
     expect(container.querySelector<HTMLElement>('[data-testid="settings-view"]')?.dataset).toMatchObject({ listen: ':8080', generation: '4', failed: 'false' });
 
     await act(async () => root.unmount());
     root = createRoot(container);
-    fetchMock.mockResolvedValueOnce(json({ data: [probe] }));
+    fetchMock.mockResolvedValueOnce(protoJSON(ListProbesResponseSchema, create(ListProbesResponseSchema, { probes: [probe] })));
     await act(async () => root.render(<ProbesView onUnauthorized={vi.fn<() => void>()} />));
     await settle();
     expect(container.querySelector<HTMLElement>('[data-testid="probes-view"]')?.dataset.count).toBe('1');
 
     await act(async () => root.unmount());
     root = createRoot(container);
-    fetchMock.mockResolvedValueOnce(json(summary)).mockResolvedValueOnce(json(intelligence));
+    fetchMock.mockResolvedValueOnce(protoJSON(GetDataSummaryResponseSchema, create(GetDataSummaryResponseSchema, { summary }))).mockResolvedValueOnce(protoJSON(GetObservationIntelligenceResponseSchema, create(GetObservationIntelligenceResponseSchema, { intelligence })));
     await act(async () => root.render(<DataView onUnauthorized={vi.fn<() => void>()} />));
     await settle();
     expect(container.querySelector<HTMLElement>('[data-testid="data-view"]')?.dataset).toMatchObject({ captures: '3', snapshots: '3' });
@@ -333,9 +369,9 @@ describe('Central page controllers', () => {
     let resolveDelete!: (response: Response) => void;
     const pendingDelete = new Promise<Response>((resolve) => { resolveDelete = resolve; });
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(json({ data: [offlineProbe] }))
+      .mockResolvedValueOnce(protoJSON(ListProbesResponseSchema, create(ListProbesResponseSchema, { probes: [offlineProbe] })))
       .mockReturnValueOnce(pendingDelete)
-      .mockResolvedValueOnce(json({ data: [] }));
+      .mockResolvedValueOnce(protoJSON(ListProbesResponseSchema, create(ListProbesResponseSchema)));
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<ProbesView onUnauthorized={vi.fn<() => void>()} />));
     await settle();
@@ -358,7 +394,7 @@ describe('Central page controllers', () => {
   it.each([401, 409])('maps Probe removal status %d without losing the inventory', async (status) => {
     const unauthorized = vi.fn<() => void>();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(json({ data: [offlineProbe] }))
+      .mockResolvedValueOnce(protoJSON(ListProbesResponseSchema, create(ListProbesResponseSchema, { probes: [offlineProbe] })))
       .mockResolvedValueOnce(json({}, status)));
     await act(async () => root.render(<ProbesView onUnauthorized={unauthorized} />));
     await settle();
@@ -373,20 +409,20 @@ describe('Central page controllers', () => {
     let policies = [policy];
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = String(input);
-      if (path === '/v1/admin/catalog') return Promise.resolve(json(catalog));
+      if (path === '/v1/admin/catalog') return Promise.resolve(protoJSON(CatalogSnapshotSchema, catalog));
       if (path === '/v1/admin/catalog-refresh' && init?.method === 'POST') {
-        return Promise.resolve(json({ state: 'queued', catalogEmpty: false, active: false, eligibleProbes: 1 }, 202));
+        return Promise.resolve(protoJSON(RequestCatalogRefreshResponseSchema, create(RequestCatalogRefreshResponseSchema, { status: catalogQueued }), 202));
       }
       if (path === '/v1/admin/catalog-refresh') {
-        return Promise.resolve(json({ state: 'ready', catalogEmpty: false, active: false, eligibleProbes: 1 }));
+        return Promise.resolve(protoJSON(GetCatalogRefreshStatusResponseSchema, create(GetCatalogRefreshStatusResponseSchema, { status: catalogReady })));
       }
-      if (init?.method === 'PUT') return Promise.resolve(json(policy));
+      if (init?.method === 'PUT') return Promise.resolve(protoJSON(UpdateObservationPolicyResponseSchema, create(UpdateObservationPolicyResponseSchema, { policy })));
       if (init?.method === 'DELETE') {
         policies = [];
         return Promise.resolve(new Response(null, { status: 204 }));
       }
-      if (init?.method === 'POST') return Promise.resolve(json({ id: 'new', revision: 1 }));
-      return Promise.resolve(json({ data: policies }));
+      if (init?.method === 'POST') return Promise.resolve(protoJSON(CreateObservationPolicyResponseSchema, create(CreateObservationPolicyResponseSchema, { policy: create(ObservationPolicySchema, { ...policy, id: 'new', revision: 1n }) })));
+      return Promise.resolve(protoJSON(ListObservationPoliciesResponseSchema, create(ListObservationPoliciesResponseSchema, { policies })));
     });
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<ObservationsView onUnauthorized={vi.fn<() => void>()} />));
@@ -424,7 +460,7 @@ describe('Central page controllers', () => {
   it.each([401, 500])('maps observation policy failure %d', async (status) => {
     const unauthorized = vi.fn<() => void>();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>((input) => Promise.resolve(
-      String(input) === '/v1/admin/catalog' ? json(catalog) : json({}, status),
+      String(input) === '/v1/admin/catalog' ? protoJSON(CatalogSnapshotSchema, catalog) : json({}, status),
     )));
     await act(async () => root.render(<ObservationsView onUnauthorized={unauthorized} />));
     await settle();
@@ -435,13 +471,30 @@ describe('Central page controllers', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-delete-policy / 1"]')?.click());
   });
 
+  it('uses the policy defaults when an incomplete observation record is edited', async () => {
+    const incompletePolicy = create(ObservationPolicySchema, { id: 'policy-empty', revision: 1n });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>((input) => {
+      const path = String(input);
+      if (path === '/v1/admin/catalog') return Promise.resolve(protoJSON(CatalogSnapshotSchema, catalog));
+      if (path === '/v1/admin/catalog-refresh') {
+        return Promise.resolve(protoJSON(GetCatalogRefreshStatusResponseSchema, create(GetCatalogRefreshStatusResponseSchema, { status: catalogReady })));
+      }
+      return Promise.resolve(protoJSON(ListObservationPoliciesResponseSchema, create(ListObservationPoliciesResponseSchema, { policies: [incompletePolicy] })));
+    }));
+    await act(async () => root.render(<ObservationsView onUnauthorized={vi.fn<() => void>()} />));
+    await settle();
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-edit-policy-empty"]')!.click());
+    expect(container.querySelector<HTMLElement>('[data-testid="observations-view"]')?.dataset.editing).toBe('policy-empty');
+  });
+
   it('reports a manual catalog refresh failure', async () => {
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = String(input);
-      if (path === '/v1/admin/catalog') return Promise.resolve(json(catalog));
+      if (path === '/v1/admin/catalog') return Promise.resolve(protoJSON(CatalogSnapshotSchema, catalog));
       if (path === '/v1/admin/catalog-refresh' && init?.method === 'POST') return Promise.resolve(json({}, 500));
-      if (path === '/v1/admin/catalog-refresh') return Promise.resolve(json({ state: 'ready', catalogEmpty: false, active: false, eligibleProbes: 1 }));
-      return Promise.resolve(json({ data: [policy] }));
+      if (path === '/v1/admin/catalog-refresh') return Promise.resolve(protoJSON(GetCatalogRefreshStatusResponseSchema, create(GetCatalogRefreshStatusResponseSchema, { status: catalogReady })));
+      return Promise.resolve(protoJSON(ListObservationPoliciesResponseSchema, create(ListObservationPoliciesResponseSchema, { policies: [policy] })));
     });
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<ObservationsView onUnauthorized={vi.fn<() => void>()} />));
@@ -458,8 +511,8 @@ describe('Central page controllers', () => {
     let deleteFailed = false;
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = String(input);
-      if (path === '/v1/admin/catalog') return Promise.resolve(json(catalog));
-      if (path === '/v1/admin/catalog-refresh') return Promise.resolve(json({ state: 'ready', catalogEmpty: false, active: false, eligibleProbes: 1 }));
+      if (path === '/v1/admin/catalog') return Promise.resolve(protoJSON(CatalogSnapshotSchema, catalog));
+      if (path === '/v1/admin/catalog-refresh') return Promise.resolve(protoJSON(GetCatalogRefreshStatusResponseSchema, create(GetCatalogRefreshStatusResponseSchema, { status: catalogReady })));
       if (init?.method === 'POST' && !saveStarted) {
         saveStarted = true;
         return pendingSave;
@@ -468,7 +521,7 @@ describe('Central page controllers', () => {
         deleteFailed = true;
         return Promise.resolve(json({}, 500));
       }
-      return Promise.resolve(json({ data: [policy] }));
+      return Promise.resolve(protoJSON(ListObservationPoliciesResponseSchema, create(ListObservationPoliciesResponseSchema, { policies: [policy] })));
     });
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<ObservationsView onUnauthorized={vi.fn<() => void>()} />));
@@ -478,7 +531,7 @@ describe('Central page controllers', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-delete-policy / 1"]')!.click());
     expect(saveStarted).toBe(true);
     expect(deleteFailed).toBe(false);
-    resolveSave(json({ id: 'new', revision: 1 }));
+    resolveSave(protoJSON(CreateObservationPolicyResponseSchema, create(CreateObservationPolicyResponseSchema, { policy: create(ObservationPolicySchema, { ...policy, id: 'new', revision: 1n }) })));
     await settle();
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-edit-policy / 1"]')!.click());
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="observations-delete-policy / 1"]')!.click());
@@ -489,13 +542,13 @@ describe('Central page controllers', () => {
 
   it('maps user create, rotate, delete, cancel, and dismiss mutations', async () => {
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(json({ data: [user] }))
-      .mockResolvedValueOnce(json(issue))
-      .mockResolvedValueOnce(json({ data: [user] }))
-      .mockResolvedValueOnce(json(issue))
-      .mockResolvedValueOnce(json({ data: [user] }))
+      .mockResolvedValueOnce(protoJSON(ListClientUsersResponseSchema, create(ListClientUsersResponseSchema, { users: [user] })))
+      .mockResolvedValueOnce(protoJSON(CreateClientUserResponseSchema, create(CreateClientUserResponseSchema, { issue })))
+      .mockResolvedValueOnce(protoJSON(ListClientUsersResponseSchema, create(ListClientUsersResponseSchema, { users: [user] })))
+      .mockResolvedValueOnce(protoJSON(RotateClientPinResponseSchema, create(RotateClientPinResponseSchema, { issue })))
+      .mockResolvedValueOnce(protoJSON(ListClientUsersResponseSchema, create(ListClientUsersResponseSchema, { users: [user] })))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(json({ data: [] }));
+      .mockResolvedValueOnce(protoJSON(ListClientUsersResponseSchema, create(ListClientUsersResponseSchema)));
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<UsersView onUnauthorized={vi.fn<() => void>()} />));
     await settle();
@@ -535,7 +588,9 @@ describe('Central page controllers', () => {
     ['rotate', '[data-testid="rotate-user / 1"]'],
     ['delete', '[data-testid="delete-confirm"]'],
   ] as const)('maps a failed user %s mutation without losing the current user', async (operation, selector) => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(json({ data: [user] })).mockResolvedValueOnce(json({}, 500));
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(protoJSON(ListClientUsersResponseSchema, create(ListClientUsersResponseSchema, { users: [user] })))
+      .mockResolvedValueOnce(json({}, 500));
     vi.stubGlobal('fetch', fetchMock);
     await act(async () => root.render(<UsersView onUnauthorized={vi.fn<() => void>()} />));
     await settle();

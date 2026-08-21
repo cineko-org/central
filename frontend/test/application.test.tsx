@@ -1,7 +1,8 @@
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AdminSession } from '../src/central/types';
+import { create, toJson } from '@bufbuild/protobuf';
+import { GetSessionResponseSchema, PrincipalSchema, type Principal } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
 
 vi.mock('../src/central/ui/CentralShellView', () => ({
   CentralShellView: (props: {
@@ -24,8 +25,8 @@ vi.mock('../src/central/ui/CentralShellView', () => ({
 }));
 
 vi.mock('../src/central/LoginView', () => ({
-  LoginView: ({ onLogin }: { onLogin: (session: AdminSession) => void }) => (
-    <button data-testid="login" onClick={() => onLogin({ userId: 'admin', displayName: 'Admin', expiresAt: 1 })}>login</button>
+  LoginView: ({ onLogin }: { onLogin: (session: Principal) => void }) => (
+    <button data-testid="login" onClick={() => onLogin(create(PrincipalSchema, { userId: 'admin', displayName: 'Admin' }))}>login</button>
   ),
 }));
 
@@ -78,7 +79,7 @@ describe('Central application controller', () => {
   });
 
   it('loads an admin session, closes navigation during routing, and logs out', async () => {
-    const session: AdminSession = { userId: 'admin', displayName: 'Admin', expiresAt: 1 };
+    const session = create(PrincipalSchema, { userId: 'admin', displayName: 'Admin' });
     let resolveSession!: (response: Response) => void;
     const pendingSession = new Promise<Response>((resolve) => { resolveSession = resolve; });
     const fetchMock = vi.fn<typeof fetch>()
@@ -88,7 +89,7 @@ describe('Central application controller', () => {
 
     await act(async () => root.render(<CentralApplication />));
     expect(container.textContent).toBe('');
-    resolveSession(json(session));
+    resolveSession(json(toJson(GetSessionResponseSchema, create(GetSessionResponseSchema, { principal: session }))));
     await settle();
     expect(container.querySelector('[data-testid="page-overview"]')).not.toBeNull();
 

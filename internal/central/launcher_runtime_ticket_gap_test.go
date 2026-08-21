@@ -4,23 +4,26 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
 )
 
 func TestLauncherRuntimeRejectsClientAboveAvailableLauncher(t *testing.T) {
 	service, _ := newClientServiceHarness(t)
 	client := validClientRelease()
-	client.MinimumLauncherVersion = "2.0.0"
+	client.SetMinimumLauncherVersion("2.0.0")
 
-	if err := service.ConfigureReleases([]ClientRelease{client}); err != nil {
+	if err := service.ConfigureReleases([]*releasepb.ClientRelease{client}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.ConfigureBrowserReleases([]BrowserRelease{validBrowserRelease()}); err != nil {
+	if err := service.ConfigureBrowserReleases([]*releasepb.BrowserRelease{validBrowserRelease()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.ConfigurePlaywrightReleases([]PlaywrightRelease{validPlaywrightRelease()}); err != nil {
+	if err := service.ConfigurePlaywrightReleases([]*releasepb.PlaywrightRelease{validPlaywrightRelease()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.ConfigureLauncherReleases([]LauncherRelease{validLauncherRelease()}); err != nil {
+	if err := service.ConfigureLauncherReleases([]*releasepb.LauncherRelease{validLauncherRelease()}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -41,9 +44,10 @@ func TestLaunchTicketExchangePropagatesReleaseGenerationError(t *testing.T) {
 	service.clock = func() time.Time { return clientTestTime }
 	service.random = deterministicClientRandom
 
-	_, err = service.ExchangeLaunchTicket(t.Context(), ClientSessionExchangeRequest{
-		LaunchTicket: "launch-ticket", ClientNonce: "client-nonce-0001",
-	})
+	request := &clientpb.SessionExchangeRequest{}
+	request.SetLaunchTicket("launch-ticket")
+	request.SetClientNonce("client-nonce-0001")
+	_, err = service.ExchangeLaunchTicket(t.Context(), request)
 	if !errors.Is(err, errInjectedClient) {
 		t.Fatalf("release generation error = %v", err)
 	}

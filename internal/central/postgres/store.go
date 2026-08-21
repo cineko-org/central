@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -14,10 +13,17 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	contracts "github.com/cineko-org/contracts/v3"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Store struct {
@@ -90,12 +96,12 @@ func (store *Store) RegisterProbe(ctx context.Context, probe central.Probe) (cen
 		INSERT INTO probe_runtimes (
 			id, installation_id, owner_user_id, device_id, kind, network_id, network_hint, capabilities,
 			available_capabilities, max_concurrency,
-			runtime_version, protocol, browser_revision, platform, architecture,
+			runtime_version, browser_revision, platform, architecture,
 			token_hash, token_expires_at, status, draining, available_slots, health, reason_code,
 			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, '{}', $9, $10, $11, $12, $13, $14,
-			$15, $16, 'online', false, 0, 'healthy', '', $17, $17
+			$1, $2, $3, $4, $5, $6, $7, $8, '{}', $9, $10, $11, $12, $13,
+			$14, $15, 'online', false, 0, 'healthy', '', $16, $16
 		)
 		ON CONFLICT (installation_id) DO UPDATE SET
 			owner_user_id = EXCLUDED.owner_user_id,
@@ -107,7 +113,6 @@ func (store *Store) RegisterProbe(ctx context.Context, probe central.Probe) (cen
 			available_capabilities = '{}',
 			max_concurrency = EXCLUDED.max_concurrency,
 			runtime_version = EXCLUDED.runtime_version,
-			protocol = EXCLUDED.protocol,
 			browser_revision = EXCLUDED.browser_revision,
 			platform = EXCLUDED.platform,
 			architecture = EXCLUDED.architecture,
@@ -123,8 +128,8 @@ func (store *Store) RegisterProbe(ctx context.Context, probe central.Probe) (cen
 			AND probe_runtimes.device_id = EXCLUDED.device_id
 		RETURNING id, created_at
 	`, probe.ID, probe.InstallationID, probe.OwnerUserID, probe.DeviceID, probe.Kind, probe.NetworkID, probe.NetworkHint,
-		probe.Capabilities, probe.MaxConcurrency, probe.Runtime.Version, probe.Runtime.Protocol,
-		probe.Runtime.BrowserRevision, probe.Runtime.Platform, probe.Runtime.Arch,
+		probe.Capabilities, probe.MaxConcurrency, probe.Runtime.GetComponentVersion(),
+		probe.Runtime.GetBrowserRevision(), probe.Runtime.GetPlatform(), probe.Runtime.GetArchitecture(),
 		probe.TokenHash[:], probe.TokenExpiresAt, probe.CreatedAt)
 	if err := row.Scan(&probe.ID, &probe.CreatedAt); err != nil {
 		return central.Probe{}, fmt.Errorf("register probe: %w", err)
@@ -162,7 +167,7 @@ func (store *Store) AuthenticateProbe(
 func (store *Store) HeartbeatProbe(
 	ctx context.Context,
 	probeID string,
-	heartbeat central.ProbeHeartbeatRequest,
+	heartbeat *probepb.HeartbeatRequest,
 	now time.Time,
 ) (central.Probe, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -179,6 +184,11 @@ func (store *Store) HeartbeatProbe(
 		return central.Probe{}, fmt.Errorf("lock probe heartbeat: %w", err)
 	}
 	var probe central.Probe
+	availableCapabilities, err := probedomain.CapabilityKeys(heartbeat.GetAvailableCapabilities())
+	if err != nil {
+		return central.Probe{}, fmt.Errorf("encode heartbeat capabilities: %w", err)
+	}
+	health, reasonCode := heartbeatHealth(heartbeat.GetHealth())
 	err = tx.QueryRow(ctx, `
 		UPDATE probe_runtimes
 		SET status = 'online', draining = $2, available_slots = $3, health = $4,
@@ -186,15 +196,15 @@ func (store *Store) HeartbeatProbe(
 			last_heartbeat_at = $7, updated_at = $7
 		WHERE id = $1
 		RETURNING id, draining
-	`, probeID, heartbeat.Draining, heartbeat.AvailableSlots, heartbeat.Health,
-		heartbeat.ReasonCode, heartbeat.AvailableCapabilities, now).Scan(&probe.ID, &probe.Draining)
+	`, probeID, heartbeat.GetDraining(), heartbeat.GetAvailableSlots(), health,
+		reasonCode, availableCapabilities, now).Scan(&probe.ID, &probe.Draining)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return central.Probe{}, central.ErrNotFound
 	}
 	if err != nil {
 		return central.Probe{}, fmt.Errorf("heartbeat probe: %w", err)
 	}
-	if previousSlots < 1 && heartbeat.AvailableSlots > 0 && heartbeat.Health == "healthy" && !heartbeat.Draining {
+	if previousSlots < 1 && heartbeat.GetAvailableSlots() > 0 && health == "healthy" && !heartbeat.GetDraining() {
 		if err := notifyAssignmentAvailability(ctx, tx); err != nil {
 			return central.Probe{}, err
 		}
@@ -330,11 +340,7 @@ func claimQueuedAssignment(
 			lease_expires_at = LEAST($5, assignment.deadline), updated_at = $3
 		FROM candidate
 		WHERE assignment.id = candidate.id
-		RETURNING assignment.id, assignment.task_kind, assignment.theater_id,
-			assignment.theater_provider_id, assignment.theater_source_key,
-			assignment.theater_region, assignment.theater_name, assignment.target_dates::text[],
-			assignment.locale, assignment.time_zone, assignment.egress_policy_id,
-			assignment.status, assignment.not_before, assignment.deadline,
+		RETURNING assignment.id, assignment.status, assignment.not_before, assignment.deadline,
 			assignment.probe_id, assignment.lease_expires_at, assignment.created_at, assignment.updated_at,
 			assignment.task_data
 	`, probeID, capabilities, now, leaseHash[:], leaseExpiresAt, networkID))
@@ -453,16 +459,16 @@ func authorizeAssignmentHeartbeat(
 	return nil
 }
 
-func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommit) (central.ResultReceipt, error) {
+func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommit) (*observationpb.ResultReceipt, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return central.ResultReceipt{}, fmt.Errorf("begin result commit: %w", err)
+		return nil, fmt.Errorf("begin result commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	state, err := lockAssignmentResult(ctx, tx, commit.AssignmentID)
 	if err != nil {
-		return central.ResultReceipt{}, err
+		return nil, err
 	}
 	if receipt, committed, err := existingAttemptReceipt(ctx, tx, commit); committed || err != nil {
 		return receipt, err
@@ -471,29 +477,26 @@ func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommi
 		return receipt, err
 	}
 	if err := authorizeResultCommit(state, commit); err != nil {
-		return central.ResultReceipt{}, err
+		return nil, err
 	}
 	if err := writeAssignmentResult(ctx, tx, commit); err != nil {
-		return central.ResultReceipt{}, err
+		return nil, err
 	}
 	if err := finishAssignmentAttempt(ctx, tx, commit); err != nil {
-		return central.ResultReceipt{}, err
+		return nil, err
 	}
-	if commit.Result.Status != "failed" {
+	if commit.Result.GetCompleted() != nil {
 		if err := storeSuccessfulResult(ctx, tx, commit, state); err != nil {
-			return central.ResultReceipt{}, err
+			return nil, err
 		}
 	}
 	if err := notifyAssignmentAvailability(ctx, tx); err != nil {
-		return central.ResultReceipt{}, err
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return central.ResultReceipt{}, fmt.Errorf("commit assignment result: %w", err)
+		return nil, fmt.Errorf("commit assignment result: %w", err)
 	}
-	return central.ResultReceipt{
-		AssignmentID: commit.AssignmentID, RunID: commit.Result.RunID,
-		ContentHash: commit.PayloadHash, Status: commit.Result.Status,
-	}, nil
+	return resultReceipt(commit.AssignmentID, commit.Result.GetRunId(), commit.PayloadHash, false), nil
 }
 
 func storeSuccessfulResult(
@@ -503,47 +506,54 @@ func storeSuccessfulResult(
 	state assignmentResultState,
 ) error {
 	switch state.taskKind {
-	case contracts.CapabilityCGVCatalogCapture:
+	case probedomain.CapabilityCGVCatalogCapture:
 		return storeCatalogResult(ctx, tx, commit.Result)
-	case contracts.CapabilityCGVSeatMapCapture:
+	case probedomain.CapabilityCGVSeatMapCapture:
 		return storeSeatMapResult(ctx, tx, commit.Result, state.task)
 	default:
 		return storeScheduleResult(ctx, tx, commit, state)
 	}
 }
 
-func storeCatalogResult(ctx context.Context, tx pgx.Tx, result central.AssignmentResult) error {
-	if result.Catalog == nil || len(result.Captures) != 0 {
+func storeCatalogResult(ctx context.Context, tx pgx.Tx, result *observationpb.AssignmentResult) error {
+	completed := result.GetCompleted()
+	if completed == nil || completed.GetCatalog() == nil || len(completed.GetCaptures()) != 0 || completed.GetSeatMap() != nil {
 		return fmt.Errorf("%w: catalog assignment result is incomplete", central.ErrInvalid)
 	}
-	snapshot := *result.Catalog
+	snapshot := completed.GetCatalog()
 	// A full refresh must enumerate at least one theater. Otherwise an upstream
 	// parser failure could suppress the retry while leaving the catalog empty.
-	if len(snapshot.Theaters) == 0 {
+	if len(snapshot.GetTheaters()) == 0 {
 		return fmt.Errorf("%w: catalog assignment contains no theaters", central.ErrInvalid)
 	}
-	if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
+	if err := catalogdomain.NormalizeSnapshot(snapshot); err != nil {
 		return fmt.Errorf("validate Probe catalog snapshot: %w", err)
 	}
 	if _, err := upsertCatalogSnapshotTx(ctx, tx, snapshot); err != nil {
 		return err
 	}
-	return completeCatalogRefresh(ctx, tx)
+	if _, err := tx.Exec(ctx, `UPDATE catalog_state SET refresh_requested_at = NULL WHERE id = 1`); err != nil {
+		return fmt.Errorf("complete catalog refresh: %w", err)
+	}
+	return nil
 }
 
 func storeSeatMapResult(
 	ctx context.Context,
 	tx pgx.Tx,
-	result central.AssignmentResult,
-	task central.AssignmentTask,
+	result *observationpb.AssignmentResult,
+	task *observationpb.AssignmentTask,
 ) error {
-	if result.SeatMap == nil || len(result.Captures) != 0 || result.Catalog != nil {
+	completed := result.GetCompleted()
+	seatMap := completed.GetSeatMap()
+	if completed == nil || seatMap == nil || len(completed.GetCaptures()) != 0 || completed.GetCatalog() != nil {
 		return fmt.Errorf("%w: seat-map assignment result is incomplete", central.ErrInvalid)
 	}
-	if task.Auditorium == nil || result.SeatMap.AuditoriumID != task.Auditorium.ID {
+	if task.GetSeatMap() == nil || task.GetSeatMap().GetAuditorium() == nil ||
+		seatMap.GetAuditoriumId() != task.GetSeatMap().GetAuditorium().GetId() {
 		return fmt.Errorf("%w: seat-map result does not match assignment auditorium", central.ErrInvalid)
 	}
-	_, err := putSeatMapVersionTx(ctx, tx, *result.SeatMap)
+	_, err := putSeatMapTx(ctx, tx, seatMap)
 	return err
 }
 
@@ -553,11 +563,12 @@ func storeScheduleResult(
 	commit central.ResultCommit,
 	state assignmentResultState,
 ) error {
-	if commit.Result.Catalog != nil || commit.Result.SeatMap != nil {
+	completed := commit.Result.GetCompleted()
+	if completed == nil || completed.GetCatalog() != nil || completed.GetSeatMap() != nil {
 		return fmt.Errorf("%w: schedule assignment cannot include another result type", central.ErrInvalid)
 	}
 	snapshot := catalogSnapshotFromResult(state.theater, commit.Result, commit.CommittedAt)
-	if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
+	if err := catalogdomain.NormalizeSnapshot(snapshot); err != nil {
 		return fmt.Errorf("validate Probe catalog snapshot: %w", err)
 	}
 	if _, err := upsertCatalogSnapshotTx(ctx, tx, snapshot); err != nil {
@@ -580,14 +591,15 @@ type assignmentResultState struct {
 	runID          string
 	resultHash     string
 	theaterID      string
-	theater        central.Theater
+	theater        *catalogpb.Theater
 	timeZone       string
-	task           central.AssignmentTask
+	task           *observationpb.AssignmentTask
 }
 
 func lockAssignmentResult(ctx context.Context, tx pgx.Tx, assignmentID string) (assignmentResultState, error) {
 	var state assignmentResultState
 	var taskData []byte
+	var theaterID, providerID, sourceKey, region, name string
 	err := tx.QueryRow(ctx, `
 		SELECT task_kind, status, COALESCE(probe_id, ''), COALESCE(completed_by_probe_id, ''),
 			COALESCE(lease_token_hash, ''::bytea),
@@ -598,18 +610,25 @@ func lockAssignmentResult(ctx context.Context, tx pgx.Tx, assignmentID string) (
 	`, assignmentID).Scan(
 		&state.taskKind, &state.status, &state.probeID, &state.completedBy, &state.storedLease,
 		&state.leaseExpiresAt, &state.deadline,
-		&state.runID, &state.resultHash, &state.theater.ID, &state.theater.ProviderID,
-		&state.theater.SourceKey, &state.theater.Region, &state.theater.Name, &state.timeZone, &taskData,
+		&state.runID, &state.resultHash, &theaterID, &providerID,
+		&sourceKey, &region, &name, &state.timeZone, &taskData,
 	)
-	state.theaterID = state.theater.ID
 	if errors.Is(err, pgx.ErrNoRows) {
 		return assignmentResultState{}, central.ErrNotFound
 	}
 	if err != nil {
 		return assignmentResultState{}, fmt.Errorf("lock assignment result: %w", err)
 	}
+	state.theater = &catalogpb.Theater{}
+	state.theater.SetId(theaterID)
+	state.theater.SetProviderId(providerID)
+	state.theater.SetSourceKey(sourceKey)
+	state.theater.SetRegion(region)
+	state.theater.SetName(name)
+	state.theaterID = theaterID
 	if len(taskData) > 2 {
-		if err := json.Unmarshal(taskData, &state.task); err != nil {
+		state.task = &observationpb.AssignmentTask{}
+		if err := protojson.Unmarshal(taskData, state.task); err != nil {
 			return assignmentResultState{}, fmt.Errorf("decode assignment task: %w", err)
 		}
 	}
@@ -620,7 +639,7 @@ func existingAttemptReceipt(
 	ctx context.Context,
 	tx pgx.Tx,
 	commit central.ResultCommit,
-) (central.ResultReceipt, bool, error) {
+) (*observationpb.ResultReceipt, bool, error) {
 	var runID, resultHash, status string
 	var storedLease []byte
 	err := tx.QueryRow(ctx, `
@@ -630,35 +649,44 @@ func existingAttemptReceipt(
 		WHERE assignment_id = $1 AND probe_id = $2
 	`, commit.AssignmentID, commit.ProbeID).Scan(&runID, &resultHash, &status, &storedLease)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && resultHash == "") {
-		return central.ResultReceipt{}, false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return central.ResultReceipt{}, false, fmt.Errorf("read assignment attempt receipt: %w", err)
+		return nil, false, fmt.Errorf("read assignment attempt receipt: %w", err)
 	}
 	leaseMatches := len(storedLease) == len(commit.LeaseHash) &&
 		subtle.ConstantTimeCompare(storedLease, commit.LeaseHash[:]) == 1
-	if runID != commit.Result.RunID || resultHash != commit.PayloadHash || !leaseMatches {
-		return central.ResultReceipt{}, true, central.ErrIdempotencyConflict
+	if runID != commit.Result.GetRunId() || resultHash != commit.PayloadHash || !leaseMatches {
+		return nil, true, central.ErrIdempotencyConflict
 	}
-	return central.ResultReceipt{
-		AssignmentID: commit.AssignmentID, RunID: runID, ContentHash: resultHash, Status: status,
-	}, true, nil
+	_ = status
+	return resultReceipt(commit.AssignmentID, runID, resultHash, true), true, nil
 }
 
 func existingReceipt(
 	state assignmentResultState,
 	commit central.ResultCommit,
-) (central.ResultReceipt, bool, error) {
+) (*observationpb.ResultReceipt, bool, error) {
 	if state.resultHash == "" {
-		return central.ResultReceipt{}, false, nil
+		return nil, false, nil
 	}
-	if state.completedBy != commit.ProbeID || state.runID != commit.Result.RunID || state.resultHash != commit.PayloadHash {
-		return central.ResultReceipt{}, true, central.ErrIdempotencyConflict
+	if state.completedBy != commit.ProbeID || state.runID != commit.Result.GetRunId() || state.resultHash != commit.PayloadHash {
+		return nil, true, central.ErrIdempotencyConflict
 	}
-	return central.ResultReceipt{
-		AssignmentID: commit.AssignmentID, RunID: state.runID,
-		ContentHash: state.resultHash, Status: state.status,
-	}, true, nil
+	return resultReceipt(commit.AssignmentID, state.runID, state.resultHash, true), true, nil
+}
+
+func resultReceipt(assignmentID, runID, contentHash string, duplicate bool) *observationpb.ResultReceipt {
+	receipt := &observationpb.ResultReceipt{}
+	receipt.SetAssignmentId(assignmentID)
+	receipt.SetRunId(runID)
+	receipt.SetContentHash(contentHash)
+	if duplicate {
+		receipt.SetDuplicate(&observationpb.Duplicate{})
+	} else {
+		receipt.SetAccepted(&observationpb.Accepted{})
+	}
+	return receipt
 }
 
 func authorizeResultCommit(state assignmentResultState, commit central.ResultCommit) error {
@@ -675,7 +703,8 @@ func authorizeResultCommit(state assignmentResultState, commit central.ResultCom
 }
 
 func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.ResultCommit) error {
-	if commit.Result.Status == "failed" {
+	status := assignmentResultStatus(commit.Result)
+	if status == "failed" {
 		_, err := tx.Exec(ctx, `
 			UPDATE observation_assignments
 			SET status = 'retry_pending', probe_id = NULL, lease_token_hash = NULL,
@@ -693,8 +722,8 @@ func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.Result
 			completed_by_probe_id = $3, run_id = $4, result_hash = $5, result_payload = $6,
 			started_at = $7, finished_at = $8, updated_at = $9
 		WHERE id = $1
-	`, commit.AssignmentID, commit.Result.Status, commit.ProbeID, commit.Result.RunID, commit.PayloadHash,
-		string(commit.Payload), commit.Result.StartedAt, commit.Result.FinishedAt, commit.CommittedAt)
+	`, commit.AssignmentID, status, commit.ProbeID, commit.Result.GetRunId(), commit.PayloadHash,
+		string(commit.Payload), commit.Result.GetStartedAt().AsTime(), commit.Result.GetFinishedAt().AsTime(), commit.CommittedAt)
 	if err != nil {
 		return fmt.Errorf("store assignment result: %w", err)
 	}
@@ -702,12 +731,13 @@ func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.Result
 }
 
 func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.ResultCommit) error {
+	status := assignmentResultStatus(commit.Result)
 	tag, err := tx.Exec(ctx, `
 		UPDATE assignment_attempts
 		SET status = $3, finished_at = $4, run_id = $5, result_hash = $6, result_payload = $7
 		WHERE assignment_id = $1 AND probe_id = $2 AND status = 'leased'
-	`, commit.AssignmentID, commit.ProbeID, commit.Result.Status, commit.Result.FinishedAt,
-		commit.Result.RunID, commit.PayloadHash, string(commit.Payload))
+	`, commit.AssignmentID, commit.ProbeID, status, commit.Result.GetFinishedAt().AsTime(),
+		commit.Result.GetRunId(), commit.PayloadHash, string(commit.Payload))
 	if err != nil {
 		return fmt.Errorf("finish assignment attempt: %w", err)
 	}
@@ -729,6 +759,18 @@ func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.Resu
 	return nil
 }
 
+func assignmentResultStatus(result *observationpb.AssignmentResult) string {
+	if result.GetFailed() != nil {
+		return "failed"
+	}
+	for _, capture := range result.GetCompleted().GetCaptures() {
+		if !capture.GetComplete() {
+			return "partial"
+		}
+	}
+	return "completed"
+}
+
 func storeCaptures(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -736,7 +778,7 @@ func storeCaptures(
 	theaterID string,
 	timeZone string,
 ) error {
-	for _, capture := range commit.Result.Captures {
+	for _, capture := range commit.Result.GetCompleted().GetCaptures() {
 		opened, newShowtimes, err := captureIntroducesNewShowtimes(ctx, tx, theaterID, capture)
 		if err != nil {
 			return err
@@ -745,7 +787,7 @@ func storeCaptures(
 			return err
 		}
 		if err := requestMonitoredSeatMapValidation(
-			ctx, tx, theaterID, timeZone, capture.TargetDate, newShowtimes, commit.CommittedAt,
+			ctx, tx, theaterID, timeZone, localDateString(capture.GetTargetDate()), newShowtimes, commit.CommittedAt,
 		); err != nil {
 			return err
 		}
@@ -762,16 +804,17 @@ func captureIntroducesNewShowtimes(
 	ctx context.Context,
 	tx pgx.Tx,
 	theaterID string,
-	capture central.Capture,
-) (bool, []central.Showtime, error) {
-	if !capture.Complete || len(capture.Showtimes) == 0 {
+	capture *observationpb.Capture,
+) (bool, []*catalogpb.Showtime, error) {
+	if !capture.GetComplete() || len(capture.GetShowtimes()) == 0 {
 		return false, nil, nil
 	}
-	sourceKeys := make([]string, len(capture.Showtimes))
-	startTimes := make([]time.Time, len(capture.Showtimes))
-	for index, showtime := range capture.Showtimes {
-		sourceKeys[index] = showtime.SourceKey
-		startTimes[index] = showtime.StartsAt
+	showtimes := capture.GetShowtimes()
+	sourceKeys := make([]string, len(showtimes))
+	startTimes := make([]time.Time, len(showtimes))
+	for index, showtime := range showtimes {
+		sourceKeys[index] = showtime.GetSourceKey()
+		startTimes[index] = showtime.GetStartsAt().AsTime()
 	}
 	var hasPrior bool
 	err := tx.QueryRow(ctx, `
@@ -782,7 +825,7 @@ func captureIntroducesNewShowtimes(
 			WHERE assignment.theater_id = $1 AND previous.target_date = $2
 				AND previous.complete AND previous.observed_at < $3
 		)
-	`, theaterID, capture.TargetDate, capture.ObservedAt).Scan(&hasPrior)
+	`, theaterID, localDateString(capture.GetTargetDate()), capture.GetObservedAt().AsTime()).Scan(&hasPrior)
 	if err != nil {
 		return false, nil, fmt.Errorf("detect prior schedule capture: %w", err)
 	}
@@ -796,21 +839,21 @@ func captureIntroducesNewShowtimes(
 				AND previous.starts_at = current.starts_at
 				AND previous.observed_at < $4
 		)
-	`, theaterID, sourceKeys, startTimes, capture.ObservedAt)
+	`, theaterID, sourceKeys, startTimes, capture.GetObservedAt().AsTime())
 	if err != nil {
 		return false, nil, fmt.Errorf("detect newly observed showtimes: %w", err)
 	}
 	defer rows.Close()
-	newShowtimes := make([]central.Showtime, 0)
+	newShowtimes := make([]*catalogpb.Showtime, 0)
 	for rows.Next() {
 		var ordinal int
 		if err := rows.Scan(&ordinal); err != nil {
 			return false, nil, fmt.Errorf("scan newly observed showtime: %w", err)
 		}
-		if ordinal < 1 || ordinal > len(capture.Showtimes) {
+		if ordinal < 1 || ordinal > len(showtimes) {
 			return false, nil, errors.New("newly observed showtime ordinal is out of range")
 		}
-		newShowtimes = append(newShowtimes, capture.Showtimes[ordinal-1])
+		newShowtimes = append(newShowtimes, showtimes[ordinal-1])
 	}
 	if err := rows.Err(); err != nil {
 		return false, nil, fmt.Errorf("iterate newly observed showtimes: %w", err)
@@ -827,7 +870,7 @@ func requestMonitoredSeatMapValidation(
 	theaterID string,
 	timeZone string,
 	targetDate string,
-	showtimes []central.Showtime,
+	showtimes []*catalogpb.Showtime,
 	now time.Time,
 ) error {
 	if len(showtimes) == 0 {
@@ -845,7 +888,7 @@ func requestMonitoredSeatMapValidation(
 	for _, showtime := range showtimes {
 		for _, target := range targets {
 			if executionTargetMatches(target, targetDate, showtime, now, location) {
-				auditoriumIDs[showtime.Auditorium.ID] = struct{}{}
+				auditoriumIDs[showtime.GetAuditorium().GetId()] = struct{}{}
 				break
 			}
 		}
@@ -881,13 +924,17 @@ func storeCapture(
 	tx pgx.Tx,
 	commit central.ResultCommit,
 	theaterID string,
-	capture central.Capture,
+	capture *observationpb.Capture,
 ) error {
-	payload, err := json.Marshal(capture)
+	payload, err := protojson.Marshal(capture)
 	if err != nil {
 		return fmt.Errorf("encode schedule capture: %w", err)
 	}
-	hash := contentHash(payload)
+	canonical, err := proto.MarshalOptions{Deterministic: true}.Marshal(capture)
+	if err != nil {
+		return fmt.Errorf("encode canonical schedule capture: %w", err)
+	}
+	hash := contentHash(canonical)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO observation_payloads (content_hash, payload, created_at)
 		VALUES ($1, $2, $3) ON CONFLICT (content_hash) DO NOTHING
@@ -898,22 +945,22 @@ func storeCapture(
 		INSERT INTO schedule_captures (
 			assignment_id, run_id, target_date, observed_at, complete, error_code, content_hash, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, commit.AssignmentID, commit.Result.RunID, capture.TargetDate, capture.ObservedAt,
-		capture.Complete, capture.ErrorCode, hash, commit.CommittedAt); err != nil {
+	`, commit.AssignmentID, commit.Result.GetRunId(), localDateString(capture.GetTargetDate()), capture.GetObservedAt().AsTime(),
+		capture.GetComplete(), capture.GetErrorCode(), hash, commit.CommittedAt); err != nil {
 		return fmt.Errorf("store schedule capture: %w", err)
 	}
-	for _, showtime := range capture.Showtimes {
+	for _, showtime := range capture.GetShowtimes() {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO showtime_observations (
 				assignment_id, run_id, target_date, source_key, theater_id,
 				auditorium_id, auditorium_name, screen_types, movie_id, movie_title, poster_url,
 				starts_at, ends_at, available_seats, capacity, sold_out, observed_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		`, commit.AssignmentID, commit.Result.RunID, capture.TargetDate, showtime.SourceKey, theaterID,
-			showtime.Auditorium.ID, showtime.Auditorium.Name, showtime.Auditorium.ScreenTypes, showtime.Movie.ID,
-			showtime.Movie.Title,
-			showtime.Movie.PosterURL, showtime.StartsAt, showtime.EndsAt, showtime.AvailableSeats,
-			showtime.Capacity, showtime.SoldOut, capture.ObservedAt); err != nil {
+		`, commit.AssignmentID, commit.Result.GetRunId(), localDateString(capture.GetTargetDate()), showtime.GetSourceKey(), theaterID,
+			showtime.GetAuditorium().GetId(), showtime.GetAuditorium().GetName(), showtime.GetAuditorium().GetScreenTypes(), showtime.GetMovie().GetId(),
+			showtime.GetMovie().GetTitle(),
+			showtime.GetMovie().GetPosterUrl(), showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime(), showtime.GetAvailableSeats(),
+			showtime.GetCapacity(), showtime.GetSoldOut(), capture.GetObservedAt().AsTime()); err != nil {
 			return fmt.Errorf("store showtime observation: %w", err)
 		}
 	}
@@ -921,43 +968,53 @@ func storeCapture(
 }
 
 func catalogSnapshotFromResult(
-	theater central.Theater,
-	result central.AssignmentResult,
+	theater *catalogpb.Theater,
+	result *observationpb.AssignmentResult,
 	observedAt time.Time,
-) contracts.CatalogSnapshot {
-	snapshot := contracts.CatalogSnapshot{
-		Provider: contracts.Provider{ID: theater.ProviderID, Name: providerName(theater.ProviderID)},
-		Theaters: []contracts.Theater{theater}, ObservedAt: observedAt,
-	}
+) *catalogpb.CatalogSnapshot {
+	provider := &catalogpb.Provider{}
+	provider.SetId(theater.GetProviderId())
+	provider.SetName(providerName(theater.GetProviderId()))
+	snapshot := &catalogpb.CatalogSnapshot{}
+	snapshot.SetProvider(provider)
+	snapshot.SetTheaters([]*catalogpb.Theater{theater})
+	snapshot.SetObservedAt(timestamppb.New(observedAt))
 	movies := make(map[string]struct{})
-	auditoriums := make(map[string]contracts.Auditorium)
-	showtimes := make(map[string]contracts.Showtime)
-	for _, capture := range result.Captures {
-		for _, showtime := range capture.Showtimes {
-			if _, exists := movies[showtime.Movie.ID]; !exists {
-				movies[showtime.Movie.ID] = struct{}{}
-				snapshot.Movies = append(snapshot.Movies, showtime.Movie)
+	auditoriums := make(map[string]*catalogpb.Auditorium)
+	showtimes := make(map[string]*catalogpb.Showtime)
+	for _, capture := range result.GetCompleted().GetCaptures() {
+		for _, showtime := range capture.GetShowtimes() {
+			if _, exists := movies[showtime.GetMovie().GetId()]; !exists {
+				movies[showtime.GetMovie().GetId()] = struct{}{}
+				snapshot.SetMovies(append(snapshot.GetMovies(), showtime.GetMovie()))
 			}
-			auditoriums[showtime.Auditorium.ID] = showtime.Auditorium
-			showtimes[showtime.ID] = showtime
+			auditoriums[showtime.GetAuditorium().GetId()] = showtime.GetAuditorium()
+			showtimes[showtime.GetId()] = showtime
 		}
 	}
 	for _, auditorium := range auditoriums {
-		snapshot.Auditoriums = append(snapshot.Auditoriums, auditorium)
+		snapshot.SetAuditoriums(append(snapshot.GetAuditoriums(), auditorium))
 	}
 	for _, showtime := range showtimes {
-		snapshot.Showtimes = append(snapshot.Showtimes, showtime)
+		snapshot.SetShowtimes(append(snapshot.GetShowtimes(), showtime))
 	}
-	slices.SortFunc(snapshot.Auditoriums, func(left, right contracts.Auditorium) int { return strings.Compare(left.ID, right.ID) })
-	slices.SortFunc(snapshot.Showtimes, func(left, right contracts.Showtime) int { return strings.Compare(left.ID, right.ID) })
+	slices.SortFunc(snapshot.GetAuditoriums(), func(left, right *catalogpb.Auditorium) int { return strings.Compare(left.GetId(), right.GetId()) })
+	slices.SortFunc(snapshot.GetShowtimes(), func(left, right *catalogpb.Showtime) int { return strings.Compare(left.GetId(), right.GetId()) })
 	return snapshot
 }
 
 func providerName(providerID string) string {
-	if providerID == contracts.ProviderCGV {
+	if providerID == catalogdomain.ProviderCGV {
 		return "CGV"
 	}
 	return providerID
+}
+
+func localDateString(value *commonpb.LocalDate) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%04d-%02d-%02d", value.GetYear(), value.GetMonth(), value.GetDay())
 }
 
 func (store *Store) probeByID(ctx context.Context, probeID string) (central.Probe, []byte, error) {
@@ -971,7 +1028,7 @@ func (store *Store) probeByToken(ctx context.Context, tokenHash [32]byte) (centr
 const probeSelect = `
 	SELECT id, installation_id, owner_user_id, device_id, kind, network_id, network_hint, capabilities,
 		available_capabilities, max_concurrency,
-		runtime_version, protocol, browser_revision, platform, architecture,
+		runtime_version, browser_revision, platform, architecture,
 		token_hash, token_expires_at, status, draining, available_slots, health, reason_code,
 		last_heartbeat_at, created_at, updated_at
 	FROM probe_runtimes`
@@ -980,19 +1037,39 @@ func (store *Store) scanProbe(row rowScanner) (central.Probe, []byte, error) {
 	var probe central.Probe
 	var tokenHash []byte
 	var lastHeartbeatAt *time.Time
+	var runtimeVersion, browserRevision, platform, architecture string
 	err := row.Scan(
 		&probe.ID, &probe.InstallationID, &probe.OwnerUserID, &probe.DeviceID,
 		&probe.Kind, &probe.NetworkID, &probe.NetworkHint,
 		&probe.Capabilities, &probe.AvailableCapabilities, &probe.MaxConcurrency,
-		&probe.Runtime.Version, &probe.Runtime.Protocol,
-		&probe.Runtime.BrowserRevision, &probe.Runtime.Platform, &probe.Runtime.Arch,
+		&runtimeVersion, &browserRevision, &platform, &architecture,
 		&tokenHash, &probe.TokenExpiresAt, &probe.Status, &probe.Draining, &probe.AvailableSlots,
 		&probe.Health, &probe.ReasonCode, &lastHeartbeatAt, &probe.CreatedAt, &probe.UpdatedAt,
 	)
+	if err == nil {
+		probe.Runtime = &commonpb.Runtime{}
+		probe.Runtime.SetComponentVersion(runtimeVersion)
+		probe.Runtime.SetBrowserRevision(browserRevision)
+		probe.Runtime.SetPlatform(platform)
+		probe.Runtime.SetArchitecture(architecture)
+	}
 	if lastHeartbeatAt != nil {
 		probe.LastHeartbeatAt = *lastHeartbeatAt
 	}
 	return probe, tokenHash, err
+}
+
+func heartbeatHealth(health *probepb.ProbeHealth) (string, string) {
+	switch {
+	case health != nil && health.GetHealthy() != nil:
+		return "healthy", ""
+	case health != nil && health.GetDegraded() != nil:
+		return "degraded", health.GetDegraded().GetReasonCode()
+	case health != nil && health.GetUnhealthy() != nil:
+		return "unhealthy", health.GetUnhealthy().GetReasonCode()
+	default:
+		return "", ""
+	}
 }
 
 type rowScanner interface {
@@ -1005,15 +1082,12 @@ func scanAssignment(row rowScanner) (central.Assignment, error) {
 	var leaseExpiresAt *time.Time
 	var taskData []byte
 	err := row.Scan(
-		&assignment.ID, &assignment.Task.Kind, &assignment.Task.Theater.ID,
-		&assignment.Task.Theater.ProviderID, &assignment.Task.Theater.SourceKey,
-		&assignment.Task.Theater.Region, &assignment.Task.Theater.Name, &assignment.Task.TargetDates,
-		&assignment.Task.Locale, &assignment.Task.TimeZone, &assignment.Task.EgressPolicyID,
-		&assignment.Status, &assignment.NotBefore, &assignment.Deadline, &probeID,
+		&assignment.ID, &assignment.Status, &assignment.NotBefore, &assignment.Deadline, &probeID,
 		&leaseExpiresAt, &assignment.CreatedAt, &assignment.UpdatedAt, &taskData,
 	)
 	if err == nil && len(taskData) > 0 {
-		err = json.Unmarshal(taskData, &assignment.Task)
+		assignment.Task = &observationpb.AssignmentTask{}
+		err = protojson.Unmarshal(taskData, assignment.Task)
 	}
 	if probeID != nil {
 		assignment.ProbeID = *probeID

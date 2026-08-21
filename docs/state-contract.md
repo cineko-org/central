@@ -43,7 +43,7 @@ stateDiagram-v2
 - The policy's stored baseline, demand, and burst intervals are used directly; no
   scheduler-side interval constants replace the values saved by the Admin UI.
   Active booking demand is promoted above maintenance and ordinary work. Opening,
-  burst, cancellation, and baseline assignments have reserved priority bands;
+  burst, cancellation, and baseline assignments have dedicated priority bands;
   stored numeric priority orders policies inside the same class.
 - Active monitor dates and weekdays are unioned per theater and intersected with
   the policy horizon before assignment creation. Start-time windows remain a

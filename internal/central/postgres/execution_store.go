@@ -3,14 +3,16 @@ package postgres
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
 
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -21,10 +23,10 @@ const (
 func (store *Store) ClaimClientExecution(
 	ctx context.Context,
 	claim central.ExecutionClaim,
-) (central.ExecutionCommand, error) {
+) (*executionpb.Command, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("begin Client execution claim: %w", err)
+		return nil, fmt.Errorf("begin Client execution claim: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
@@ -41,16 +43,19 @@ func (store *Store) ClaimClientExecution(
 			updated_at = $2
 		WHERE user_id = $1 AND status = 'leased' AND lease_expires_at <= $2
 	`, claim.UserID, claim.Now); err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("expire Client execution leases: %w", err)
+		return nil, fmt.Errorf("expire Client execution leases: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE client_execution_commands
 		SET status = 'failed', reason_code = 'showtime_started', completed_at = $2, updated_at = $2
 		WHERE user_id = $1 AND status = 'queued' AND starts_at <= $2
 	`, claim.UserID, claim.Now); err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("expire stale Client execution commands: %w", err)
+		return nil, fmt.Errorf("expire stale Client execution commands: %w", err)
 	}
-	var command central.ExecutionCommand
+	command := &executionpb.Command{}
+	var commandID, monitorID string
+	var attempt int32
+	var createdAt time.Time
 	var payload []byte
 	err = tx.QueryRow(ctx, `
 		WITH active_targets AS (
@@ -66,7 +71,7 @@ func (store *Store) ClaimClientExecution(
 				AND monitors.deleted_at IS NULL
 				AND monitors.payload->>'status' IN ('pending', 'running')
 		)
-		SELECT command.id, command.user_id, command.monitor_id, command.payload,
+		SELECT command.id, command.monitor_id, command.payload,
 			command.attempt_count, command.created_at
 		FROM client_execution_commands AS command
 		LEFT JOIN active_targets AS target ON target.monitor_id = command.monitor_id
@@ -82,30 +87,35 @@ func (store *Store) ClaimClientExecution(
 		command.id
 		LIMIT 1 FOR UPDATE SKIP LOCKED
 	`, claim.UserID, claim.InstallationID, claim.Now).Scan(
-		&command.ID, &command.UserID, &command.MonitorID, &payload, &command.Attempt, &command.CreatedAt,
+		&commandID, &monitorID, &payload, &attempt, &createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ExecutionCommand{}, central.ErrNotFound
+		return nil, central.ErrNotFound
 	}
 	if err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("lock Client execution command: %w", err)
+		return nil, fmt.Errorf("lock Client execution command: %w", err)
 	}
-	if err := json.Unmarshal(payload, &command.Payload); err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("decode Client execution command: %w", err)
+	payloadMessage := &executionpb.Payload{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, payloadMessage); err != nil {
+		return nil, fmt.Errorf("decode Client execution command: %w", err)
 	}
-	command.Attempt++
-	command.InstallationID = claim.InstallationID
-	command.LeaseExpiresAt = claim.LeaseExpiresAt
+	command.SetId(commandID)
+	command.SetMonitorId(monitorID)
+	command.SetInstallationId(claim.InstallationID)
+	command.SetAttempt(attempt + 1)
+	command.SetPayload(payloadMessage)
+	command.SetLeaseExpiresAt(timestamppb.New(claim.LeaseExpiresAt))
+	command.SetCreatedAt(timestamppb.New(createdAt))
 	if _, err := tx.Exec(ctx, `
 		UPDATE client_execution_commands
 		SET status = 'leased', leased_installation_id = $2, lease_token_hash = $3,
 			lease_expires_at = $4, attempt_count = attempt_count + 1, reason_code = '', updated_at = $5
 		WHERE id = $1
-	`, command.ID, claim.InstallationID, claim.LeaseHash[:], claim.LeaseExpiresAt, claim.Now); err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("lease Client execution command: %w", err)
+	`, commandID, claim.InstallationID, claim.LeaseHash[:], claim.LeaseExpiresAt, claim.Now); err != nil {
+		return nil, fmt.Errorf("lease Client execution command: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return central.ExecutionCommand{}, fmt.Errorf("commit Client execution claim: %w", err)
+		return nil, fmt.Errorf("commit Client execution claim: %w", err)
 	}
 	return command, nil
 }

@@ -1,23 +1,24 @@
 package api
 
 import (
+	"context"
 	"net/http"
-)
 
-type createAdminUserRequest struct {
-	DisplayName string `json:"displayName"`
-}
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+)
 
 func (server *Server) listAdminUsers(writer http.ResponseWriter, request *http.Request) {
 	if _, ok := server.authenticatedAdmin(writer, request); !ok || !server.requirePINService(writer, request) {
 		return
 	}
-	users, err := server.pins.ListUsers(request.Context())
-	if err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	server.writeJSON(writer, http.StatusOK, map[string]any{"data": users})
+	writeProtoCall(server, writer, request, http.StatusOK, server.loadAdminUsers)
+}
+
+func (server *Server) loadAdminUsers(ctx context.Context) (*adminpb.ListClientUsersResponse, error) {
+	users, err := server.pins.ListUsers(ctx)
+	response := &adminpb.ListClientUsersResponse{}
+	response.SetUsers(users)
+	return response, err
 }
 
 func (server *Server) createAdminUser(writer http.ResponseWriter, request *http.Request) {
@@ -27,16 +28,18 @@ func (server *Server) createAdminUser(writer http.ResponseWriter, request *http.
 	if _, ok := server.authenticatedAdmin(writer, request); !ok || !server.requirePINService(writer, request) {
 		return
 	}
-	var input createAdminUserRequest
-	if !server.decodeJSON(writer, request, &input) {
+	input := &adminpb.CreateClientUserRequest{}
+	if !server.decodeProtoJSON(writer, request, input) {
 		return
 	}
-	issue, err := server.pins.CreateUser(request.Context(), input.DisplayName)
+	issue, err := server.pins.CreateUser(request.Context(), input.GetDisplayName())
 	if err != nil {
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusCreated, issue)
+	response := &adminpb.CreateClientUserResponse{}
+	response.SetIssue(issue)
+	server.writeProtoJSON(writer, http.StatusCreated, response)
 }
 
 func (server *Server) rotateAdminUserPIN(writer http.ResponseWriter, request *http.Request) {
@@ -51,7 +54,9 @@ func (server *Server) rotateAdminUserPIN(writer http.ResponseWriter, request *ht
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, issue)
+	response := &adminpb.RotateClientPinResponse{}
+	response.SetIssue(issue)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) deleteAdminUser(writer http.ResponseWriter, request *http.Request) {

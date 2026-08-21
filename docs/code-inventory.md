@@ -7,7 +7,7 @@ contract-document changes in this branch. The snapshot contains 2,826 tracked fi
 | --- | ---: | --- |
 | First-party Go | 96 | command/configuration, domain, services, HTTP, PostgreSQL, reconciler, telemetry, and tests reviewed semantically |
 | First-party TypeScript/TSX | 35 | admin application, pure views, API adapter, Storybook, and tests reviewed semantically |
-| SQL migrations | 23 | replayed as one effective schema; every current table/column/check/FK/index and each deliberate drop inventoried |
+| SQL migrations | 26 | replayed as one effective schema; every current table/column/check/FK/index and each deliberate drop inventoried |
 | GitHub workflows | 3 | CI, image publication, and release triggers/permissions reviewed |
 | Other YAML | 2 | dependency automation and lint configuration reviewed |
 | Manifests and lock files | 6 | Go/npm module identity and locked dependency provenance reviewed |
@@ -22,9 +22,9 @@ Go checksums, and vendored code are reviewed for provenance and drift, not hand-
 
 ## Contract indexes produced by the review
 
-- `api-contract.md`: 58 literal router entries plus five resource templates expanded
-  over five resource kinds, for 83 concrete service points. The method split is 35 GET,
-  26 POST, 14 PUT, and 8 DELETE.
+- `api-contract.md`: 56 literal router entries plus five resource templates expanded
+  over five resource kinds, for 81 concrete service points. The method split is 34 GET,
+  26 POST, 13 PUT, and 8 DELETE.
 - `persistence-contract.md`: every external/background mutation, transaction boundary,
   durable idempotency boundary, and database effect.
 - `state-contract.md`: every persisted state set, transition, retry/lease rule, terminal

@@ -5,102 +5,69 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
 	"time"
+
+	"github.com/cineko-org/central/internal/support/numeric"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 const DefaultSearchHorizonDays = 28
 
-type MonitorMode string
-
-const (
-	MonitorModeOpening      MonitorMode = "opening"
-	MonitorModeCancellation MonitorMode = "cancellation"
-)
-
-type MonitorStatus string
-
-const (
-	MonitorPending   MonitorStatus = "pending"
-	MonitorRunning   MonitorStatus = "running"
-	MonitorTriggered MonitorStatus = "triggered"
-	MonitorBooked    MonitorStatus = "booked"
-	MonitorFailed    MonitorStatus = "failed"
-	MonitorStopped   MonitorStatus = "stopped"
-)
-
-type MonitorJob struct {
-	ID       string      `json:"id"`
-	UserID   string      `json:"userId"`
-	PresetID string      `json:"presetId"`
-	Mode     MonitorMode `json:"mode"`
-	// MovieID is the canonical catalog identity used for execution matching.
-	MovieID string `json:"movieId"`
-	// Movie is a display snapshot and is not an execution identity.
-	Movie             string        `json:"movie"`
-	TargetDates       []string      `json:"targetDates"`
-	TargetWeekdays    []int         `json:"targetWeekdays"`
-	SearchHorizonDays int           `json:"searchHorizonDays"`
-	EarliestTime      string        `json:"earliestTime"`
-	LatestTime        string        `json:"latestTime"`
-	PollInterval      time.Duration `json:"pollInterval"`
-	PollIntervalMax   time.Duration `json:"pollIntervalMax"`
-	Status            MonitorStatus `json:"status"`
-	LastCheckedAt     *time.Time    `json:"lastCheckedAt"`
-	LastError         string        `json:"lastError"`
-	ReservationID     string        `json:"reservationId"`
-	CreatedAt         time.Time     `json:"createdAt"`
-	UpdatedAt         time.Time     `json:"updatedAt"`
-}
-
-func (job MonitorJob) Validate() error {
-	if job.ID == "" || job.UserID == "" || job.PresetID == "" {
+// ValidateMonitor enforces Central's domain invariants on the canonical Proto monitor.
+func ValidateMonitor(monitor *clientpb.Monitor) error {
+	if monitor == nil {
+		return errors.New("monitor is required")
+	}
+	if monitor.GetId() == "" || monitor.GetUserId() == "" || monitor.GetPresetId() == "" {
 		return errors.New("monitor id, user id, and preset id are required")
 	}
-	if strings.TrimSpace(job.MovieID) == "" || len(job.TargetDates)+len(job.TargetWeekdays) == 0 {
+	if monitor.GetMovieId() == "" || len(monitor.GetTargetDates())+len(monitor.GetTargetWeekdays()) == 0 {
 		return errors.New("monitor movie id and at least one target date or weekday are required")
 	}
-	if err := job.validateMode(); err != nil {
-		return err
+	if !monitor.GetMode().HasOpening() && !monitor.GetMode().HasCancellation() {
+		return errors.New("monitor mode is required")
 	}
-	if job.PollInterval < 2*time.Second {
-		return errors.New("poll interval must be at least 2 seconds")
-	}
-	if job.EffectivePollIntervalMax() <= job.PollInterval {
-		return errors.New("maximum poll interval must be greater than minimum poll interval")
-	}
-	if err := validateTargetDates(job.TargetDates); err != nil {
-		return err
-	}
-	if err := validateTargetWeekdays(job.TargetWeekdays, job.SearchHorizonDays); err != nil {
-		return err
-	}
-	return validateTimeWindow(job.EarliestTime, job.LatestTime)
-}
-
-func (job MonitorJob) validateMode() error {
-	if mode := job.EffectiveMode(); mode != MonitorModeOpening && mode != MonitorModeCancellation {
-		return fmt.Errorf("invalid monitor mode %q", job.Mode)
-	}
-	if job.EffectiveMode() == MonitorModeCancellation && len(job.TargetWeekdays) > 0 {
+	if monitor.GetMode().HasCancellation() && len(monitor.GetTargetWeekdays()) > 0 {
 		return errors.New("cancellation-seat monitors require exact target dates")
 	}
-	return nil
+	pollInterval := protoDuration(monitor.GetPollInterval())
+	if pollInterval < 2*time.Second {
+		return errors.New("poll interval must be at least 2 seconds")
+	}
+	if protoDuration(monitor.GetMaximumPollInterval()) <= pollInterval {
+		return errors.New("maximum poll interval must be greater than minimum poll interval")
+	}
+	if err := validateTargetDates(monitor.GetTargetDates()); err != nil {
+		return err
+	}
+	if err := validateTargetWeekdays(monitor.GetTargetWeekdays(), int(monitor.GetSearchHorizonDays())); err != nil {
+		return err
+	}
+	return validateTimeWindow(monitor.GetEarliestTime(), monitor.GetLatestTime())
 }
 
-func validateTargetDates(dates []string) error {
+func protoDuration(value *durationpb.Duration) time.Duration {
+	if value == nil {
+		return 0
+	}
+	return value.AsDuration()
+}
+
+func validateTargetDates(dates []*commonpb.LocalDate) error {
 	for _, date := range dates {
-		if _, err := time.Parse("2006-01-02", date); err != nil {
-			return fmt.Errorf("invalid target date %q: %w", date, err)
+		if _, err := localDate(date, time.UTC); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func validateTargetWeekdays(weekdays []int, horizon int) error {
-	seen := make(map[int]struct{}, len(weekdays))
+func validateTargetWeekdays(weekdays []int32, horizon int) error {
+	seen := make(map[int32]struct{}, len(weekdays))
 	for _, weekday := range weekdays {
-		if weekday < int(time.Sunday) || weekday > int(time.Saturday) {
+		if weekday < int32(time.Sunday) || weekday > int32(time.Saturday) {
 			return fmt.Errorf("invalid target weekday %d", weekday)
 		}
 		if _, duplicate := seen[weekday]; duplicate {
@@ -114,39 +81,41 @@ func validateTargetWeekdays(weekdays []int, horizon int) error {
 	return nil
 }
 
-func validateTimeWindow(earliest, latest string) error {
-	for name, value := range map[string]string{"earliest time": earliest, "latest time": latest} {
-		if value == "" {
-			continue
-		}
-		if _, err := time.Parse("15:04", value); err != nil {
-			return fmt.Errorf("invalid %s %q: %w", name, value, err)
-		}
+func validateTimeWindow(earliest, latest *commonpb.LocalTime) error {
+	start, startSet, startValid := localMinutes(earliest)
+	end, endSet, endValid := localMinutes(latest)
+	if !startValid || !endValid {
+		return errors.New("monitor time window is invalid")
 	}
-	if earliest != "" && latest != "" && earliest == latest {
+	if startSet && endSet && start == end {
 		return errors.New("time window cannot be empty")
 	}
 	return nil
 }
 
-// MatchesTimeWindow applies the monitor's local start-time window. The start
-// is inclusive and the end is exclusive; an end before the start represents
-// an overnight window. The caller supplies the theater's local timezone so a
-// Saturday 01:00 showtime remains Saturday 01:00.
-func (job MonitorJob) MatchesTimeWindow(start time.Time, location *time.Location) bool {
-	if start.IsZero() || location == nil {
+// MonitorMatchesSchedule applies exact dates, weekdays, and overnight time windows.
+func MonitorMatchesSchedule(
+	monitor *clientpb.Monitor,
+	targetDate string,
+	start time.Time,
+	now time.Time,
+	location *time.Location,
+) bool {
+	if monitor == nil || location == nil || start.IsZero() || start.In(location).Format(time.DateOnly) != targetDate {
 		return false
 	}
-	earliest, hasEarliest, earliestValid := parseOptionalClock(job.EarliestTime)
-	latest, hasLatest, latestValid := parseOptionalClock(job.LatestTime)
+	return slices.Contains(MonitorTargetDates(monitor, now.In(location)), targetDate) &&
+		monitorMatchesTimeWindow(monitor, start, location)
+}
+
+func monitorMatchesTimeWindow(monitor *clientpb.Monitor, start time.Time, location *time.Location) bool {
+	earliest, hasEarliest, earliestValid := localMinutes(monitor.GetEarliestTime())
+	latest, hasLatest, latestValid := localMinutes(monitor.GetLatestTime())
 	if !earliestValid || !latestValid {
 		return false
 	}
 	if !hasEarliest && !hasLatest {
 		return true
-	}
-	if hasEarliest && hasLatest && earliest == latest {
-		return false
 	}
 	localStart := start.In(location)
 	minutes := localStart.Hour()*60 + localStart.Minute()
@@ -162,48 +131,24 @@ func (job MonitorJob) MatchesTimeWindow(start time.Time, location *time.Location
 	return minutes >= earliest || minutes < latest
 }
 
-// MatchesSchedule reports whether a showtime belongs to the requested local
-// calendar date and monitor schedule. Date matching is local, so an early
-// Saturday showtime is never attributed to Friday by an overnight window.
-func (job MonitorJob) MatchesSchedule(
-	targetDate string,
-	start time.Time,
-	now time.Time,
-	location *time.Location,
-) bool {
-	if location == nil || start.IsZero() || start.In(location).Format("2006-01-02") != targetDate {
-		return false
+// MonitorTargetDates resolves explicit dates and weekday rules into local calendar dates.
+func MonitorTargetDates(monitor *clientpb.Monitor, now time.Time) []string {
+	if monitor == nil {
+		return nil
 	}
-	return slices.Contains(job.ResolveTargetDates(now.In(location)), targetDate) &&
-		job.MatchesTimeWindow(start, location)
-}
-
-func parseOptionalClock(value string) (minutes int, set bool, valid bool) {
-	if value == "" {
-		return 0, false, true
-	}
-	parsed, err := time.Parse("15:04", value)
-	if err != nil {
-		return 0, true, false
-	}
-	return parsed.Hour()*60 + parsed.Minute(), true, true
-}
-
-func (job MonitorJob) ResolveTargetDates(now time.Time) []string {
-	seen := make(map[string]struct{}, len(job.TargetDates)+job.SearchHorizonDays)
+	horizon := int(monitor.GetSearchHorizonDays())
+	seen := make(map[string]struct{}, len(monitor.GetTargetDates())+horizon)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	for _, value := range job.TargetDates {
-		parsed, err := time.ParseInLocation("2006-01-02", value, now.Location())
+	for _, value := range monitor.GetTargetDates() {
+		parsed, err := localDate(value, now.Location())
 		if err == nil && !parsed.Before(today) {
-			seen[value] = struct{}{}
+			seen[parsed.Format(time.DateOnly)] = struct{}{}
 		}
 	}
-	if len(job.TargetWeekdays) > 0 {
-		for offset := 0; offset < job.SearchHorizonDays; offset++ {
-			candidate := today.AddDate(0, 0, offset)
-			if slices.Contains(job.TargetWeekdays, int(candidate.Weekday())) {
-				seen[candidate.Format("2006-01-02")] = struct{}{}
-			}
+	for offset := 0; offset < horizon && len(monitor.GetTargetWeekdays()) > 0; offset++ {
+		candidate := today.AddDate(0, 0, offset)
+		if slices.Contains(monitor.GetTargetWeekdays(), numeric.ClampInt32(int(candidate.Weekday()))) {
+			seen[candidate.Format(time.DateOnly)] = struct{}{}
 		}
 	}
 	result := make([]string, 0, len(seen))
@@ -214,27 +159,14 @@ func (job MonitorJob) ResolveTargetDates(now time.Time) []string {
 	return result
 }
 
-func (job MonitorJob) EffectiveMode() MonitorMode {
-	if job.Mode == "" {
-		return MonitorModeOpening
-	}
-	return job.Mode
-}
-
-func (job MonitorJob) EffectivePollIntervalMax() time.Duration {
-	if job.PollIntervalMax > 0 {
-		return job.PollIntervalMax
-	}
-	return job.PollInterval + job.PollInterval/5
-}
-
-func (job MonitorJob) Expired(now time.Time) bool {
-	if len(job.TargetWeekdays) > 0 || len(job.TargetDates) == 0 {
+// MonitorExpired reports whether every explicit date is before today.
+func MonitorExpired(monitor *clientpb.Monitor, now time.Time) bool {
+	if monitor == nil || len(monitor.GetTargetWeekdays()) > 0 || len(monitor.GetTargetDates()) == 0 {
 		return false
 	}
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	for _, value := range job.TargetDates {
-		parsed, err := time.ParseInLocation("2006-01-02", value, now.Location())
+	for _, value := range monitor.GetTargetDates() {
+		parsed, err := localDate(value, now.Location())
 		if err == nil && !parsed.Before(today) {
 			return false
 		}
@@ -242,17 +174,23 @@ func (job MonitorJob) Expired(now time.Time) bool {
 	return true
 }
 
-func (job *MonitorJob) Transition(status MonitorStatus, now time.Time) {
-	job.Status = status
-	job.UpdatedAt = now
+func localDate(value *commonpb.LocalDate, location *time.Location) (time.Time, error) {
+	if value == nil || location == nil {
+		return time.Time{}, errors.New("target date is required")
+	}
+	parsed := time.Date(int(value.GetYear()), time.Month(value.GetMonth()), int(value.GetDay()), 0, 0, 0, 0, location)
+	if parsed.Year() != int(value.GetYear()) || numeric.ClampInt32(int(parsed.Month())) != value.GetMonth() || numeric.ClampInt32(parsed.Day()) != value.GetDay() {
+		return time.Time{}, fmt.Errorf("invalid target date %04d-%02d-%02d", value.GetYear(), value.GetMonth(), value.GetDay())
+	}
+	return parsed, nil
 }
 
-func (job *MonitorJob) RecordCheck(now time.Time, err error) {
-	job.LastCheckedAt = &now
-	job.UpdatedAt = now
-	if err == nil {
-		job.LastError = ""
-		return
+func localMinutes(value *commonpb.LocalTime) (minutes int, set bool, valid bool) {
+	if value == nil {
+		return 0, false, true
 	}
-	job.LastError = err.Error()
+	if value.GetHour() < 0 || value.GetHour() > 23 || value.GetMinute() < 0 || value.GetMinute() > 59 {
+		return 0, true, false
+	}
+	return int(value.GetHour()*60 + value.GetMinute()), true, true
 }

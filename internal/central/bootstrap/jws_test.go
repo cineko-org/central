@@ -21,7 +21,11 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	contracts "github.com/cineko-org/contracts/v3"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	"github.com/cineko-org/central/internal/support/numeric"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 )
 
 func TestBootstrapTicketRoundTripAndAuthorization(t *testing.T) {
@@ -51,10 +55,7 @@ func TestBootstrapTicketRoundTripAndAuthorization(t *testing.T) {
 	if err != nil || verified.UserID != claims.UserID || verified.ExpiresAt != now.Add(time.Minute).Unix() {
 		t.Fatalf("verified claims = %+v, error = %v", verified, err)
 	}
-	registration := central.RegisterProbeRequest{
-		InstallationID: claims.InstallationID, Kind: "client", Capabilities: []string{contracts.CapabilityCGVScheduleCapture},
-		MaxConcurrency: 1, Runtime: claims.Runtime,
-	}
+	registration := registerRequest(claims)
 	authorization, err := verifier.Authorize(context.Background(), registration, token, now)
 	if err != nil || authorization.OwnerUserID != claims.UserID || authorization.DeviceID != claims.DeviceID ||
 		authorization.TicketID != claims.TicketID || !authorization.ExpiresAt.Equal(now.Add(time.Minute)) {
@@ -106,20 +107,22 @@ func TestBootstrapTicketRejectsTamperingAndInvalidBindings(t *testing.T) {
 	if _, err := verifier.Verify(token, now.Add(-2*time.Minute)); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("future ticket error = %v", err)
 	}
-	registration := central.RegisterProbeRequest{
-		InstallationID: claims.InstallationID, Kind: "client", Capabilities: []string{contracts.CapabilityCGVScheduleCapture},
-		MaxConcurrency: 1, Runtime: claims.Runtime,
-	}
-	mutations := []func(*central.RegisterProbeRequest){
-		func(value *central.RegisterProbeRequest) { value.Kind = "container" },
-		func(value *central.RegisterProbeRequest) { value.InstallationID = "other" },
-		func(value *central.RegisterProbeRequest) { value.MaxConcurrency = 2 },
-		func(value *central.RegisterProbeRequest) { value.Capabilities = []string{"other.v1"} },
-		func(value *central.RegisterProbeRequest) { value.Runtime.Version = "2.0.0" },
+	mutations := []func(*probepb.RegisterRequest){
+		func(value *probepb.RegisterRequest) {
+			value.SetKind(probepb.ProbeKind_builder{
+				Container: probepb.ContainerProbe_builder{}.Build(),
+			}.Build())
+		},
+		func(value *probepb.RegisterRequest) { value.SetInstallationId("other") },
+		func(value *probepb.RegisterRequest) { value.SetMaxConcurrency(2) },
+		func(value *probepb.RegisterRequest) {
+			value.SetCapabilities([]*observationpb.Capability{scheduleCapability(), catalogCapability()})
+		},
+		func(value *probepb.RegisterRequest) { value.GetRuntime().SetComponentVersion("2.0.0") },
 	}
 	for _, mutate := range mutations {
-		value := registration
-		mutate(&value)
+		value := registerRequest(claims)
+		mutate(value)
 		if _, err := verifier.Authorize(context.Background(), value, token, now); !errors.Is(err, central.ErrUnauthorized) {
 			t.Fatalf("mismatched registration %+v error = %v", value, err)
 		}
@@ -136,7 +139,7 @@ func TestBootstrapCapabilitiesAreCanonicalAndExactlyBound(t *testing.T) {
 	}
 	signer.clock = func() time.Time { return now }
 	claims := validClaims()
-	claims.Capabilities = []string{" cgv.schedule.capture.v2 "}
+	claims.Capabilities = []string{" " + probedomain.CapabilityCGVScheduleCapture + " "}
 	token, err := signer.Issue(claims, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -146,22 +149,18 @@ func TestBootstrapCapabilitiesAreCanonicalAndExactlyBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	verified, err := verifier.Verify(token, now)
-	if err != nil || !slices.Equal(verified.Capabilities, []string{contracts.CapabilityCGVScheduleCapture}) {
+	if err != nil || !slices.Equal(verified.Capabilities, []string{probedomain.CapabilityCGVScheduleCapture}) {
 		t.Fatalf("verified capabilities = %v, error = %v", verified.Capabilities, err)
 	}
-	registration := central.RegisterProbeRequest{
-		InstallationID: claims.InstallationID, Kind: "client",
-		Capabilities:   []string{" cgv.schedule.capture.v2 "},
-		MaxConcurrency: 1, Runtime: claims.Runtime,
-	}
+	registration := registerRequest(claims)
 	if _, err := verifier.Authorize(context.Background(), registration, token, now); err != nil {
 		t.Fatalf("normalized capability set rejected: %v", err)
 	}
-	registration.Capabilities = append(registration.Capabilities, "extra.v1")
+	registration.SetCapabilities([]*observationpb.Capability{scheduleCapability(), catalogCapability()})
 	if _, err := verifier.Authorize(context.Background(), registration, token, now); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("expanded capability set error = %v", err)
 	}
-	claims.Capabilities = []string{contracts.CapabilityCGVScheduleCapture, " cgv.schedule.capture.v2 "}
+	claims.Capabilities = []string{probedomain.CapabilityCGVScheduleCapture, " " + probedomain.CapabilityCGVScheduleCapture + " "}
 	if _, err := signer.Issue(claims, time.Minute); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("duplicate capabilities error = %v", err)
 	}
@@ -321,13 +320,43 @@ func TestBootstrapHelpers(t *testing.T) {
 func validClaims() Claims {
 	return Claims{
 		UserID: "user_01", TicketID: "ticket_01", InstallationID: "install_01", DeviceID: "device_01",
-		Kind: "client", Capabilities: []string{contracts.CapabilityCGVScheduleCapture}, MaxConcurrency: 1,
-		Runtime: central.Runtime{
-			Version: "1.0.0", Protocol: central.ProtocolVersion, BrowserRevision: "1228",
-			Platform: "darwin", Arch: "arm64",
-		},
+		Kind: "client", Capabilities: []string{probedomain.CapabilityCGVScheduleCapture}, MaxConcurrency: 1,
+		RuntimeVersion: "1.0.0", BrowserRevision: "1228", Platform: "darwin", Architecture: "arm64",
 	}
 }
+
+func registerRequest(claims Claims) *probepb.RegisterRequest {
+	return probepb.RegisterRequest_builder{
+		InstallationId: stringPointer(claims.InstallationID),
+		Kind: probepb.ProbeKind_builder{
+			Client: probepb.ClientProbe_builder{}.Build(),
+		}.Build(),
+		Capabilities:   []*observationpb.Capability{scheduleCapability()},
+		MaxConcurrency: int32Pointer(numeric.ClampInt32(claims.MaxConcurrency)),
+		Runtime: commonpb.Runtime_builder{
+			ComponentVersion: stringPointer(claims.RuntimeVersion),
+			BrowserRevision:  stringPointer(claims.BrowserRevision),
+			Platform:         stringPointer(claims.Platform),
+			Architecture:     stringPointer(claims.Architecture),
+		}.Build(),
+	}.Build()
+}
+
+func scheduleCapability() *observationpb.Capability {
+	return observationpb.Capability_builder{
+		ScheduleCapture: observationpb.ScheduleCapture_builder{}.Build(),
+	}.Build()
+}
+
+func catalogCapability() *observationpb.Capability {
+	return observationpb.Capability_builder{
+		CatalogCapture: observationpb.CatalogCapture_builder{}.Build(),
+	}.Build()
+}
+
+func stringPointer(value string) *string { return &value }
+
+func int32Pointer(value int32) *int32 { return &value }
 
 func testPrivateKey(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()

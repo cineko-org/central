@@ -7,19 +7,24 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strings"
 	"time"
 
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
-	contracts "github.com/cineko-org/contracts/v3"
+	"github.com/cineko-org/central/internal/support/numeric"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 
 	"golang.org/x/mod/semver"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Config struct {
@@ -36,7 +41,7 @@ type Config struct {
 type ClientRegistrationAuthorizer interface {
 	Authorize(
 		context.Context,
-		RegisterProbeRequest,
+		*probepb.RegisterRequest,
 		string,
 		time.Time,
 	) (RegistrationAuthorization, error)
@@ -47,7 +52,6 @@ type Service struct {
 	config     Config
 	clock      func() time.Time
 	random     func([]byte) (int, error)
-	marshal    func(any) ([]byte, error)
 }
 
 func NewService(repository Repository, config Config) (*Service, error) {
@@ -81,7 +85,7 @@ func NewService(repository Repository, config Config) (*Service, error) {
 		return nil, errors.New("minimum browser revision must be numeric")
 	}
 	return &Service{
-		repository: repository, config: config, clock: time.Now, random: rand.Read, marshal: json.Marshal,
+		repository: repository, config: config, clock: time.Now, random: rand.Read,
 	}, nil
 }
 
@@ -96,51 +100,58 @@ func (service *Service) ValidateEnrollmentToken(token string) bool {
 
 func (service *Service) RegisterProbe(
 	ctx context.Context,
-	request RegisterProbeRequest,
+	request *probepb.RegisterRequest,
 	remoteAddress string,
 	credential string,
-) (RegisterProbeResponse, error) {
+) (*probepb.RegisterResponse, error) {
 	if err := validateRegistration(request); err != nil {
-		return RegisterProbeResponse{}, err
+		return nil, err
 	}
 	now := service.clock().UTC()
 	authorization, err := service.authorizeRegistration(ctx, request, credential, now)
 	if err != nil {
-		return RegisterProbeResponse{}, err
+		return nil, err
 	}
 	accessToken, tokenHash, err := service.secret("cpt_")
 	if err != nil {
-		return RegisterProbeResponse{}, err
+		return nil, err
 	}
 	probeID, _, err := service.secret("probe_")
 	if err != nil {
-		return RegisterProbeResponse{}, err
+		return nil, err
+	}
+	capabilities, err := probedomain.CapabilityKeys(request.GetCapabilities())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	probe, err := service.repository.RegisterProbe(ctx, Probe{
-		ID: probeID, InstallationID: request.InstallationID, Kind: request.Kind,
+		ID: probeID, InstallationID: request.GetInstallationId(), Kind: probeKindKey(request.GetKind()),
 		OwnerUserID: authorization.OwnerUserID, DeviceID: authorization.DeviceID,
-		NetworkID: networkID(remoteAddress), NetworkHint: request.NetworkHint,
-		Capabilities: slices.Clone(request.Capabilities), MaxConcurrency: request.MaxConcurrency,
-		Runtime: request.Runtime, TokenHash: tokenHash, TokenExpiresAt: now.Add(service.config.ProbeTokenTTL),
-		Status: "online", Health: "healthy", CreatedAt: now, UpdatedAt: now,
+		NetworkID: networkID(remoteAddress), NetworkHint: request.GetNetworkHint(),
+		Capabilities: capabilities, MaxConcurrency: int(request.GetMaxConcurrency()),
+		Runtime: proto.CloneOf(request.GetRuntime()), TokenHash: tokenHash,
+		TokenExpiresAt: now.Add(service.config.ProbeTokenTTL),
+		Status:         "online", Health: "healthy", CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
-		return RegisterProbeResponse{}, err
+		return nil, err
 	}
-	return RegisterProbeResponse{
-		ProbeID: probe.ID, NetworkID: probe.NetworkID, AccessToken: accessToken,
-		TokenExpiresAt:           probe.TokenExpiresAt,
-		HeartbeatIntervalSeconds: int(service.config.HeartbeatInterval / time.Second),
-	}, nil
+	response := &probepb.RegisterResponse{}
+	response.SetProbeId(probe.ID)
+	response.SetNetworkId(probe.NetworkID)
+	response.SetAccessToken(accessToken)
+	response.SetTokenExpiresAt(timestamppb.New(probe.TokenExpiresAt))
+	response.SetHeartbeatIntervalSeconds(numeric.ClampInt64ToInt32(int64(service.config.HeartbeatInterval / time.Second)))
+	return response, nil
 }
 
 func (service *Service) authorizeRegistration(
 	ctx context.Context,
-	request RegisterProbeRequest,
+	request *probepb.RegisterRequest,
 	credential string,
 	now time.Time,
 ) (RegistrationAuthorization, error) {
-	if request.Kind == "container" {
+	if request.GetKind().GetContainer() != nil {
 		if !service.ValidateEnrollmentToken(credential) {
 			return RegistrationAuthorization{}, ErrUnauthorized
 		}
@@ -179,46 +190,56 @@ func (service *Service) AuthenticateProbe(
 func (service *Service) HeartbeatProbe(
 	ctx context.Context,
 	probe Probe,
-	request ProbeHeartbeatRequest,
-) (ProbeHeartbeatResponse, error) {
-	if err := normalizeAndValidateHeartbeat(probe, &request); err != nil {
-		return ProbeHeartbeatResponse{}, err
+	request *probepb.HeartbeatRequest,
+) (*probepb.HeartbeatResponse, error) {
+	if err := normalizeAndValidateHeartbeat(probe, request); err != nil {
+		return nil, err
 	}
 	now := service.clock().UTC()
 	if !service.runtimeCompatible(probe.Runtime) {
-		request.Draining = true
+		request.SetDraining(true)
 	}
 	updated, err := service.repository.HeartbeatProbe(ctx, probe.ID, request, now)
 	if err != nil {
-		return ProbeHeartbeatResponse{}, err
+		return nil, err
 	}
-	return ProbeHeartbeatResponse{
-		ServerTime: now, Drain: updated.Draining,
-		MinimumRuntimeVersion:  service.config.MinimumRuntimeVersion,
-		MinimumBrowserRevision: service.config.MinimumBrowserRevision,
-	}, nil
+	response := &probepb.HeartbeatResponse{}
+	response.SetServerTime(timestamppb.New(now))
+	response.SetDrain(updated.Draining)
+	response.SetMinimumRuntimeVersion(service.config.MinimumRuntimeVersion)
+	response.SetMinimumBrowserRevision(service.config.MinimumBrowserRevision)
+	return response, nil
 }
 
-func normalizeAndValidateHeartbeat(probe Probe, request *ProbeHeartbeatRequest) error {
-	if request.AvailableCapabilities == nil {
-		request.AvailableCapabilities = slices.Clone(probe.Capabilities)
+func normalizeAndValidateHeartbeat(probe Probe, request *probepb.HeartbeatRequest) error {
+	if request == nil {
+		return fmt.Errorf("%w: heartbeat is required", ErrInvalid)
 	}
-	if request.AvailableSlots < 0 || request.AvailableSlots > probe.MaxConcurrency {
+	if request.GetAvailableCapabilities() == nil {
+		capabilities, err := probedomain.Capabilities(probe.Capabilities)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		request.SetAvailableCapabilities(capabilities)
+	}
+	if request.GetAvailableSlots() < 0 || int(request.GetAvailableSlots()) > probe.MaxConcurrency {
 		return fmt.Errorf("%w: availableSlots is outside probe capacity", ErrInvalid)
 	}
-	if request.Health != "healthy" && request.Health != "degraded" {
+	health, _ := probeHealthKey(request.GetHealth())
+	if health != "healthy" && health != "degraded" {
 		return fmt.Errorf("%w: unsupported probe health", ErrInvalid)
 	}
-	if request.Health == "healthy" && strings.TrimSpace(request.ReasonCode) != "" {
-		return fmt.Errorf("%w: healthy probe cannot include reasonCode", ErrInvalid)
-	}
-	if len(request.ActiveAssignmentIDs)+request.AvailableSlots > probe.MaxConcurrency {
+	if len(request.GetActiveAssignmentIds())+int(request.GetAvailableSlots()) > probe.MaxConcurrency {
 		return fmt.Errorf("%w: active assignments and available slots exceed probe capacity", ErrInvalid)
 	}
-	if err := validateActiveAssignments(request.ActiveAssignmentIDs); err != nil {
+	if err := validateActiveAssignments(request.GetActiveAssignmentIds()); err != nil {
 		return err
 	}
-	return validateAvailableCapabilities(probe.Capabilities, request.AvailableCapabilities)
+	available, err := probedomain.CapabilityKeys(request.GetAvailableCapabilities())
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return validateAvailableCapabilities(probe.Capabilities, available)
 }
 
 func validateActiveAssignments(values []string) error {
@@ -243,7 +264,7 @@ func validateAvailableCapabilities(registeredValues, availableValues []string) e
 	}
 	available := make(map[string]struct{}, len(availableValues))
 	for _, capability := range availableValues {
-		if _, supported := registered[capability]; !supported || !contracts.IsSupportedCapability(capability) {
+		if _, supported := registered[capability]; !supported || !probedomain.IsSupportedCapability(capability) {
 			return fmt.Errorf("%w: available capability was not registered", ErrInvalid)
 		}
 		if _, duplicate := available[capability]; duplicate {
@@ -261,23 +282,29 @@ func (service *Service) DisconnectProbe(ctx context.Context, probe Probe) error 
 func (service *Service) ClaimAssignment(
 	ctx context.Context,
 	probe Probe,
-) (ClaimAssignmentResponse, error) {
+) (*probepb.ClaimAssignmentResponse, error) {
 	now := service.clock().UTC()
 	leaseToken, leaseHash, err := service.secret("lease_")
 	if err != nil {
-		return ClaimAssignmentResponse{}, err
+		return nil, err
 	}
 	assignment, err := service.repository.ClaimAssignment(
 		ctx, probe.ID, leaseHash, now, now.Add(service.config.AssignmentLease),
 		now.Add(-service.config.ProbeHeartbeatTTL),
 	)
 	if err != nil {
-		return ClaimAssignmentResponse{}, err
+		return nil, err
 	}
-	return ClaimAssignmentResponse{
-		AssignmentID: assignment.ID, LeaseToken: leaseToken, LeaseExpiresAt: assignment.LeaseExpiresAt,
-		NotBefore: assignment.NotBefore, Deadline: assignment.Deadline, Task: assignment.Task,
-	}, nil
+	lease := &probepb.AssignmentLease{}
+	lease.SetAssignmentId(assignment.ID)
+	lease.SetLeaseToken(leaseToken)
+	lease.SetLeaseExpiresAt(timestamppb.New(assignment.LeaseExpiresAt))
+	lease.SetNotBefore(timestamppb.New(assignment.NotBefore))
+	lease.SetDeadline(timestamppb.New(assignment.Deadline))
+	lease.SetTask(assignment.Task)
+	response := &probepb.ClaimAssignmentResponse{}
+	response.SetAssignment(lease)
+	return response, nil
 }
 
 // WaitForAssignment waits for a claimable assignment when the repository
@@ -296,18 +323,20 @@ func (service *Service) HeartbeatAssignment(
 	probe Probe,
 	assignmentID string,
 	leaseToken string,
-) (AssignmentHeartbeatResponse, error) {
+) (*probepb.HeartbeatAssignmentResponse, error) {
 	if strings.TrimSpace(assignmentID) == "" || strings.TrimSpace(leaseToken) == "" {
-		return AssignmentHeartbeatResponse{}, ErrUnauthorized
+		return nil, ErrUnauthorized
 	}
 	now := service.clock().UTC()
 	leaseExpiresAt := now.Add(service.config.AssignmentLease)
 	if err := service.repository.HeartbeatAssignment(
 		ctx, assignmentID, probe.ID, sha256.Sum256([]byte(leaseToken)), now, leaseExpiresAt,
 	); err != nil {
-		return AssignmentHeartbeatResponse{}, err
+		return nil, err
 	}
-	return AssignmentHeartbeatResponse{LeaseExpiresAt: leaseExpiresAt}, nil
+	response := &probepb.HeartbeatAssignmentResponse{}
+	response.SetLeaseExpiresAt(timestamppb.New(leaseExpiresAt))
+	return response, nil
 }
 
 func (service *Service) CommitResult(
@@ -315,21 +344,26 @@ func (service *Service) CommitResult(
 	probe Probe,
 	assignmentID string,
 	leaseToken string,
-	result AssignmentResult,
-) (ResultReceipt, error) {
-	if result.SeatMap != nil {
-		seatMap := *result.SeatMap
-		if err := catalogdomain.NormalizeSeatMapVersion(&seatMap, service.clock().UTC()); err != nil {
-			return ResultReceipt{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	result *observationpb.AssignmentResult,
+) (*observationpb.ResultReceipt, error) {
+	if completed := result.GetCompleted(); completed != nil {
+		if completed.GetSeatMap() != nil {
+			if err := catalogdomain.NormalizeSeatMap(completed.GetSeatMap(), service.clock().UTC()); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
 		}
-		result.SeatMap = &seatMap
+		if completed.GetCatalog() != nil {
+			if err := catalogdomain.NormalizeSnapshot(completed.GetCatalog()); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+		}
 	}
 	if err := validateResult(result); err != nil {
-		return ResultReceipt{}, err
+		return nil, err
 	}
-	payload, err := service.marshal(result)
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(result)
 	if err != nil {
-		return ResultReceipt{}, fmt.Errorf("encode assignment result: %w", err)
+		return nil, fmt.Errorf("encode assignment result: %w", err)
 	}
 	digest := sha256.Sum256(payload)
 	return service.repository.CommitResult(ctx, ResultCommit{
@@ -348,61 +382,67 @@ func (service *Service) secret(prefix string) (string, [32]byte, error) {
 	return value, sha256.Sum256([]byte(value)), nil
 }
 
-func validateRegistration(request RegisterProbeRequest) error {
-	if strings.TrimSpace(request.InstallationID) == "" {
+func validateRegistration(request *probepb.RegisterRequest) error {
+	if request == nil || strings.TrimSpace(request.GetInstallationId()) == "" {
 		return fmt.Errorf("%w: installationId is required", ErrInvalid)
 	}
-	if request.Kind != "container" && request.Kind != "client" {
+	if request.GetKind() == nil || (!request.GetKind().HasContainer() && !request.GetKind().HasClient()) {
 		return fmt.Errorf("%w: kind must be container or client", ErrInvalid)
 	}
-	if request.MaxConcurrency < 1 || request.MaxConcurrency > 32 {
+	if request.GetMaxConcurrency() < 1 || request.GetMaxConcurrency() > 32 {
 		return fmt.Errorf("%w: maxConcurrency must be between 1 and 32", ErrInvalid)
 	}
-	if err := validateRuntime(request.Runtime); err != nil {
+	if err := validateRuntime(request.GetRuntime()); err != nil {
 		return err
 	}
-	if len(request.Capabilities) == 0 {
+	if len(request.GetCapabilities()) == 0 {
 		return fmt.Errorf("%w: at least one capability is required", ErrInvalid)
 	}
-	for _, capability := range request.Capabilities {
-		if !contracts.IsSupportedCapability(strings.TrimSpace(capability)) {
-			return fmt.Errorf("%w: unsupported capability", ErrInvalid)
-		}
+	if _, err := probedomain.CapabilityKeys(request.GetCapabilities()); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return nil
 }
 
-func validateRuntime(runtime Runtime) error {
-	if runtime.Protocol != ProtocolVersion {
-		return fmt.Errorf("%w: unsupported runtime protocol", ErrInvalid)
-	}
-	if strings.TrimSpace(runtime.Version) == "" || strings.TrimSpace(runtime.BrowserRevision) == "" ||
-		strings.TrimSpace(runtime.Platform) == "" || strings.TrimSpace(runtime.Arch) == "" {
+func validateRuntime(runtime *commonpb.Runtime) error {
+	if runtime == nil || strings.TrimSpace(runtime.GetComponentVersion()) == "" || strings.TrimSpace(runtime.GetBrowserRevision()) == "" ||
+		strings.TrimSpace(runtime.GetPlatform()) == "" || strings.TrimSpace(runtime.GetArchitecture()) == "" {
 		return fmt.Errorf("%w: runtime is incomplete", ErrInvalid)
 	}
-	if !semver.IsValid(releasepolicy.CanonicalVersion(runtime.Version)) {
+	if !semver.IsValid(releasepolicy.CanonicalVersion(runtime.GetComponentVersion())) {
 		return fmt.Errorf("%w: runtime version must use semantic versioning", ErrInvalid)
 	}
-	if !releasepolicy.IsNumericRevision(runtime.BrowserRevision) {
+	if !releasepolicy.IsNumericRevision(runtime.GetBrowserRevision()) {
 		return fmt.Errorf("%w: browser revision must be numeric", ErrInvalid)
 	}
 	return nil
 }
 
-func validateResult(result AssignmentResult) error {
-	if strings.TrimSpace(result.RunID) == "" {
+//nolint:gocyclo,cyclop // Each latest-Proto result variant has distinct required fields and must remain exhaustive.
+func validateResult(result *observationpb.AssignmentResult) error {
+	if result == nil || strings.TrimSpace(result.GetRunId()) == "" {
 		return fmt.Errorf("%w: runId is required", ErrInvalid)
 	}
-	if result.Status != "completed" && result.Status != "partial" && result.Status != "failed" {
-		return fmt.Errorf("%w: unsupported result status", ErrInvalid)
-	}
-	if result.StartedAt.IsZero() || result.FinishedAt.IsZero() || result.FinishedAt.Before(result.StartedAt) {
+	if result.GetStartedAt() == nil || result.GetFinishedAt() == nil || result.GetStartedAt().CheckValid() != nil || result.GetFinishedAt().CheckValid() != nil || result.GetFinishedAt().AsTime().Before(result.GetStartedAt().AsTime()) {
 		return fmt.Errorf("%w: invalid result time range", ErrInvalid)
 	}
-	if err := validateResultPayload(result); err != nil {
-		return err
+	completed, failed := result.GetCompleted(), result.GetFailed()
+	if (completed == nil) == (failed == nil) {
+		return fmt.Errorf("%w: assignment result outcome is required", ErrInvalid)
 	}
-	for _, capture := range result.Captures {
+	if completed == nil {
+		if strings.TrimSpace(failed.GetReasonCode()) == "" {
+			return fmt.Errorf("%w: failed result reason is required", ErrInvalid)
+		}
+		return nil
+	}
+	if completed.GetCatalog() != nil && completed.GetSeatMap() != nil {
+		return fmt.Errorf("%w: assignment result cannot include catalog and seat map", ErrInvalid)
+	}
+	if (completed.GetCatalog() != nil || completed.GetSeatMap() != nil) && len(completed.GetCaptures()) != 0 {
+		return fmt.Errorf("%w: catalog and seat-map results cannot include schedule captures", ErrInvalid)
+	}
+	for _, capture := range completed.GetCaptures() {
 		if err := validateCapture(capture); err != nil {
 			return err
 		}
@@ -410,34 +450,14 @@ func validateResult(result AssignmentResult) error {
 	return nil
 }
 
-func validateResultPayload(result AssignmentResult) error {
-	if result.Catalog != nil && result.SeatMap != nil {
-		return fmt.Errorf("%w: assignment result cannot include catalog and seat map", ErrInvalid)
-	}
-	if result.Catalog != nil {
-		if result.Status != "completed" || len(result.Captures) != 0 {
-			return fmt.Errorf("%w: catalog result must be completed without schedule captures", ErrInvalid)
-		}
-		snapshot := *result.Catalog
-		if err := catalogdomain.NormalizeSnapshot(&snapshot); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalid, err)
-		}
-		return nil
-	}
-	if result.SeatMap != nil && (result.Status != "completed" || len(result.Captures) != 0) {
-		return fmt.Errorf("%w: seat-map result must be completed without other payloads", ErrInvalid)
-	}
-	return nil
-}
-
-func validateCapture(capture Capture) error {
-	if _, err := time.Parse(time.DateOnly, capture.TargetDate); err != nil || capture.ObservedAt.IsZero() {
+func validateCapture(capture *observationpb.Capture) error {
+	if capture == nil || capture.GetTargetDate() == nil || capture.GetObservedAt() == nil || capture.GetObservedAt().CheckValid() != nil {
 		return fmt.Errorf("%w: invalid capture", ErrInvalid)
 	}
-	if capture.Complete && capture.ErrorCode != "" {
+	if capture.GetComplete() && capture.GetErrorCode() != "" {
 		return fmt.Errorf("%w: complete capture cannot include errorCode", ErrInvalid)
 	}
-	for _, showtime := range capture.Showtimes {
+	for _, showtime := range capture.GetShowtimes() {
 		if err := validateShowtime(showtime); err != nil {
 			return err
 		}
@@ -445,35 +465,39 @@ func validateCapture(capture Capture) error {
 	return nil
 }
 
-func validateShowtime(showtime Showtime) error {
+func validateShowtime(showtime *catalogpb.Showtime) error {
 	if !showtimeIdentityComplete(showtime) || !showtimeIdentityCanonical(showtime) ||
-		showtime.StartsAt.IsZero() || !showtime.EndsAt.After(showtime.StartsAt) ||
-		showtime.AvailableSeats < 0 || showtime.Capacity < showtime.AvailableSeats {
+		showtime.GetStartsAt() == nil || showtime.GetEndsAt() == nil ||
+		!showtime.GetEndsAt().AsTime().After(showtime.GetStartsAt().AsTime()) ||
+		showtime.GetAvailableSeats() < 0 || showtime.GetCapacity() < showtime.GetAvailableSeats() {
 		return fmt.Errorf("%w: invalid showtime", ErrInvalid)
 	}
 	return nil
 }
 
-func showtimeIdentityComplete(showtime Showtime) bool {
+func showtimeIdentityComplete(showtime *catalogpb.Showtime) bool {
+	if showtime == nil || showtime.GetMovie() == nil || showtime.GetAuditorium() == nil {
+		return false
+	}
 	values := []string{
-		showtime.ID, showtime.ProviderID, showtime.SourceKey, showtime.TheaterID,
-		showtime.Movie.ID, showtime.Movie.SourceKey, showtime.Movie.Title,
-		showtime.Auditorium.ID, showtime.Auditorium.SourceKey, showtime.Auditorium.Name,
+		showtime.GetId(), showtime.GetProviderId(), showtime.GetSourceKey(), showtime.GetTheaterId(),
+		showtime.GetMovie().GetId(), showtime.GetMovie().GetSourceKey(), showtime.GetMovie().GetTitle(),
+		showtime.GetAuditorium().GetId(), showtime.GetAuditorium().GetSourceKey(), showtime.GetAuditorium().GetName(),
 	}
 	for _, value := range values {
 		if strings.TrimSpace(value) == "" {
 			return false
 		}
 	}
-	return showtime.Movie.ProviderID == showtime.ProviderID &&
-		showtime.Auditorium.TheaterID == showtime.TheaterID
+	return showtime.GetMovie().GetProviderId() == showtime.GetProviderId() &&
+		showtime.GetAuditorium().GetTheaterId() == showtime.GetTheaterId()
 }
 
-func showtimeIdentityCanonical(showtime Showtime) bool {
-	providerID := strings.TrimSpace(showtime.ProviderID)
-	return showtime.ID == contracts.CatalogID(providerID, "showtime", showtime.SourceKey) &&
-		showtime.Movie.ID == contracts.CatalogID(providerID, "movie", showtime.Movie.SourceKey) &&
-		showtime.Auditorium.ID == contracts.CatalogID(providerID, "auditorium", showtime.Auditorium.SourceKey)
+func showtimeIdentityCanonical(showtime *catalogpb.Showtime) bool {
+	providerID := strings.TrimSpace(showtime.GetProviderId())
+	return showtime.GetId() == catalogdomain.CatalogID(providerID, "showtime", showtime.GetSourceKey()) &&
+		showtime.GetMovie().GetId() == catalogdomain.CatalogID(providerID, "movie", showtime.GetMovie().GetSourceKey()) &&
+		showtime.GetAuditorium().GetId() == catalogdomain.CatalogID(providerID, "auditorium", showtime.GetAuditorium().GetSourceKey())
 }
 
 func networkID(remoteAddress string) string {
@@ -485,17 +509,41 @@ func networkID(remoteAddress string) string {
 	return "net_" + hex.EncodeToString(digest[:8])
 }
 
-func (service *Service) runtimeCompatible(runtime Runtime) bool {
-	if !semver.IsValid(releasepolicy.CanonicalVersion(runtime.Version)) ||
-		!releasepolicy.IsNumericRevision(runtime.BrowserRevision) {
+func probeKindKey(kind *probepb.ProbeKind) string {
+	switch {
+	case kind != nil && kind.GetContainer() != nil:
+		return "container"
+	case kind != nil && kind.GetClient() != nil:
+		return "client"
+	default:
+		return ""
+	}
+}
+
+func probeHealthKey(health *probepb.ProbeHealth) (string, string) {
+	switch {
+	case health != nil && health.GetHealthy() != nil:
+		return "healthy", ""
+	case health != nil && health.GetDegraded() != nil:
+		return "degraded", health.GetDegraded().GetReasonCode()
+	case health != nil && health.GetUnhealthy() != nil:
+		return "unhealthy", health.GetUnhealthy().GetReasonCode()
+	default:
+		return "", ""
+	}
+}
+
+func (service *Service) runtimeCompatible(runtime *commonpb.Runtime) bool {
+	if runtime == nil || !semver.IsValid(releasepolicy.CanonicalVersion(runtime.GetComponentVersion())) ||
+		!releasepolicy.IsNumericRevision(runtime.GetBrowserRevision()) {
 		return false
 	}
 	if minimum := strings.TrimSpace(service.config.MinimumRuntimeVersion); minimum != "" &&
-		semver.Compare(releasepolicy.CanonicalVersion(runtime.Version), releasepolicy.CanonicalVersion(minimum)) < 0 {
+		semver.Compare(releasepolicy.CanonicalVersion(runtime.GetComponentVersion()), releasepolicy.CanonicalVersion(minimum)) < 0 {
 		return false
 	}
 	if minimum := strings.TrimSpace(service.config.MinimumBrowserRevision); minimum != "" &&
-		releasepolicy.CompareNumericRevision(runtime.BrowserRevision, minimum) < 0 {
+		releasepolicy.CompareNumericRevision(runtime.GetBrowserRevision(), minimum) < 0 {
 		return false
 	}
 	return true

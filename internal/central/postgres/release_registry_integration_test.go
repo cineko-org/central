@@ -2,13 +2,15 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestPostgresReleaseRegistry(t *testing.T) {
@@ -68,26 +70,28 @@ func TestPostgresReleaseRegistry(t *testing.T) {
 	launchers := integrationLauncherReleaseSet(publishedAt)
 	probe := integrationProbeRelease(publishedAt)
 
-	generation, inserted, err := service.PublishReleaseSet(ctx, "probe", []central.ProbeRelease{probe})
+	probeSet := &releasepb.ProbeReleaseSet{}
+	probeSet.SetReleases([]*releasepb.ProbeRelease{probe})
+	generation, inserted, err := service.PublishReleaseSet(ctx, "probe", probeSet)
 	if err != nil || !inserted || generation != initialGeneration {
 		t.Fatalf("Probe publish = generation %d, inserted %v, error %v", generation, inserted, err)
 	}
 	for _, publication := range []struct {
 		kind    string
-		release any
+		release proto.Message
 		want    int64
 	}{
-		{kind: "client", release: clients, want: initialGeneration},
-		{kind: "browser", release: browsers, want: initialGeneration},
-		{kind: "playwright", release: playwright, want: initialGeneration},
-		{kind: "launcher", release: launchers, want: initialGeneration + 1},
+		{kind: "client", release: releaseSetClients(clients), want: initialGeneration},
+		{kind: "browser", release: releaseSetBrowsers(browsers), want: initialGeneration},
+		{kind: "playwright", release: releaseSetPlaywright(playwright), want: initialGeneration},
+		{kind: "launcher", release: releaseSetLaunchers(launchers), want: initialGeneration + 1},
 	} {
 		generation, inserted, err = service.PublishReleaseSet(ctx, publication.kind, publication.release)
 		if err != nil || !inserted || generation != publication.want {
 			t.Fatalf("%s publish = generation %d, inserted %v, error %v", publication.kind, generation, inserted, err)
 		}
 	}
-	generation, inserted, err = service.PublishReleaseSet(ctx, "launcher", launchers)
+	generation, inserted, err = service.PublishReleaseSet(ctx, "launcher", releaseSetLaunchers(launchers))
 	if err != nil || inserted || generation != initialGeneration+1 {
 		t.Fatalf("idempotent Launcher publish = generation %d, inserted %v, error %v", generation, inserted, err)
 	}
@@ -95,45 +99,37 @@ func TestPostgresReleaseRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyEquivalent := make([]central.ReleaseRecord, 0, len(launchers))
+	launcherRecords := make([]central.ReleaseRecord, 0, len(launchers))
 	for _, record := range storedRecords {
-		if record.Kind != "launcher" || record.Channel != "stable" || record.Version != launchers[0].Version {
+		if record.Kind != "launcher" || record.Channel != "stable" || record.Version != launchers[0].GetVersion() {
 			continue
 		}
-		if record.SchemaVersion != 2 {
-			t.Fatalf("stored Launcher schema version = %d", record.SchemaVersion)
-		}
-		var envelope struct {
-			SchemaVersion int             `json:"schemaVersion"`
-			Payload       json.RawMessage `json:"payload"`
-		}
-		if err := json.Unmarshal(record.Payload, &envelope); err != nil || envelope.SchemaVersion != 2 || len(envelope.Payload) == 0 {
-			t.Fatalf("stored Launcher envelope = %s, %+v, %v", record.Payload, envelope, err)
-		}
-		record.SchemaVersion = 1
-		record.Payload = envelope.Payload
-		legacyEquivalent = append(legacyEquivalent, record)
+		launcherRecords = append(launcherRecords, record)
 	}
-	if len(legacyEquivalent) != len(launchers) {
-		t.Fatalf("stored Launcher records = %d", len(legacyEquivalent))
+	if len(launcherRecords) != len(launchers) {
+		t.Fatalf("stored Launcher records = %d", len(launcherRecords))
 	}
-	if _, _, err := store.InsertReleaseSet(ctx, legacyEquivalent); !errors.Is(err, central.ErrConflict) {
-		t.Fatalf("cross-schema immutable identity = %v", err)
+	if replayGeneration, replayInserted, replayErr := store.InsertReleaseSet(ctx, launcherRecords); replayErr != nil || replayInserted || replayGeneration != initialGeneration+1 {
+		t.Fatalf("idempotent immutable identity = generation %d, inserted %v, error %v", replayGeneration, replayInserted, replayErr)
 	}
-	conflict := append([]central.LauncherRelease(nil), launchers...)
-	conflict[0].Launcher.SHA256 = strings.Repeat("f", 64)
-	if _, _, err := service.PublishReleaseSet(ctx, "launcher", conflict); !errors.Is(err, central.ErrConflict) {
+	conflict := proto.CloneOf(launchers[0])
+	conflict.GetLauncher().SetSha256(strings.Repeat("f", 64))
+	conflictSet := &releasepb.LauncherReleaseSet{}
+	conflictSet.SetReleases([]*releasepb.LauncherRelease{
+		conflict, launchers[1], launchers[2],
+	})
+	if _, _, err := service.PublishReleaseSet(ctx, "launcher", conflictSet); !errors.Is(err, central.ErrConflict) {
 		t.Fatalf("immutable identity conflict = %v", err)
 	}
 	runtimeRelease, err := service.CurrentRuntimeRelease("stable", "darwin", "arm64")
-	if err != nil || runtimeRelease.Client.Version != clients[0].Version ||
-		runtimeRelease.Browser.Revision != browsers[0].Revision || runtimeRelease.Playwright.Version != playwright[0].Version {
+	if err != nil || runtimeRelease.GetClient().GetVersion() != clients[0].GetVersion() ||
+		runtimeRelease.GetBrowser().GetRevision() != browsers[0].GetRevision() || runtimeRelease.GetPlaywright().GetVersion() != playwright[0].GetVersion() {
 		t.Fatalf("current runtime = %+v, %v", runtimeRelease, err)
 	}
-	if current, currentErr := service.CurrentLauncherRelease("stable", "darwin", "arm64"); currentErr != nil || current.Version != launchers[0].Version {
+	if current, currentErr := service.CurrentLauncherRelease("stable", "darwin", "arm64"); currentErr != nil || current.GetVersion() != launchers[0].GetVersion() {
 		t.Fatalf("current Launcher = %+v, %v", current, currentErr)
 	}
-	if current, currentErr := service.CurrentProbeRelease("stable"); currentErr != nil || current.Version != probe.Version {
+	if current, currentErr := service.CurrentProbeRelease("stable"); currentErr != nil || current.GetVersion() != probe.GetVersion() {
 		t.Fatalf("current Probe = %+v, %v", current, currentErr)
 	}
 
@@ -143,94 +139,129 @@ func TestPostgresReleaseRegistry(t *testing.T) {
 	}
 }
 
-func integrationClientRelease(publishedAt time.Time) central.ClientRelease {
-	return central.ClientRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "91.0.0",
-		MinimumLauncherVersion: "91.0.0", MinimumBrowserRevision: "991234",
-		PlaywrightVersion: "91.61.1", Protocol: central.ProtocolVersion,
-		Artifact: integrationArtifact("client", strings.Repeat("1", 64)),
-		ProbeBootstrapPublicKeys: map[string]string{
-			"primary": "-----BEGIN PUBLIC KEY-----\nintegration\n-----END PUBLIC KEY-----\n",
-		},
-		PublishedAt: publishedAt,
+func integrationClientRelease(publishedAt time.Time, platform, architecture, url, executable string) *releasepb.ClientRelease {
+	result := &releasepb.ClientRelease{}
+	result.SetChannel("stable")
+	result.SetPlatform(platform)
+	result.SetArchitecture(architecture)
+	result.SetVersion("91.0.0")
+	result.SetMinimumLauncherVersion("91.0.0")
+	result.SetMinimumBrowserRevision("991234")
+	result.SetPlaywrightVersion("91.61.1")
+	result.SetArtifact(integrationArtifact(strings.Repeat("1", 64), url, executable))
+	result.SetProbeBootstrapPublicKeys(map[string]string{
+		"primary": "-----BEGIN PUBLIC KEY-----\nintegration\n-----END PUBLIC KEY-----\n",
+	})
+	result.SetPublishedAt(timestamppb.New(publishedAt))
+	return result
+}
+
+func integrationClientReleaseSet(publishedAt time.Time) []*releasepb.ClientRelease {
+	return []*releasepb.ClientRelease{
+		integrationClientRelease(publishedAt, "darwin", "arm64", "https://downloads.example.com/cineko/releases/client/artifact.zip", "client"),
+		integrationClientRelease(publishedAt, "linux", "amd64", "https://downloads.example.com/cineko/releases/client/linux/artifact.zip", "client"),
+		integrationClientRelease(publishedAt, "windows", "amd64", "https://downloads.example.com/cineko/releases/client/windows/artifact.zip", "client.exe"),
 	}
 }
 
-func integrationClientReleaseSet(publishedAt time.Time) []central.ClientRelease {
-	base := integrationClientRelease(publishedAt)
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Artifact.URL, linux.Artifact.Executable = "https://downloads.example.com/cineko/releases/client/linux/artifact.zip", "client"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Artifact.URL, windows.Artifact.Executable = "https://downloads.example.com/cineko/releases/client/windows/artifact.zip", "client.exe"
-	return []central.ClientRelease{base, linux, windows}
+func integrationBrowserRelease(publishedAt time.Time, platform, architecture, url, executable string) *releasepb.BrowserRelease {
+	result := &releasepb.BrowserRelease{}
+	result.SetChannel("stable")
+	result.SetPlatform(platform)
+	result.SetArchitecture(architecture)
+	result.SetRevision("991234")
+	result.SetCompatiblePlaywrightVersions([]string{"91.61.1"})
+	result.SetArtifact(integrationArtifact(strings.Repeat("2", 64), url, executable))
+	result.SetPublishedAt(timestamppb.New(publishedAt))
+	return result
 }
 
-func integrationBrowserRelease(publishedAt time.Time) central.BrowserRelease {
-	return central.BrowserRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Revision: "991234",
-		CompatiblePlaywrightVersions: []string{"91.61.1"},
-		Artifact:                     integrationArtifact("browser", strings.Repeat("2", 64)),
-		PublishedAt:                  publishedAt,
+func integrationBrowserReleaseSet(publishedAt time.Time) []*releasepb.BrowserRelease {
+	return []*releasepb.BrowserRelease{
+		integrationBrowserRelease(publishedAt, "darwin", "arm64", "https://downloads.example.com/cineko/releases/browser/artifact.zip", "chrome"),
+		integrationBrowserRelease(publishedAt, "linux", "amd64", "https://downloads.example.com/cineko/releases/browser/linux/artifact.zip", "chrome"),
+		integrationBrowserRelease(publishedAt, "windows", "amd64", "https://downloads.example.com/cineko/releases/browser/windows/artifact.zip", "chrome.exe"),
 	}
 }
 
-func integrationBrowserReleaseSet(publishedAt time.Time) []central.BrowserRelease {
-	base := integrationBrowserRelease(publishedAt)
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Artifact.URL, linux.Artifact.Executable = "https://downloads.example.com/cineko/releases/browser/linux/artifact.zip", "chrome"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Artifact.URL, windows.Artifact.Executable = "https://downloads.example.com/cineko/releases/browser/windows/artifact.zip", "chrome.exe"
-	return []central.BrowserRelease{base, linux, windows}
+func integrationPlaywrightRelease(publishedAt time.Time, platform, architecture, url, executable string) *releasepb.PlaywrightRelease {
+	result := &releasepb.PlaywrightRelease{}
+	result.SetChannel("stable")
+	result.SetPlatform(platform)
+	result.SetArchitecture(architecture)
+	result.SetVersion("91.61.1")
+	result.SetArtifact(integrationArtifact(strings.Repeat("3", 64), url, executable))
+	result.SetPublishedAt(timestamppb.New(publishedAt))
+	return result
 }
 
-func integrationPlaywrightRelease(publishedAt time.Time) central.PlaywrightRelease {
-	return central.PlaywrightRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "91.61.1",
-		Artifact: integrationArtifact("playwright", strings.Repeat("3", 64)), PublishedAt: publishedAt,
+func integrationPlaywrightReleaseSet(publishedAt time.Time) []*releasepb.PlaywrightRelease {
+	return []*releasepb.PlaywrightRelease{
+		integrationPlaywrightRelease(publishedAt, "darwin", "arm64", "https://downloads.example.com/cineko/releases/playwright/artifact.zip", "playwright"),
+		integrationPlaywrightRelease(publishedAt, "linux", "amd64", "https://downloads.example.com/cineko/releases/playwright/linux/artifact.zip", "playwright"),
+		integrationPlaywrightRelease(publishedAt, "windows", "amd64", "https://downloads.example.com/cineko/releases/playwright/windows/artifact.zip", "playwright.exe"),
 	}
 }
 
-func integrationPlaywrightReleaseSet(publishedAt time.Time) []central.PlaywrightRelease {
-	base := integrationPlaywrightRelease(publishedAt)
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Artifact.URL, linux.Artifact.Executable = "https://downloads.example.com/cineko/releases/playwright/linux/artifact.zip", "playwright"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Artifact.URL, windows.Artifact.Executable = "https://downloads.example.com/cineko/releases/playwright/windows/artifact.zip", "playwright.exe"
-	return []central.PlaywrightRelease{base, linux, windows}
+func integrationLauncherRelease(publishedAt time.Time, platform, architecture, url, executable string) *releasepb.LauncherRelease {
+	result := &releasepb.LauncherRelease{}
+	result.SetChannel("stable")
+	result.SetPlatform(platform)
+	result.SetArchitecture(architecture)
+	result.SetVersion("91.0.0")
+	result.SetLauncher(integrationArtifact(strings.Repeat("4", 64), url, executable))
+	result.SetPublishedAt(timestamppb.New(publishedAt))
+	return result
 }
 
-func integrationLauncherRelease(publishedAt time.Time) central.LauncherRelease {
-	return central.LauncherRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "91.0.0",
-		Protocol: central.ProtocolVersion,
-		Launcher: integrationArtifact("launcher", strings.Repeat("4", 64)), PublishedAt: publishedAt,
+func integrationLauncherReleaseSet(publishedAt time.Time) []*releasepb.LauncherRelease {
+	return []*releasepb.LauncherRelease{
+		integrationLauncherRelease(publishedAt, "darwin", "arm64", "https://downloads.example.com/cineko/releases/launcher/artifact.zip", "cineko-launcher"),
+		integrationLauncherRelease(publishedAt, "linux", "amd64", "https://downloads.example.com/cineko/releases/launcher/linux/artifact.zip", "cineko-launcher"),
+		integrationLauncherRelease(publishedAt, "windows", "amd64", "https://downloads.example.com/cineko/releases/launcher/windows/artifact.zip", "cineko-launcher.exe"),
 	}
 }
 
-func integrationLauncherReleaseSet(publishedAt time.Time) []central.LauncherRelease {
-	base := integrationLauncherRelease(publishedAt)
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Launcher.URL, linux.Launcher.Executable = "https://downloads.example.com/cineko/releases/launcher/linux/artifact.zip", "cineko-launcher"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Launcher.URL, windows.Launcher.Executable = "https://downloads.example.com/cineko/releases/launcher/windows/artifact.zip", "cineko-launcher.exe"
-	return []central.LauncherRelease{base, linux, windows}
+func integrationProbeRelease(publishedAt time.Time) *releasepb.ProbeRelease {
+	result := &releasepb.ProbeRelease{}
+	result.SetChannel("stable")
+	result.SetVersion("91.0.0")
+	result.SetBrowserRevision("991234")
+	result.SetImage("registry.example.com/example/cineko-probe")
+	result.SetImageDigest("sha256:" + strings.Repeat("5", 64))
+	result.SetPublishedAt(timestamppb.New(publishedAt))
+	return result
 }
 
-func integrationProbeRelease(publishedAt time.Time) central.ProbeRelease {
-	return central.ProbeRelease{
-		Channel: "stable", Version: "91.0.0", Protocol: central.ProtocolVersion, BrowserRevision: "991234",
-		Image: "registry.example.com/example/cineko-probe", ImageDigest: "sha256:" + strings.Repeat("5", 64),
-		PublishedAt: publishedAt,
-	}
+func integrationArtifact(digest, url, executable string) *releasepb.Artifact {
+	result := &releasepb.Artifact{}
+	result.SetUrl(url)
+	result.SetSize(1)
+	result.SetSha256(digest)
+	result.SetExecutable(executable)
+	return result
 }
 
-func integrationArtifact(component string, digest string) central.ReleaseArtifact {
-	return central.ReleaseArtifact{
-		URL:  "https://downloads.example.com/cineko/releases/" + component + "/artifact.zip",
-		Size: 1, SHA256: digest, Executable: component,
-	}
+func releaseSetClients(releases []*releasepb.ClientRelease) *releasepb.ClientReleaseSet {
+	result := &releasepb.ClientReleaseSet{}
+	result.SetReleases(releases)
+	return result
+}
+
+func releaseSetBrowsers(releases []*releasepb.BrowserRelease) *releasepb.BrowserReleaseSet {
+	result := &releasepb.BrowserReleaseSet{}
+	result.SetReleases(releases)
+	return result
+}
+
+func releaseSetPlaywright(releases []*releasepb.PlaywrightRelease) *releasepb.PlaywrightReleaseSet {
+	result := &releasepb.PlaywrightReleaseSet{}
+	result.SetReleases(releases)
+	return result
+}
+
+func releaseSetLaunchers(releases []*releasepb.LauncherRelease) *releasepb.LauncherReleaseSet {
+	result := &releasepb.LauncherReleaseSet{}
+	result.SetReleases(releases)
+	return result
 }

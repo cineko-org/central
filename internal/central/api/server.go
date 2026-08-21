@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,15 +14,23 @@ import (
 	"strings"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/bootstrap"
 	"github.com/cineko-org/central/internal/central/reconcile"
-	contracts "github.com/cineko-org/contracts/v3"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
 	maxRequestBody           = 2 << 20
 	assignmentClaimWaitLimit = 5 * time.Second
+	releaseGenerationHeader  = "X-Cineko-Release-Generation"
 )
 
 type Server struct {
@@ -34,7 +41,7 @@ type Server struct {
 	probeBootstrapSigner *bootstrap.Signer
 	admin                *AdminAuth
 	reconciler           interface{ Snapshot() reconcile.Status }
-	adminConfiguration   AdminConfiguration
+	adminConfiguration   *adminpb.Configuration
 	adminOperations      adminOperations
 	releasePublishHash   [32]byte
 	releasePublishReady  bool
@@ -45,11 +52,11 @@ type Server struct {
 }
 
 type pinService interface {
-	ListUsers(context.Context) ([]central.ClientPINUser, error)
-	CreateUser(context.Context, string) (central.ClientPINIssue, error)
-	Rotate(context.Context, string) (central.ClientPINIssue, error)
+	ListUsers(context.Context) ([]*adminpb.ClientPinUser, error)
+	CreateUser(context.Context, string) (*adminpb.ClientPinIssue, error)
+	Rotate(context.Context, string) (*adminpb.ClientPinIssue, error)
 	DeleteUser(context.Context, string) error
-	Exchange(context.Context, central.ClientPINExchangeRequest, string) (central.AuthExchangeResponse, error)
+	Exchange(context.Context, *clientpb.PinExchangeRequest, string) (*clientpb.AuthenticationResponse, error)
 }
 
 type Option func(*Server)
@@ -78,7 +85,7 @@ func WithAdminAuth(auth *AdminAuth) Option {
 	return func(server *Server) { server.admin = auth }
 }
 
-func WithAdminConfiguration(configuration AdminConfiguration) Option {
+func WithAdminConfiguration(configuration *adminpb.Configuration) Option {
 	return func(server *Server) { server.adminConfiguration = configuration }
 }
 
@@ -163,8 +170,6 @@ func New(service *central.Service, options ...Option) (*Server, error) {
 	mux.HandleFunc("GET /v1/events/stream", server.streamClientEvents)
 	mux.HandleFunc("GET /v1/settings", server.getClientSettings)
 	mux.HandleFunc("PUT /v1/settings", server.putClientSettings)
-	mux.HandleFunc("GET /v1/configuration", server.getClientConfiguration)
-	mux.HandleFunc("PUT /v1/configuration", server.putClientConfiguration)
 	mux.HandleFunc("GET /v1/catalog", server.getClientCatalog)
 	mux.HandleFunc("POST /v1/catalog/snapshots", server.putClientCatalogSnapshot)
 	mux.HandleFunc("GET /v1/catalog/auditoriums/{auditoriumId}/seat-map", server.getClientSeatMapVersion)
@@ -200,10 +205,59 @@ func (server *Server) reconcilerHealth(writer http.ResponseWriter, request *http
 	if !status.Healthy {
 		httpStatus = http.StatusServiceUnavailable
 	}
-	server.writeJSON(writer, httpStatus, status)
+	server.writeProtoJSON(writer, httpStatus, reconcileStatusProto(status))
 }
 
 func (server *Server) Handler() http.Handler { return server.handler }
+
+func serveProto[Request proto.Message, Response proto.Message](
+	server *Server,
+	writer http.ResponseWriter,
+	request *http.Request,
+	input Request,
+	handle func(context.Context, Request) (Response, error),
+) {
+	if !server.decodeProtoJSON(writer, request, input) {
+		return
+	}
+	response, err := handle(request.Context(), input)
+	if err != nil {
+		server.writeError(writer, request, err)
+		return
+	}
+	server.writeProtoJSON(writer, http.StatusOK, response)
+}
+
+func writeProtoCall[Response proto.Message](
+	server *Server,
+	writer http.ResponseWriter,
+	request *http.Request,
+	status int,
+	load func(context.Context) (Response, error),
+) {
+	response, err := load(request.Context())
+	if err != nil {
+		server.writeError(writer, request, err)
+		return
+	}
+	server.writeProtoJSON(writer, status, response)
+}
+
+func writeAdminProtoCall[Response proto.Message](
+	server *Server,
+	writer http.ResponseWriter,
+	request *http.Request,
+	code string,
+	message string,
+	load func(context.Context) (Response, error),
+) {
+	response, err := load(request.Context())
+	if err != nil {
+		server.writeAPIError(writer, request, http.StatusInternalServerError, code, message, true)
+		return
+	}
+	server.writeProtoJSON(writer, http.StatusOK, response)
+}
 
 func (server *Server) releaseGenerationHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -214,13 +268,15 @@ func (server *Server) releaseGenerationHeader(next http.Handler) http.Handler {
 				generation = current
 			}
 		}
-		writer.Header().Set(contracts.ReleaseGenerationHeader, strconv.FormatInt(generation, 10))
+		writer.Header().Set(releaseGenerationHeader, strconv.FormatInt(generation, 10))
 		next.ServeHTTP(writer, request)
 	})
 }
 
 func (server *Server) livez(writer http.ResponseWriter, _ *http.Request) {
-	server.writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+	status := &commonpb.ServiceHealth{}
+	status.SetLive(&commonpb.Live{})
+	server.writeProtoJSON(writer, http.StatusOK, status)
 }
 
 func (server *Server) readyz(writer http.ResponseWriter, request *http.Request) {
@@ -228,15 +284,17 @@ func (server *Server) readyz(writer http.ResponseWriter, request *http.Request) 
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, map[string]string{"status": "ready"})
+	status := &commonpb.ServiceHealth{}
+	status.SetReady(&commonpb.Ready{})
+	server.writeProtoJSON(writer, http.StatusOK, status)
 }
 
 func (server *Server) registerProbe(writer http.ResponseWriter, request *http.Request) {
-	if !server.requireProtocol(writer, request) || !server.requireIdempotencyKey(writer, request) {
+	if !server.requireIdempotencyKey(writer, request) {
 		return
 	}
-	var input central.RegisterProbeRequest
-	if !server.decodeJSON(writer, request, &input) {
+	input := &probepb.RegisterRequest{}
+	if !server.decodeProtoJSON(writer, request, input) {
 		return
 	}
 	response, err := server.service.RegisterProbe(
@@ -246,7 +304,7 @@ func (server *Server) registerProbe(writer http.ResponseWriter, request *http.Re
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, response)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) heartbeatProbe(writer http.ResponseWriter, request *http.Request) {
@@ -254,16 +312,11 @@ func (server *Server) heartbeatProbe(writer http.ResponseWriter, request *http.R
 	if !ok {
 		return
 	}
-	var input central.ProbeHeartbeatRequest
-	if !server.decodeJSON(writer, request, &input) {
-		return
-	}
-	response, err := server.service.HeartbeatProbe(request.Context(), probe, input)
-	if err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	server.writeJSON(writer, http.StatusOK, response)
+	serveProto(server, writer, request, &probepb.HeartbeatRequest{}, func(
+		ctx context.Context, input *probepb.HeartbeatRequest,
+	) (*probepb.HeartbeatResponse, error) {
+		return server.service.HeartbeatProbe(ctx, probe, input)
+	})
 }
 
 func (server *Server) disconnectProbe(writer http.ResponseWriter, request *http.Request) {
@@ -308,7 +361,7 @@ func (server *Server) claimAssignment(writer http.ResponseWriter, request *http.
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, response)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) heartbeatAssignment(writer http.ResponseWriter, request *http.Request) {
@@ -323,7 +376,7 @@ func (server *Server) heartbeatAssignment(writer http.ResponseWriter, request *h
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, response)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) commitResult(writer http.ResponseWriter, request *http.Request) {
@@ -334,11 +387,11 @@ func (server *Server) commitResult(writer http.ResponseWriter, request *http.Req
 	if !ok {
 		return
 	}
-	var input central.AssignmentResult
-	if !server.decodeJSON(writer, request, &input) {
+	input := &observationpb.AssignmentResult{}
+	if !server.decodeProtoJSON(writer, request, input) {
 		return
 	}
-	if request.Header.Get("Idempotency-Key") != input.RunID {
+	if request.Header.Get("Idempotency-Key") != input.GetRunId() {
 		server.writeError(writer, request, central.InvalidRequest("Idempotency-Key must equal runId"))
 		return
 	}
@@ -350,16 +403,13 @@ func (server *Server) commitResult(writer http.ResponseWriter, request *http.Req
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, receipt)
+	server.writeProtoJSON(writer, http.StatusOK, receipt)
 }
 
 func (server *Server) authenticatedProbe(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) (central.Probe, bool) {
-	if !server.requireProtocol(writer, request) {
-		return central.Probe{}, false
-	}
 	probe, err := server.service.AuthenticateProbe(
 		request.Context(), request.PathValue("probeId"), bearerToken(request),
 	)
@@ -370,14 +420,6 @@ func (server *Server) authenticatedProbe(
 	return probe, true
 }
 
-func (server *Server) requireProtocol(writer http.ResponseWriter, request *http.Request) bool {
-	if request.Header.Get("X-Cineko-Protocol") == fmt.Sprint(central.ProtocolVersion) {
-		return true
-	}
-	server.writeAPIError(writer, request, http.StatusBadRequest, "unsupported_protocol", "unsupported Cineko protocol", false)
-	return false
-}
-
 func (server *Server) requireIdempotencyKey(writer http.ResponseWriter, request *http.Request) bool {
 	if strings.TrimSpace(request.Header.Get("Idempotency-Key")) != "" {
 		return true
@@ -386,18 +428,28 @@ func (server *Server) requireIdempotencyKey(writer http.ResponseWriter, request 
 	return false
 }
 
-func (server *Server) decodeJSON(writer http.ResponseWriter, request *http.Request, output any) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxRequestBody))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(output); err != nil {
+func (server *Server) decodeProtoJSON(writer http.ResponseWriter, request *http.Request, output proto.Message) bool {
+	payload, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, maxRequestBody))
+	if err != nil || (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, output) != nil {
 		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_json", "request body is invalid", false)
 		return false
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_json", "request body must contain one JSON value", false)
+	if err := protovalidate.Validate(output); err != nil {
+		server.writeAPIError(writer, request, http.StatusBadRequest, "invalid_request", "request body violates the contract", false)
 		return false
 	}
 	return true
+}
+
+func (server *Server) writeProtoJSON(writer http.ResponseWriter, status int, value proto.Message) {
+	payload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(value)
+	if err != nil {
+		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	_, _ = writer.Write(payload) // #nosec G705 -- payload is serialized ProtoJSON, not HTML.
 }
 
 func (server *Server) requestContext(next http.Handler) http.Handler {
@@ -465,16 +517,14 @@ func (server *Server) writeAPIError(
 	message string,
 	retryable bool,
 ) {
-	server.writeJSON(writer, status, map[string]any{"error": map[string]any{
-		"code": code, "message": message, "retryable": retryable,
-		"requestId": writer.Header().Get("X-Request-Id"),
-	}})
-}
-
-func (server *Server) writeJSON(writer http.ResponseWriter, status int, value any) {
-	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	writer.WriteHeader(status)
-	_ = json.NewEncoder(writer).Encode(value)
+	detail := &commonpb.APIError{}
+	detail.SetCode(code)
+	detail.SetMessage(message)
+	detail.SetRetryable(retryable)
+	detail.SetRequestId(writer.Header().Get("X-Request-Id"))
+	response := &commonpb.APIErrorResponse{}
+	response.SetError(detail)
+	server.writeProtoJSON(writer, status, response)
 }
 
 func bearerToken(request *http.Request) string {

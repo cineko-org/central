@@ -11,6 +11,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 func TestAssignmentAuthorityEndsAtTargetDeadline(t *testing.T) {
@@ -122,12 +123,11 @@ func TestPostgresFailedResultIsReassignedBeforeTerminalFailure(t *testing.T) {
 		t.Fatalf("first claim = %+v, %v", claimed, err)
 	}
 	failure := integrationResultCommit(t, claimed, probeOne, leaseOne)
-	failure.Result.Status = "failed"
-	failure.Result.RunID = "run_retryable_failure"
-	failure.Result.Captures = nil
+	failure.Result.SetRunId("run_retryable_failure")
+	failure.Result.SetFailed(observationpb.Failed_builder{}.Build())
 	refreshCommitPayload(t, &failure)
 	failedReceipt, err := store.CommitResult(ctx, failure)
-	if err != nil || failedReceipt.Status != "failed" {
+	if err != nil || failedReceipt.GetAccepted() == nil {
 		t.Fatalf("failed result receipt = %+v, %v", failedReceipt, err)
 	}
 	var status string
@@ -156,16 +156,16 @@ func TestPostgresFailedResultIsReassignedBeforeTerminalFailure(t *testing.T) {
 	if err != nil || claimed.ID != assignment.ID {
 		t.Fatalf("second claim = %+v, %v", claimed, err)
 	}
-	if repeated, err := store.CommitResult(ctx, failure); err != nil || repeated != failedReceipt {
+	if repeated, err := store.CommitResult(ctx, failure); err != nil || repeated.GetDuplicate() == nil || repeated.GetRunId() != failedReceipt.GetRunId() {
 		t.Fatalf("failed attempt replay = %+v, %v; want %+v", repeated, err, failedReceipt)
 	}
 	success := integrationResultCommit(t, claimed, probeTwo, leaseTwo)
-	success.Result.RunID = "run_retryable_success"
+	success.Result.SetRunId("run_retryable_success")
 	refreshCommitPayload(t, &success)
-	if receipt, err := store.CommitResult(ctx, success); err != nil || receipt.Status != "completed" {
+	if receipt, err := store.CommitResult(ctx, success); err != nil || receipt.GetAccepted() == nil {
 		t.Fatalf("successful retry receipt = %+v, %v", receipt, err)
 	}
-	if repeated, err := store.CommitResult(ctx, failure); err != nil || repeated != failedReceipt {
+	if repeated, err := store.CommitResult(ctx, failure); err != nil || repeated.GetDuplicate() == nil || repeated.GetRunId() != failedReceipt.GetRunId() {
 		t.Fatalf("failed attempt replay after completion = %+v, %v; want %+v", repeated, err, failedReceipt)
 	}
 }
@@ -217,9 +217,8 @@ func TestPostgresFailedResultExhaustsOneAttemptPerEligibleNetwork(t *testing.T) 
 		t.Fatalf("claim = %+v, %v", claimed, err)
 	}
 	failure := integrationResultCommit(t, claimed, probeOne, leaseHash)
-	failure.Result.Status = "failed"
-	failure.Result.RunID = "run_retryable_network_failure"
-	failure.Result.Captures = nil
+	failure.Result.SetRunId("run_retryable_network_failure")
+	failure.Result.SetFailed(observationpb.Failed_builder{}.Build())
 	refreshCommitPayload(t, &failure)
 	if _, err := store.CommitResult(ctx, failure); err != nil {
 		t.Fatal(err)

@@ -39,11 +39,11 @@ func TestLoadConfigRequiresProductionClientCredentials(t *testing.T) {
 	t.Setenv("CINEKO_CLIENT_PIN_PEPPER", "0123456789abcdef0123456789abcdef")
 	t.Setenv("CINEKO_ADMIN_CREDENTIALS_JSON", `[{"userId":"admin","displayName":"Admin","password":"admin-password"}]`)
 	t.Setenv("CINEKO_ADMIN_PASSWORD_PEPPER", "abcdef0123456789abcdef0123456789")
-	t.Setenv("CINEKO_CLIENT_RELEASES_JSON", `[{"channel":"stable","platform":"darwin","arch":"arm64","version":"1.0.0","minimumLauncherVersion":"1.0.0","minimumBrowserRevision":"1234","playwrightVersion":"1.61.1","protocol":3,"artifact":{"url":"https://cdn.example/client.zip","size":1,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"Cineko.app/Contents/MacOS/Cineko"},"probeBootstrapPublicKeys":{"primary":"-----BEGIN PUBLIC KEY-----\nplaceholder\n-----END PUBLIC KEY-----\n"},"publishedAt":"2026-08-10T00:00:00Z"}]`)
-	t.Setenv("CINEKO_BROWSER_RELEASES_JSON", `[{"channel":"stable","platform":"darwin","arch":"arm64","revision":"1234","compatiblePlaywrightVersions":["1.61.1"],"artifact":{"url":"https://cdn.example/browser.zip","size":1,"sha256":"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"chromium/Chromium"},"publishedAt":"2026-08-10T00:00:00Z"}]`)
-	t.Setenv("CINEKO_PLAYWRIGHT_RELEASES_JSON", `[{"channel":"stable","platform":"darwin","arch":"arm64","version":"1.61.1","artifact":{"url":"https://cdn.example/driver.zip","size":1,"sha256":"2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"driver/playwright"},"publishedAt":"2026-08-10T00:00:00Z"}]`)
-	t.Setenv("CINEKO_LAUNCHER_RELEASES_JSON", `[{"channel":"stable","platform":"darwin","arch":"arm64","version":"1.0.0","protocol":3,"launcher":{"url":"https://cdn.example/launcher.zip","size":1,"sha256":"3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"Cineko Launcher.app/Contents/MacOS/Cineko Launcher"},"publishedAt":"2026-08-10T00:00:00Z"}]`)
-	t.Setenv("CINEKO_PROBE_RELEASES_JSON", `[{"channel":"stable","version":"1.0.0","protocol":3,"browserRevision":"1234","image":"registry.example.com/example/cineko-probe","imageDigest":"sha256:4123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","publishedAt":"2026-08-10T00:00:00Z"}]`)
+	t.Setenv("CINEKO_CLIENT_RELEASES_JSON", `{"releases":[{"channel":"stable","platform":"darwin","architecture":"arm64","version":"1.0.0","minimumLauncherVersion":"1.0.0","minimumBrowserRevision":"1234","playwrightVersion":"1.61.1","artifact":{"url":"https://cdn.example/client.zip","size":"1","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"Cineko.app/Contents/MacOS/Cineko"},"probeBootstrapPublicKeys":{"primary":"-----BEGIN PUBLIC KEY-----\nplaceholder\n-----END PUBLIC KEY-----\n"},"publishedAt":"2026-08-10T00:00:00Z"}]}`)
+	t.Setenv("CINEKO_BROWSER_RELEASES_JSON", `{"releases":[{"channel":"stable","platform":"darwin","architecture":"arm64","revision":"1234","compatiblePlaywrightVersions":["1.61.1"],"artifact":{"url":"https://cdn.example/browser.zip","size":"1","sha256":"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"chromium/Chromium"},"publishedAt":"2026-08-10T00:00:00Z"}]}`)
+	t.Setenv("CINEKO_PLAYWRIGHT_RELEASES_JSON", `{"releases":[{"channel":"stable","platform":"darwin","architecture":"arm64","version":"1.61.1","artifact":{"url":"https://cdn.example/driver.zip","size":"1","sha256":"2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"driver/playwright"},"publishedAt":"2026-08-10T00:00:00Z"}]}`)
+	t.Setenv("CINEKO_LAUNCHER_RELEASES_JSON", `{"releases":[{"channel":"stable","platform":"darwin","architecture":"arm64","version":"1.0.0","launcher":{"url":"https://cdn.example/launcher.zip","size":"1","sha256":"3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","executable":"Cineko Launcher.app/Contents/MacOS/Cineko Launcher"},"publishedAt":"2026-08-10T00:00:00Z"}]}`)
+	t.Setenv("CINEKO_PROBE_RELEASES_JSON", `{"releases":[{"channel":"stable","version":"1.0.0","browserRevision":"1234","image":"registry.example.com/example/cineko-probe","imageDigest":"sha256:4123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","publishedAt":"2026-08-10T00:00:00Z"}]}`)
 	config, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -54,19 +54,19 @@ func TestLoadConfigRequiresProductionClientCredentials(t *testing.T) {
 	if config.clientRefreshTTL != central.DefaultClientRefreshTTL {
 		t.Fatalf("client refresh TTL = %v", config.clientRefreshTTL)
 	}
-	if len(config.clientReleases) != 1 || config.clientReleases[0].Version != "1.0.0" {
+	if len(config.clientReleases.GetReleases()) != 1 || config.clientReleases.GetReleases()[0].GetVersion() != "1.0.0" {
 		t.Fatalf("client releases = %+v", config.clientReleases)
 	}
-	if len(config.browserReleases) != 1 || config.browserReleases[0].Revision != "1234" {
+	if len(config.browserReleases.GetReleases()) != 1 || config.browserReleases.GetReleases()[0].GetRevision() != "1234" {
 		t.Fatalf("browser releases = %+v", config.browserReleases)
 	}
-	if len(config.playwrightReleases) != 1 || config.playwrightReleases[0].Version != "1.61.1" {
+	if len(config.playwrightReleases.GetReleases()) != 1 || config.playwrightReleases.GetReleases()[0].GetVersion() != "1.61.1" {
 		t.Fatalf("Playwright releases = %+v", config.playwrightReleases)
 	}
-	if len(config.launcherReleases) != 1 || config.launcherReleases[0].Version != "1.0.0" {
+	if len(config.launcherReleases.GetReleases()) != 1 || config.launcherReleases.GetReleases()[0].GetVersion() != "1.0.0" {
 		t.Fatalf("launcher releases = %+v", config.launcherReleases)
 	}
-	if len(config.probeReleases) != 1 || config.probeReleases[0].Version != "1.0.0" {
+	if len(config.probeReleases.GetReleases()) != 1 || config.probeReleases.GetReleases()[0].GetVersion() != "1.0.0" {
 		t.Fatalf("Probe releases = %+v", config.probeReleases)
 	}
 	if len(config.adminCredentials) != 1 || config.adminCredentials[0].UserID != "admin" {
@@ -100,8 +100,8 @@ func TestLoadConfigRequiresProductionClientCredentials(t *testing.T) {
 	t.Setenv("CINEKO_CLIENT_RELEASES_JSON", "")
 	t.Setenv("CINEKO_LAUNCHER_RELEASES_JSON", "")
 	t.Setenv("CINEKO_PROBE_RELEASES_JSON", "")
-	if config, err := loadConfig(); err != nil || len(config.clientReleases) != 0 ||
-		len(config.launcherReleases) != 0 || len(config.probeReleases) != 0 {
+	if config, err := loadConfig(); err != nil || len(config.clientReleases.GetReleases()) != 0 ||
+		len(config.launcherReleases.GetReleases()) != 0 || len(config.probeReleases.GetReleases()) != 0 {
 		t.Fatalf("optional release bootstrap = %+v, %v", config, err)
 	}
 	t.Setenv("CINEKO_RELEASE_PUBLISH_TOKEN", "short")

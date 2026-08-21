@@ -3,36 +3,28 @@ package releases
 import (
 	"testing"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
 )
 
 func TestSelectionRequiresCompatibleRuntimeComponents(t *testing.T) {
 	catalog := Catalog{
-		Clients: map[string]contracts.ClientRelease{
-			ComponentKey("stable", "linux", "amd64", "1.0.0"): {
-				Version: "1.0.0", MinimumLauncherVersion: "1.0.0", MinimumBrowserRevision: "200",
-				PlaywrightVersion: "1.1.0",
-			},
-			ComponentKey("stable", "linux", "amd64", "2.0.0"): {
-				Version: "2.0.0", MinimumLauncherVersion: "2.0.0", MinimumBrowserRevision: "300",
-				PlaywrightVersion: "1.2.0",
-			},
+		Clients: map[string]*releasepb.ClientRelease{
+			ComponentKey("stable", "linux", "amd64", "1.0.0"): clientRelease("1.0.0", "1.0.0", "200", "1.1.0"),
+			ComponentKey("stable", "linux", "amd64", "2.0.0"): clientRelease("2.0.0", "2.0.0", "300", "1.2.0"),
 		},
-		Launchers: map[string]contracts.LauncherRelease{
-			ComponentKey("stable", "linux", "amd64", "1.5.0"): {Version: "1.5.0"},
+		Launchers: map[string]*releasepb.LauncherRelease{
+			ComponentKey("stable", "linux", "amd64", "1.5.0"): launcherRelease("1.5.0"),
 		},
-		Playwright: map[string]contracts.PlaywrightRelease{
-			ComponentKey("stable", "linux", "amd64", "1.1.0"): {Version: "1.1.0"},
+		Playwright: map[string]*releasepb.PlaywrightRelease{
+			ComponentKey("stable", "linux", "amd64", "1.1.0"): playwrightRelease("1.1.0"),
 		},
-		Browsers: map[string]contracts.BrowserRelease{
-			ComponentKey("stable", "linux", "amd64", "300"): {
-				Revision: "300", CompatiblePlaywrightVersions: []string{"1.1.0"},
-			},
+		Browsers: map[string]*releasepb.BrowserRelease{
+			ComponentKey("stable", "linux", "amd64", "300"): browserRelease("300", "1.1.0"),
 		},
 	}
 
 	selected, ok := CurrentRuntime(catalog, "stable", "linux", "amd64")
-	if !ok || selected.Client.Version != "1.0.0" || selected.Browser.Revision != "300" {
+	if !ok || selected.GetClient().GetVersion() != "1.0.0" || selected.GetBrowser().GetRevision() != "300" {
 		t.Fatalf("CurrentRuntime() = %+v, %t", selected, ok)
 	}
 	if _, ok := CurrentRuntime(catalog, "stable", "windows", "amd64"); ok {
@@ -42,21 +34,21 @@ func TestSelectionRequiresCompatibleRuntimeComponents(t *testing.T) {
 
 func TestSelectionReturnsNewestComponent(t *testing.T) {
 	catalog := Catalog{
-		Launchers: map[string]contracts.LauncherRelease{
-			ComponentKey("stable", "darwin", "arm64", "1.0.0"): {Version: "1.0.0"},
-			ComponentKey("stable", "darwin", "arm64", "1.2.0"): {Version: "1.2.0"},
+		Launchers: map[string]*releasepb.LauncherRelease{
+			ComponentKey("stable", "darwin", "arm64", "1.0.0"): launcherRelease("1.0.0"),
+			ComponentKey("stable", "darwin", "arm64", "1.2.0"): launcherRelease("1.2.0"),
 		},
-		Probes: map[string]contracts.ProbeRelease{
-			"stable/1.0.0": {Version: "1.0.0"},
-			"stable/1.3.0": {Version: "1.3.0"},
+		Probes: map[string]*releasepb.ProbeRelease{
+			"stable/1.0.0": probeRelease("1.0.0"),
+			"stable/1.3.0": probeRelease("1.3.0"),
 		},
 	}
 	launcher, ok := CurrentLauncher(catalog, "stable", "darwin", "arm64")
-	if !ok || launcher.Version != "1.2.0" {
+	if !ok || launcher.GetVersion() != "1.2.0" {
 		t.Fatalf("CurrentLauncher() = %+v, %t", launcher, ok)
 	}
 	probe, ok := CurrentProbe(catalog, "stable")
-	if !ok || probe.Version != "1.3.0" {
+	if !ok || probe.GetVersion() != "1.3.0" {
 		t.Fatalf("CurrentProbe() = %+v, %t", probe, ok)
 	}
 }
@@ -87,4 +79,38 @@ func TestReleaseTargetAndVersionPolicy(t *testing.T) {
 	if !IsNumericRevision(" 2001 ") {
 		t.Fatal("IsNumericRevision() rejected normalized whitespace")
 	}
+}
+
+func clientRelease(version, minimumLauncher, minimumBrowser, playwright string) *releasepb.ClientRelease {
+	release := &releasepb.ClientRelease{}
+	release.SetVersion(version)
+	release.SetMinimumLauncherVersion(minimumLauncher)
+	release.SetMinimumBrowserRevision(minimumBrowser)
+	release.SetPlaywrightVersion(playwright)
+	return release
+}
+
+func launcherRelease(version string) *releasepb.LauncherRelease {
+	release := &releasepb.LauncherRelease{}
+	release.SetVersion(version)
+	return release
+}
+
+func playwrightRelease(version string) *releasepb.PlaywrightRelease {
+	release := &releasepb.PlaywrightRelease{}
+	release.SetVersion(version)
+	return release
+}
+
+func browserRelease(revision string, playwrightVersions ...string) *releasepb.BrowserRelease {
+	release := &releasepb.BrowserRelease{}
+	release.SetRevision(revision)
+	release.SetCompatiblePlaywrightVersions(playwrightVersions)
+	return release
+}
+
+func probeRelease(version string) *releasepb.ProbeRelease {
+	release := &releasepb.ProbeRelease{}
+	release.SetVersion(version)
+	return release
 }

@@ -24,12 +24,12 @@ func TestAdminConfigurationSanitizesRuntimeSettings(t *testing.T) {
 			BatchSize:         100,
 		},
 	})
-	if configuration.ListenAddress != ":9090" || configuration.MinimumRuntimeVersion != "v1.2.3" ||
-		configuration.MinimumBrowserRevision != "140" || configuration.ClientSessionSeconds != 43_200 ||
-		configuration.ClientRefreshSeconds != 2_592_000 || configuration.AdminSessionSeconds != 21_600 ||
-		configuration.ReconcileIntervalSeconds != 5 || configuration.ProbeHeartbeatTTLSeconds != 90 ||
-		configuration.ProbeOfflineRetentionDays != 30 || configuration.AssignmentRetryMinSeconds != 1 ||
-		configuration.AssignmentRetryMaxSeconds != 5 || configuration.ReconcileBatchSize != 100 {
+	if configuration.GetListenAddress() != ":9090" || configuration.GetMinimumRuntimeVersion() != "v1.2.3" ||
+		configuration.GetMinimumBrowserRevision() != "140" || configuration.GetClientSessionSeconds() != 43_200 ||
+		configuration.GetClientRefreshSeconds() != 2_592_000 || configuration.GetAdminSessionSeconds() != 21_600 ||
+		configuration.GetReconcileIntervalSeconds() != 5 || configuration.GetProbeHeartbeatTtlSeconds() != 90 ||
+		configuration.GetProbeOfflineRetentionDays() != 30 || configuration.GetAssignmentRetryMinSeconds() != 1 ||
+		configuration.GetAssignmentRetryMaxSeconds() != 5 || configuration.GetReconcileBatchSize() != 100 {
 		t.Fatalf("unexpected admin configuration: %+v", configuration)
 	}
 }

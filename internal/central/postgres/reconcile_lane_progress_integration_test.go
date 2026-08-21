@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central/reconcile"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestPostgresDuePoliciesIgnoreUnsuccessfulLaneProgress(t *testing.T) {
@@ -180,6 +182,18 @@ type laneProgressAssignment struct {
 func insertLaneProgressAssignment(t *testing.T, store *Store, assignment laneProgressAssignment) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	theater := &catalogpb.Theater{}
+	theater.SetId(assignment.TheaterID)
+	theater.SetProviderId("cgv")
+	theater.SetSourceKey("lane-progress")
+	theater.SetRegion("서울")
+	theater.SetName("레인 진행 시험관")
+	taskData, err := protojson.Marshal(storeIntegrationScheduleTask(
+		theater, assignment.TargetDate, "ko-KR", "Asia/Seoul",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var finishedAt *time.Time
 	if !assignment.FinishedAt.IsZero() {
 		finishedAt = &assignment.FinishedAt
@@ -188,14 +202,14 @@ func insertLaneProgressAssignment(t *testing.T, store *Store, assignment lanePro
 		INSERT INTO observation_assignments (
 			id, task_kind, policy_id, theater_id, theater_provider_id, theater_source_key,
 			theater_region, theater_name, target_dates, locale, time_zone, egress_policy_id,
-			status, not_before, deadline, finished_at, created_at, updated_at, task_data
+			status, lane, not_before, deadline, finished_at, created_at, updated_at, task_data
 		) VALUES (
-			$1, 'cgv.schedule.capture.v2', $2, $3, 'cgv', 'lane-progress',
+			$1, 'cgv.schedule.capture', $2, $3, 'cgv', 'lane-progress',
 			'서울', '레인 진행 시험관', ARRAY[$4::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
-			$5, $6, $7, $8, $9, $9, jsonb_build_object('_cinekoLane', $10::text)
+			$5, $6, $7, $8, $9, $10, $10, $11::jsonb
 		)
 	`, assignment.ID, assignment.PolicyID, assignment.TheaterID, assignment.TargetDate,
-		assignment.Status, now.Add(-time.Minute), now.Add(time.Minute), finishedAt, now, assignment.Lane); err != nil {
+		assignment.Status, assignment.Lane, now.Add(-time.Minute), now.Add(time.Minute), finishedAt, now, taskData); err != nil {
 		t.Fatal(err)
 	}
 }

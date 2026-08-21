@@ -2,13 +2,15 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
-	"github.com/cineko-org/central/internal/domain"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestPostgresClientEventNotifyReplayAndRetention(t *testing.T) {
@@ -54,7 +56,7 @@ func TestPostgresClientEventNotifyReplayAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := store.ClientEventPage(t.Context(), userID, 0, 100)
-	if err != nil || len(page.Events) != 1 || page.Latest != page.Events[0].Sequence {
+	if err != nil || len(page.Events) != 1 || page.Latest != page.Events[0].GetSequence() {
 		t.Fatalf("event page = %+v, %v", page, err)
 	}
 	deleted, err := store.DeleteExpiredClientEvents(t.Context(), now.Add(-180*24*time.Hour), 100)
@@ -139,34 +141,61 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 		})
 	}
 
+	preset := &clientpb.Preset{}
+	preset.SetId("event_wake_preset")
+	preset.SetUserId(userID)
+	preset.SetName("Wake")
+	preset.SetTheaterId("theater")
+	preset.SetAuditoriumId("auditorium")
+	preset.SetSeatCount(1)
+	preset.SetSeatPreference(&clientpb.SeatPreference{})
 	assertWake("resource", func() error {
+		identity := &commonpb.ResourceIdentity{}
+		identity.SetId("settings")
+		resource := &clientpb.Resource{}
+		resource.SetIdentity(identity)
+		resource.SetSettings(&clientpb.Settings{})
 		_, err := store.PutClientResource(t.Context(), central.ResourceMutation{
-			UserID: userID, Kind: "settings", ID: "settings", Data: json.RawMessage(`{}`),
+			UserID: userID, Kind: "settings", ID: "settings", Resource: resource,
 			CommandID: "event_wake_resource", Now: now.Add(time.Second),
 		})
 		return err
 	})
 	assertWake("configuration", func() error {
-		page, pageErr := store.ClientEventPage(t.Context(), userID, 0, 1)
-		if pageErr != nil {
-			return pageErr
-		}
-		payload := json.RawMessage(`{"id":"event_wake_preset","userId":"` + userID + `","name":"Wake","theaterId":"theater","auditoriumId":"auditorium","seatCount":1,"seatPreference":{}}`)
-		_, err := store.ReplaceClientConfiguration(t.Context(), central.ConfigurationReplacement{
-			UserID: userID, ExpectedRevision: page.Latest,
-			Resources: []central.ConfigurationResource{{Kind: "presets", ID: "event_wake_preset", Data: payload}},
-			CommandID: "event_wake_configuration", PayloadSHA256: "event-wake-configuration",
-			Now: now.Add(2 * time.Second),
+		identity := &commonpb.ResourceIdentity{}
+		identity.SetId("event_wake_preset")
+		resource := &clientpb.Resource{}
+		resource.SetIdentity(identity)
+		resource.SetPreset(preset)
+		_, err := store.PutClientResource(t.Context(), central.ResourceMutation{
+			UserID: userID, Kind: "presets", ID: "event_wake_preset", Resource: resource,
+			CommandID: "event_wake_configuration", Now: now.Add(2 * time.Second),
 		})
 		return err
 	})
 
-	showtime := central.Showtime{
-		ID: "event_wake_showtime", StartsAt: now.Add(24 * time.Hour),
-		Movie: central.Movie{Title: "Wake"}, Auditorium: central.Auditorium{ID: "auditorium", Name: "Auditorium"},
-		AvailableSeats: 1, Capacity: 1,
-	}
-	target := executionTarget{userID: userID, monitor: domain.MonitorJob{ID: "event_wake_monitor"}}
+	movie := &catalogpb.Movie{}
+	movie.SetId("movie_event_wake")
+	movie.SetTitle("Wake")
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId("auditorium")
+	auditorium.SetName("Auditorium")
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId("event_wake_showtime")
+	showtime.SetMovie(movie)
+	showtime.SetAuditorium(auditorium)
+	showtime.SetStartsAt(timestamppb.New(now.Add(24 * time.Hour)))
+	showtime.SetEndsAt(timestamppb.New(now.Add(26 * time.Hour)))
+	showtime.SetAvailableSeats(1)
+	showtime.SetCapacity(1)
+	monitor := &clientpb.Monitor{}
+	monitor.SetId("event_wake_monitor")
+	monitor.SetUserId(userID)
+	monitor.SetPresetId("event_wake_preset")
+	monitor.SetMovieId(movie.GetId())
+	monitor.SetState(&clientpb.MonitorState{})
+	monitor.GetState().SetPending(&clientpb.MonitorPending{})
+	target := executionTarget{userID: userID, monitor: monitor, preset: preset}
 	assertWake("execution created", func() error {
 		tx, beginErr := store.pool.Begin(t.Context())
 		if beginErr != nil {

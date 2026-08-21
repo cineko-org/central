@@ -1,10 +1,11 @@
 import { Alert, Button, Divider, Group, Indicator, SimpleGrid, Skeleton, Stack, Text } from '@mantine/core';
-import type { AdminReleases, AdminStatus } from '../types';
+import type { Status } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import type { Registry } from '@cineko/contracts/gen/ts/cineko/release/release_pb';
 import { PageHeader } from './PageHeader';
 
 export interface StatusPageViewProps {
-  status?: AdminStatus;
-  releases?: AdminReleases;
+  status?: Status;
+  releases?: Registry;
   updatedAt?: Date;
   failed?: boolean;
   onRefresh: () => void;
@@ -41,7 +42,7 @@ export function StatusPageView({ status, releases, updatedAt, failed, onRefresh 
           <Metric label="Central" value={ready ? '정상' : '확인 필요'} detail="PostgreSQL 준비 상태" />
           <Metric label="Reconciler" value={reconcilerHealthy ? '정상' : '확인 필요'} detail="할당 조정 루프" />
           <Metric label="Leader" value={status?.reconciler?.leader ? '현재 인스턴스' : '대기'} detail="활성 리더" />
-          <Metric label="Oldest due" value={`${status?.reconciler?.oldestDueAgeSeconds ?? 0}초`} detail="가장 오래 지연된 작업" />
+          <Metric label="Oldest due" value={`${status.reconciler?.lastReport?.oldestDueAgeSeconds ?? 0n}초`} detail="가장 오래 지연된 작업" />
           <Metric label="Release generation" value={`#${releases.generation}`} detail="데스크톱 릴리스 세대" />
         </SimpleGrid>
         <Divider />
@@ -53,7 +54,7 @@ export function StatusPageView({ status, releases, updatedAt, failed, onRefresh 
         <Group justify="space-between" py="md"><Text c="dimmed">Reconciler</Text><Health healthy={reconcilerHealthy}>{reconcilerHealthy ? '실행 중' : '확인 필요'}</Health></Group>
         <Divider />
       </Stack>
-      {status?.reconciler?.lastError ? <Alert color="red" title="최근 Reconciler 오류">{status.reconciler.lastError}</Alert> : null}
+      {status.reconciler?.lastErrorCode ? <Alert color="red" title="최근 Reconciler 오류">{status.reconciler.lastErrorCode}</Alert> : null}
     </Stack>
   );
 }

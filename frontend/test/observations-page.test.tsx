@@ -1,20 +1,19 @@
 import { MantineProvider } from '@mantine/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { AdminObservationPolicy, CatalogRefreshStatus, ObservationPolicyInput, Theater } from '../src/central/types';
+import { create } from '@bufbuild/protobuf';
+import { CatalogRefreshStatusSchema, ObservationPolicyInputSchema, ObservationPolicySchema, type CatalogRefreshStatus, type ObservationPolicy } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { TheaterSchema } from '@cineko/contracts/gen/ts/cineko/catalog/catalog_pb';
 import { ObservationsPageView } from '../src/central/ui/ObservationsPageView';
 
 const noOp = () => undefined;
-const theaters: Theater[] = [
-  { id: 'internal-theater-id', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' },
+const theaters = [
+  create(TheaterSchema, { id: 'internal-theater-id', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' }),
 ];
-const draft: ObservationPolicyInput = {
-  theaterId: '', enabled: true,
-  horizonDays: 14,
-};
+const draft = create(ObservationPolicyInputSchema, { theaterId: '', enabled: true, horizonDays: 14 });
 
 function render(
-  editing?: AdminObservationPolicy,
+  editing?: ObservationPolicy,
   catalog = theaters,
   catalogRefresh?: CatalogRefreshStatus,
 ): string {
@@ -24,7 +23,7 @@ function render(
         policies={editing ? [editing] : []}
         theaters={catalog}
         catalogRefresh={catalogRefresh}
-        draft={editing ?? draft}
+        draft={editing?.input ?? draft}
         editing={editing}
         failed={false}
         saving={false}
@@ -48,17 +47,7 @@ describe('Observation policy presentation', () => {
   });
 
   it('does not expose the internal theater id and locks theater identity while editing', () => {
-    const policy: AdminObservationPolicy = {
-      ...draft,
-      id: 'policy', revision: 1, theaterId: theaters[0].id, theater: theaters[0],
-      priority: 50, baselineMinSeconds: 300, baselineMaxSeconds: 900,
-      demandMinSeconds: 30, demandMaxSeconds: 45, burstMinSeconds: 15,
-      burstMaxSeconds: 30, burstDurationSeconds: 1800,
-      locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default',
-      effectiveMode: 'baseline', effectivePriority: 50,
-      effectiveMinSeconds: 900, effectiveMaxSeconds: 1800, demandActive: false,
-      createdAt: '2026-08-14T00:00:00Z', updatedAt: '2026-08-14T00:00:00Z',
-    };
+    const policy = create(ObservationPolicySchema, { id: 'policy', revision: 1n, theater: theaters[0], input: create(ObservationPolicyInputSchema, { ...draft, theaterId: theaters[0].id, enabled: true }), effectiveMode: { mode: { case: 'baseline', value: {} } }, effectivePriority: 50, effectiveMinSeconds: 900, effectiveMaxSeconds: 1800 });
     const markup = render(policy);
     expect(markup).toContain('서울 · 용산아이파크몰');
     expect(markup).toContain('data-disabled="true"');
@@ -76,17 +65,7 @@ describe('Observation policy presentation', () => {
   });
 
   it('labels cancellation monitoring separately from baseline collection', () => {
-    const policy: AdminObservationPolicy = {
-      ...draft,
-      id: 'policy', revision: 1, theaterId: theaters[0].id, theater: theaters[0],
-      priority: 50, baselineMinSeconds: 300, baselineMaxSeconds: 900,
-      demandMinSeconds: 30, demandMaxSeconds: 45, burstMinSeconds: 15,
-      burstMaxSeconds: 30, burstDurationSeconds: 1800,
-      locale: 'ko-KR', timeZone: 'Asia/Seoul', egressPolicyId: 'scan_default',
-      effectiveMode: 'cancellation', effectivePriority: 44,
-      effectiveMinSeconds: 30, effectiveMaxSeconds: 45, demandActive: true,
-      createdAt: '2026-08-14T00:00:00Z', updatedAt: '2026-08-14T00:00:00Z',
-    };
+    const policy = create(ObservationPolicySchema, { id: 'policy', revision: 1n, theater: theaters[0], input: create(ObservationPolicyInputSchema, { ...draft, theaterId: theaters[0].id, enabled: true }), effectiveMode: { mode: { case: 'cancellation', value: {} } }, effectivePriority: 44, effectiveMinSeconds: 30, effectiveMaxSeconds: 45, demandActive: true });
     expect(render(policy)).toContain('취소표 관측');
   });
 
@@ -99,9 +78,7 @@ describe('Observation policy presentation', () => {
   });
 
   it('explains that an empty Central catalog waits for an eligible Probe', () => {
-    const markup = render(undefined, [], {
-      state: 'waiting_for_probe', catalogEmpty: true, active: false, eligibleProbes: 0,
-    });
+    const markup = render(undefined, [], create(CatalogRefreshStatusSchema, { state: { case: 'waitingForProbe', value: {} }, catalogEmpty: true }));
     expect(markup).toContain('카탈로그 수집을 위해 Probe를 기다리고 있습니다');
     expect(markup).toContain('사용 가능한 Probe가 연결되면 Central이 CGV 영화·극장 목록을 한 번 전체 수집합니다.');
   });

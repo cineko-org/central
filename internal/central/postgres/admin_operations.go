@@ -10,15 +10,19 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	centralapi "github.com/cineko-org/central/internal/central/api"
-	contracts "github.com/cineko-org/contracts/v3"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const adminObservationExecutionWindow = 10 * time.Minute
 
-func (store *Store) ListAdminProbes(ctx context.Context) ([]centralapi.AdminProbe, error) {
+func (store *Store) ListAdminProbes(ctx context.Context) ([]*adminpb.Probe, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT id, kind, COALESCE(owner_user_id, ''), network_id, runtime_version, browser_revision,
 			platform, architecture, status, draining, available_slots, max_concurrency,
@@ -30,16 +34,28 @@ func (store *Store) ListAdminProbes(ctx context.Context) ([]centralapi.AdminProb
 		return nil, fmt.Errorf("list admin probes: %w", err)
 	}
 	defer rows.Close()
-	probes := make([]centralapi.AdminProbe, 0)
+	probes := make([]*adminpb.Probe, 0)
 	for rows.Next() {
-		var probe centralapi.AdminProbe
+		var id, kind, ownerUserID, networkID, runtimeVersion, browserRevision, platform, architecture string
+		var status, health, reasonCode string
+		var draining bool
+		var availableSlots, maxConcurrency int32
+		var lastHeartbeatAt *time.Time
+		var updatedAt time.Time
 		if err := rows.Scan(
-			&probe.ID, &probe.Kind, &probe.OwnerUserID, &probe.NetworkID, &probe.RuntimeVersion,
-			&probe.BrowserRevision, &probe.Platform, &probe.Arch, &probe.Status, &probe.Draining,
-			&probe.AvailableSlots, &probe.MaxConcurrency, &probe.Health, &probe.ReasonCode,
-			&probe.LastHeartbeatAt, &probe.UpdatedAt,
+			&id, &kind, &ownerUserID, &networkID, &runtimeVersion,
+			&browserRevision, &platform, &architecture, &status, &draining,
+			&availableSlots, &maxConcurrency, &health, &reasonCode,
+			&lastHeartbeatAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan admin probe: %w", err)
+		}
+		probe, err := adminProbe(
+			id, kind, ownerUserID, networkID, runtimeVersion, browserRevision, platform, architecture,
+			status, draining, availableSlots, maxConcurrency, health, reasonCode, lastHeartbeatAt, updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decode admin probe: %w", err)
 		}
 		probes = append(probes, probe)
 	}
@@ -75,8 +91,11 @@ func (store *Store) DeleteAdminProbe(ctx context.Context, probeID string) error 
 	return central.ErrConflict
 }
 
-func (store *Store) AdminDataSummary(ctx context.Context) (centralapi.AdminDataSummary, error) {
-	var summary centralapi.AdminDataSummary
+func (store *Store) AdminDataSummary(ctx context.Context) (*adminpb.DataSummary, error) {
+	var providers, theaters, auditoriums, movies, showtimes, seatMapVersions int64
+	var scheduleCaptures, showtimeObservations, observationPolicies, activeObservationPolicies int64
+	var queuedAssignments, leasedAssignments, completedAssignments, failedAssignments int64
+	var latestScheduleObservedAt *time.Time
 	err := store.pool.QueryRow(ctx, `
 		SELECT
 			(SELECT count(*) FROM providers),
@@ -95,21 +114,38 @@ func (store *Store) AdminDataSummary(ctx context.Context) (centralapi.AdminDataS
 			(SELECT count(*) FROM observation_assignments WHERE status IN ('failed', 'missed')),
 			(SELECT max(observed_at) FROM schedule_captures)
 	`).Scan(
-		&summary.Providers, &summary.Theaters, &summary.Auditoriums,
-		&summary.Movies, &summary.Showtimes, &summary.SeatMapVersions,
-		&summary.ScheduleCaptures, &summary.ShowtimeObservations, &summary.ObservationPolicies,
-		&summary.ActiveObservationPolicies, &summary.QueuedAssignments, &summary.LeasedAssignments,
-		&summary.CompletedAssignments, &summary.FailedAssignments, &summary.LatestScheduleObservedAt,
+		&providers, &theaters, &auditoriums, &movies, &showtimes, &seatMapVersions,
+		&scheduleCaptures, &showtimeObservations, &observationPolicies,
+		&activeObservationPolicies, &queuedAssignments, &leasedAssignments,
+		&completedAssignments, &failedAssignments, &latestScheduleObservedAt,
 	)
 	if err != nil {
-		return centralapi.AdminDataSummary{}, fmt.Errorf("summarize admin data: %w", err)
+		return nil, fmt.Errorf("summarize admin data: %w", err)
+	}
+	summary := &adminpb.DataSummary{}
+	summary.SetProviders(providers)
+	summary.SetTheaters(theaters)
+	summary.SetAuditoriums(auditoriums)
+	summary.SetMovies(movies)
+	summary.SetShowtimes(showtimes)
+	summary.SetSeatMapVersions(seatMapVersions)
+	summary.SetScheduleCaptures(scheduleCaptures)
+	summary.SetShowtimeObservations(showtimeObservations)
+	summary.SetObservationPolicies(observationPolicies)
+	summary.SetActiveObservationPolicies(activeObservationPolicies)
+	summary.SetQueuedAssignments(queuedAssignments)
+	summary.SetLeasedAssignments(leasedAssignments)
+	summary.SetCompletedAssignments(completedAssignments)
+	summary.SetFailedAssignments(failedAssignments)
+	if latestScheduleObservedAt != nil {
+		summary.SetLatestScheduleObservedAt(timestamppb.New(*latestScheduleObservedAt))
 	}
 	return summary, nil
 }
 
 func (store *Store) ListAdminObservationPolicies(
 	ctx context.Context,
-) ([]centralapi.AdminObservationPolicy, error) {
+) ([]*adminpb.ObservationPolicy, error) {
 	rows, err := store.pool.Query(ctx, adminObservationPolicySelect+`
 		ORDER BY policy.enabled DESC, effective_priority DESC, policy.display_name, policy.id
 	`, time.Now().UTC())
@@ -117,7 +153,7 @@ func (store *Store) ListAdminObservationPolicies(
 		return nil, fmt.Errorf("list observation policies: %w", err)
 	}
 	defer rows.Close()
-	policies := make([]centralapi.AdminObservationPolicy, 0)
+	policies := make([]*adminpb.ObservationPolicy, 0)
 	for rows.Next() {
 		policy, err := scanAdminObservationPolicy(rows)
 		if err != nil {
@@ -133,14 +169,14 @@ func (store *Store) ListAdminObservationPolicies(
 
 func (store *Store) CreateAdminObservationPolicy(
 	ctx context.Context,
-	input centralapi.AdminObservationPolicyInput,
-) (centralapi.AdminObservationPolicy, error) {
+	input *adminpb.ObservationPolicyInput,
+) (*adminpb.ObservationPolicy, error) {
 	now := time.Now().UTC()
-	theater, err := store.adminCatalogTheater(ctx, input.TheaterID)
+	theater, err := store.adminCatalogTheater(ctx, input.GetTheaterId())
 	if err != nil {
-		return centralapi.AdminObservationPolicy{}, err
+		return nil, err
 	}
-	id := adminObservationPolicyID(theater.ID)
+	id := adminObservationPolicyID(theater.GetId())
 	var insertedID string
 	err = store.pool.QueryRow(ctx, `
 		INSERT INTO observation_policies (
@@ -176,22 +212,22 @@ func (store *Store) CreateAdminObservationPolicy(
 			deleted_at = NULL, updated_at = EXCLUDED.updated_at
 		WHERE observation_policies.deleted_at IS NOT NULL
 		RETURNING id
-	`, id, theater.Name, input.Enabled, contracts.CapabilityCGVScheduleCapture,
-		theater.ID, theater.ProviderID, theater.SourceKey, theater.Region, theater.Name, input.HorizonDays,
-		input.Locale, input.TimeZone, input.EgressPolicyID, input.Priority,
-		input.BaselineMinSeconds, input.BaselineMaxSeconds,
-		input.DemandMinSeconds, input.DemandMaxSeconds,
-		input.BurstMinSeconds, input.BurstMaxSeconds, input.BurstDurationSeconds,
+	`, id, theater.GetName(), input.GetEnabled(), probedomain.CapabilityCGVScheduleCapture,
+		theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName(), input.GetHorizonDays(),
+		input.GetLocale(), input.GetTimeZone(), input.GetEgressPolicyId(), input.GetPriority(),
+		input.GetBaselineMinSeconds(), input.GetBaselineMaxSeconds(),
+		input.GetDemandMinSeconds(), input.GetDemandMaxSeconds(),
+		input.GetBurstMinSeconds(), input.GetBurstMaxSeconds(), input.GetBurstDurationSeconds(),
 		int(adminObservationExecutionWindow/time.Second), now,
 	).Scan(&insertedID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return centralapi.AdminObservationPolicy{}, central.ErrConflict
+		return nil, central.ErrConflict
 	}
 	if isConcurrentClientResourceCreate(err) {
-		return centralapi.AdminObservationPolicy{}, central.ErrConflict
+		return nil, central.ErrConflict
 	}
 	if err != nil {
-		return centralapi.AdminObservationPolicy{}, fmt.Errorf("create observation policy: %w", err)
+		return nil, fmt.Errorf("create observation policy: %w", err)
 	}
 	return store.adminObservationPolicy(ctx, insertedID, now)
 }
@@ -200,16 +236,16 @@ func (store *Store) UpdateAdminObservationPolicy(
 	ctx context.Context,
 	id string,
 	revision int64,
-	input centralapi.AdminObservationPolicyInput,
-) (centralapi.AdminObservationPolicy, error) {
+	input *adminpb.ObservationPolicyInput,
+) (*adminpb.ObservationPolicy, error) {
 	now := time.Now().UTC()
-	theater, err := store.adminCatalogTheater(ctx, input.TheaterID)
+	theater, err := store.adminCatalogTheater(ctx, input.GetTheaterId())
 	if err != nil {
-		return centralapi.AdminObservationPolicy{}, err
+		return nil, err
 	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return centralapi.AdminObservationPolicy{}, fmt.Errorf("begin observation policy update: %w", err)
+		return nil, fmt.Errorf("begin observation policy update: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `
@@ -234,25 +270,25 @@ func (store *Store) UpdateAdminObservationPolicy(
 			updated_at = $22::timestamptz
 		WHERE policy.id = $1 AND policy.revision = $2 AND policy.theater_id = $5
 			AND policy.deleted_at IS NULL
-	`, strings.TrimSpace(id), revision, theater.Name, input.Enabled,
-		theater.ID, theater.ProviderID, theater.SourceKey, theater.Region, theater.Name,
-		input.HorizonDays, input.Priority,
-		input.BaselineMinSeconds, input.BaselineMaxSeconds, input.DemandMinSeconds,
-		input.DemandMaxSeconds, input.BurstMinSeconds, input.BurstMaxSeconds,
-		input.BurstDurationSeconds, input.Locale, input.TimeZone, input.EgressPolicyID, now)
+	`, strings.TrimSpace(id), revision, theater.GetName(), input.GetEnabled(),
+		theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName(),
+		input.GetHorizonDays(), input.GetPriority(),
+		input.GetBaselineMinSeconds(), input.GetBaselineMaxSeconds(), input.GetDemandMinSeconds(),
+		input.GetDemandMaxSeconds(), input.GetBurstMinSeconds(), input.GetBurstMaxSeconds(),
+		input.GetBurstDurationSeconds(), input.GetLocale(), input.GetTimeZone(), input.GetEgressPolicyId(), now)
 	if err != nil {
-		return centralapi.AdminObservationPolicy{}, fmt.Errorf("update observation policy: %w", err)
+		return nil, fmt.Errorf("update observation policy: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return centralapi.AdminObservationPolicy{}, central.ErrRevisionConflict
+		return nil, central.ErrRevisionConflict
 	}
-	if !input.Enabled {
+	if !input.GetEnabled() {
 		if err := cancelActivePolicyAssignments(ctx, tx, id, "policy_disabled", now); err != nil {
-			return centralapi.AdminObservationPolicy{}, err
+			return nil, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return centralapi.AdminObservationPolicy{}, fmt.Errorf("commit observation policy update: %w", err)
+		return nil, fmt.Errorf("commit observation policy update: %w", err)
 	}
 	return store.adminObservationPolicy(ctx, id, now)
 }
@@ -319,12 +355,12 @@ func (store *Store) adminObservationPolicy(
 	ctx context.Context,
 	id string,
 	now time.Time,
-) (centralapi.AdminObservationPolicy, error) {
+) (*adminpb.ObservationPolicy, error) {
 	policy, err := scanAdminObservationPolicy(store.pool.QueryRow(ctx, adminObservationPolicySelect+`
 		AND policy.id = $2
 	`, now, strings.TrimSpace(id)))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return centralapi.AdminObservationPolicy{}, central.ErrNotFound
+		return nil, central.ErrNotFound
 	}
 	return policy, err
 }
@@ -385,47 +421,216 @@ const adminObservationPolicySelect = `
 	WHERE true
 `
 
-func scanAdminObservationPolicy(row rowScanner) (centralapi.AdminObservationPolicy, error) {
-	var policy centralapi.AdminObservationPolicy
+func scanAdminObservationPolicy(row rowScanner) (*adminpb.ObservationPolicy, error) {
+	var id, effectiveMode, lastOutcome, lastErrorCode string
+	var revision int64
+	var enabled, demandActive bool
+	var theaterID, providerID, sourceKey, region, name string
+	var horizonDays, priority, baselineMinSeconds, baselineMaxSeconds int32
+	var demandMinSeconds, demandMaxSeconds, burstMinSeconds, burstMaxSeconds, burstDurationSeconds int32
+	var locale, timeZone, egressPolicyID string
+	var effectivePriority, effectiveMinSeconds, effectiveMaxSeconds int32
+	var burstUntil, nextRunAt, lastFinishedAt *time.Time
+	var createdAt, updatedAt time.Time
 	err := row.Scan(
-		&policy.ID, &policy.Revision, &policy.Enabled,
-		&policy.Theater.ID, &policy.Theater.ProviderID, &policy.Theater.SourceKey,
-		&policy.Theater.Region, &policy.Theater.Name,
-		&policy.HorizonDays, &policy.Priority,
-		&policy.BaselineMinSeconds, &policy.BaselineMaxSeconds,
-		&policy.DemandMinSeconds, &policy.DemandMaxSeconds,
-		&policy.BurstMinSeconds, &policy.BurstMaxSeconds, &policy.BurstDurationSeconds,
-		&policy.Locale, &policy.TimeZone, &policy.EgressPolicyID,
-		&policy.EffectiveMode, &policy.EffectivePriority,
-		&policy.EffectiveMinSeconds, &policy.EffectiveMaxSeconds,
-		&policy.DemandActive, &policy.BurstUntil, &policy.NextRunAt,
-		&policy.LastFinishedAt, &policy.LastOutcome, &policy.LastErrorCode,
-		&policy.CreatedAt, &policy.UpdatedAt,
+		&id, &revision, &enabled,
+		&theaterID, &providerID, &sourceKey, &region, &name,
+		&horizonDays, &priority,
+		&baselineMinSeconds, &baselineMaxSeconds,
+		&demandMinSeconds, &demandMaxSeconds,
+		&burstMinSeconds, &burstMaxSeconds, &burstDurationSeconds,
+		&locale, &timeZone, &egressPolicyID,
+		&effectiveMode, &effectivePriority,
+		&effectiveMinSeconds, &effectiveMaxSeconds,
+		&demandActive, &burstUntil, &nextRunAt,
+		&lastFinishedAt, &lastOutcome, &lastErrorCode,
+		&createdAt, &updatedAt,
 	)
 	if err != nil {
-		return centralapi.AdminObservationPolicy{}, fmt.Errorf("scan observation policy: %w", err)
+		return nil, fmt.Errorf("scan observation policy: %w", err)
 	}
+	theater := &catalogpb.Theater{}
+	theater.SetId(theaterID)
+	theater.SetProviderId(providerID)
+	theater.SetSourceKey(sourceKey)
+	theater.SetRegion(region)
+	theater.SetName(name)
+	input := &adminpb.ObservationPolicyInput{}
+	input.SetTheaterId(theaterID)
+	input.SetEnabled(enabled)
+	input.SetHorizonDays(horizonDays)
+	input.SetPriority(priority)
+	input.SetBaselineMinSeconds(baselineMinSeconds)
+	input.SetBaselineMaxSeconds(baselineMaxSeconds)
+	input.SetDemandMinSeconds(demandMinSeconds)
+	input.SetDemandMaxSeconds(demandMaxSeconds)
+	input.SetBurstMinSeconds(burstMinSeconds)
+	input.SetBurstMaxSeconds(burstMaxSeconds)
+	input.SetBurstDurationSeconds(burstDurationSeconds)
+	input.SetLocale(locale)
+	input.SetTimeZone(timeZone)
+	input.SetEgressPolicyId(egressPolicyID)
+	mode, err := adminObservationMode(effectiveMode)
+	if err != nil {
+		return nil, err
+	}
+	policy := &adminpb.ObservationPolicy{}
+	policy.SetId(id)
+	policy.SetRevision(revision)
+	policy.SetTheater(theater)
+	policy.SetInput(input)
+	policy.SetEffectiveMode(mode)
+	policy.SetEffectivePriority(effectivePriority)
+	policy.SetEffectiveMinSeconds(effectiveMinSeconds)
+	policy.SetEffectiveMaxSeconds(effectiveMaxSeconds)
+	policy.SetDemandActive(demandActive)
+	if burstUntil != nil {
+		policy.SetBurstUntil(timestamppb.New(*burstUntil))
+	}
+	if nextRunAt != nil {
+		policy.SetNextRunAt(timestamppb.New(*nextRunAt))
+	}
+	if lastFinishedAt != nil {
+		policy.SetLastFinishedAt(timestamppb.New(*lastFinishedAt))
+	}
+	if lastOutcome != "" {
+		outcome, err := adminObservationOutcome(lastOutcome)
+		if err != nil {
+			return nil, err
+		}
+		policy.SetLastOutcome(outcome)
+	}
+	policy.SetLastErrorCode(lastErrorCode)
+	policy.SetCreatedAt(timestamppb.New(createdAt))
+	policy.SetUpdatedAt(timestamppb.New(updatedAt))
 	return policy, nil
 }
 
-func (store *Store) adminCatalogTheater(ctx context.Context, id string) (contracts.Theater, error) {
-	var theater contracts.Theater
+func (store *Store) adminCatalogTheater(ctx context.Context, id string) (*catalogpb.Theater, error) {
+	var theaterID, providerID, sourceKey, region, name string
 	err := store.pool.QueryRow(ctx, `
 		SELECT id, provider_id, source_key, region, name
 		FROM theaters WHERE id = $1 AND active
 	`, strings.TrimSpace(id)).Scan(
-		&theater.ID, &theater.ProviderID, &theater.SourceKey, &theater.Region, &theater.Name,
+		&theaterID, &providerID, &sourceKey, &region, &name,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return contracts.Theater{}, central.ErrNotFound
+		return nil, central.ErrNotFound
 	}
 	if err != nil {
-		return contracts.Theater{}, fmt.Errorf("read observation policy theater: %w", err)
+		return nil, fmt.Errorf("read observation policy theater: %w", err)
 	}
+	theater := &catalogpb.Theater{}
+	theater.SetId(theaterID)
+	theater.SetProviderId(providerID)
+	theater.SetSourceKey(sourceKey)
+	theater.SetRegion(region)
+	theater.SetName(name)
 	return theater, nil
 }
 
 func adminObservationPolicyID(theaterID string) string {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(theaterID)))
 	return "policy_" + hex.EncodeToString(digest[:12])
+}
+
+func adminProbe(
+	id, kind, ownerUserID, networkID, runtimeVersion, browserRevision, platform, architecture string,
+	status string,
+	draining bool,
+	availableSlots, maxConcurrency int32,
+	health, reasonCode string,
+	lastHeartbeatAt *time.Time,
+	updatedAt time.Time,
+) (*adminpb.Probe, error) {
+	probeKind := &probepb.ProbeKind{}
+	switch kind {
+	case "container":
+		probeKind.SetContainer(&probepb.ContainerProbe{})
+	case "client":
+		probeKind.SetClient(&probepb.ClientProbe{})
+	default:
+		return nil, fmt.Errorf("unsupported probe kind %q", kind)
+	}
+	state := &adminpb.ProbeState{}
+	switch status {
+	case "online":
+		state.SetOnline(&adminpb.OnlineProbe{})
+	case "offline":
+		state.SetOffline(&adminpb.OfflineProbe{})
+	default:
+		return nil, fmt.Errorf("unsupported probe state %q", status)
+	}
+	probeHealth := &probepb.ProbeHealth{}
+	switch health {
+	case "healthy":
+		probeHealth.SetHealthy(&probepb.Healthy{})
+	case "degraded":
+		value := &probepb.Degraded{}
+		value.SetReasonCode(reasonCode)
+		probeHealth.SetDegraded(value)
+	case "unhealthy":
+		value := &probepb.Unhealthy{}
+		value.SetReasonCode(reasonCode)
+		probeHealth.SetUnhealthy(value)
+	default:
+		return nil, fmt.Errorf("unsupported probe health %q", health)
+	}
+	runtime := &commonpb.Runtime{}
+	runtime.SetComponentVersion(runtimeVersion)
+	runtime.SetBrowserRevision(browserRevision)
+	runtime.SetPlatform(platform)
+	runtime.SetArchitecture(architecture)
+	probe := &adminpb.Probe{}
+	probe.SetId(id)
+	probe.SetKind(probeKind)
+	probe.SetOwnerUserId(ownerUserID)
+	probe.SetNetworkId(networkID)
+	probe.SetRuntime(runtime)
+	probe.SetState(state)
+	probe.SetDraining(draining)
+	probe.SetAvailableSlots(availableSlots)
+	probe.SetMaxConcurrency(maxConcurrency)
+	probe.SetHealth(probeHealth)
+	if lastHeartbeatAt != nil {
+		probe.SetLastHeartbeatAt(timestamppb.New(*lastHeartbeatAt))
+	}
+	probe.SetUpdatedAt(timestamppb.New(updatedAt))
+	return probe, nil
+}
+
+//nolint:dupl // Mode and outcome populate different generated Proto oneofs; keeping branches explicit preserves exhaustiveness.
+func adminObservationMode(value string) (*adminpb.ObservationMode, error) {
+	mode := &adminpb.ObservationMode{}
+	switch value {
+	case "baseline":
+		mode.SetBaseline(&adminpb.BaselineMode{})
+	case "demand":
+		mode.SetDemand(&adminpb.DemandMode{})
+	case "burst":
+		mode.SetBurst(&adminpb.BurstMode{})
+	case "cancellation":
+		mode.SetCancellation(&adminpb.CancellationMode{})
+	default:
+		return nil, fmt.Errorf("unsupported observation mode %q", value)
+	}
+	return mode, nil
+}
+
+//nolint:dupl // Mode and outcome populate different generated Proto oneofs; keeping branches explicit preserves exhaustiveness.
+func adminObservationOutcome(value string) (*adminpb.ObservationOutcome, error) {
+	outcome := &adminpb.ObservationOutcome{}
+	switch value {
+	case "completed":
+		outcome.SetCompleted(&adminpb.CompletedOutcome{})
+	case "partial":
+		outcome.SetPartial(&adminpb.PartialOutcome{})
+	case "failed":
+		outcome.SetFailed(&adminpb.FailedOutcome{})
+	case "missed":
+		outcome.SetMissed(&adminpb.MissedOutcome{})
+	default:
+		return nil, fmt.Errorf("unsupported observation outcome %q", value)
+	}
+	return outcome, nil
 }

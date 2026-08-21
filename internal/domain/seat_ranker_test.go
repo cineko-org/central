@@ -1,6 +1,10 @@
 package domain
 
-import "testing"
+import (
+	"testing"
+
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+)
 
 func TestSeatRankerPrefersExplicitContiguousGroup(t *testing.T) {
 	t.Parallel()
@@ -15,9 +19,10 @@ func TestSeatRankerPrefersExplicitContiguousGroup(t *testing.T) {
 		{Label: "H9", Available: true}, {Label: "H10", Available: true},
 		{Label: "H11", Available: true}, {Label: "H12", Available: true},
 	}
-	groups, err := (SeatRanker{}).Rank(seatMap, live, 2, SeatPreference{
-		ExplicitSeats: []string{"H11", "H12"}, Together: true,
-	})
+	preference := &clientpb.SeatPreference{}
+	preference.SetExplicitSeats([]string{"H11", "H12"})
+	preference.SetTogether(true)
+	groups, err := (SeatRanker{}).Rank(seatMap, live, 2, preference)
 	if err != nil {
 		t.Fatalf("Rank() error = %v", err)
 	}
@@ -34,7 +39,9 @@ func TestSeatRankerRejectsGapForTogetherPreference(t *testing.T) {
 		{Label: "A3", Row: "A", Number: 3, X: .6, Y: .2},
 	}}
 	live := []LiveSeat{{Label: "A1", Available: true}, {Label: "A3", Available: true}}
-	groups, err := (SeatRanker{}).Rank(seatMap, live, 2, SeatPreference{Together: true})
+	preference := &clientpb.SeatPreference{}
+	preference.SetTogether(true)
+	groups, err := (SeatRanker{}).Rank(seatMap, live, 2, preference)
 	if err != nil {
 		t.Fatalf("Rank() error = %v", err)
 	}
@@ -51,7 +58,9 @@ func TestSeatRankerDoesNotJoinSeatsAcrossAisle(t *testing.T) {
 		{Label: "J11", Row: "J", Number: 11, X: .55, Y: .6, LeftAisle: true},
 	}}
 	live := []LiveSeat{{Label: "J10", Available: true}, {Label: "J11", Available: true}}
-	groups, err := (SeatRanker{}).Rank(seatMap, live, 2, SeatPreference{Together: true})
+	preference := &clientpb.SeatPreference{}
+	preference.SetTogether(true)
+	groups, err := (SeatRanker{}).Rank(seatMap, live, 2, preference)
 	if err != nil {
 		t.Fatalf("Rank() error = %v", err)
 	}

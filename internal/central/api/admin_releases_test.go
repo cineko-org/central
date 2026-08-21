@@ -1,12 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestAdminReleasesRequiresCookieAdminAuthentication(t *testing.T) {
@@ -26,13 +28,13 @@ func TestAdminReleasesReturnsDatabaseRegistryAndEmptyComponents(t *testing.T) {
 	server, clients := newAdminReleaseServer(t, repository)
 	for _, publication := range []struct {
 		component string
-		releases  any
+		releases  proto.Message
 	}{
-		{component: "launcher", releases: apiLauncherReleaseSet().Payload.Releases},
-		{component: "client", releases: apiClientReleaseSet().Payload.Releases},
-		{component: "browser", releases: apiBrowserReleaseSet().Payload.Releases},
-		{component: "playwright", releases: apiPlaywrightReleaseSet().Payload.Releases},
-		{component: "probe", releases: apiProbeReleaseSet().Payload.Releases},
+		{component: "launcher", releases: apiLauncherReleaseSet()},
+		{component: "client", releases: apiClientReleaseSet()},
+		{component: "browser", releases: apiBrowserReleaseSet()},
+		{component: "playwright", releases: apiPlaywrightReleaseSet()},
+		{component: "probe", releases: apiProbeReleaseSet()},
 	} {
 		if _, inserted, err := clients.PublishReleaseSet(t.Context(), publication.component, publication.releases); err != nil || !inserted {
 			t.Fatalf("publish %s: inserted=%t, error=%v", publication.component, inserted, err)
@@ -44,13 +46,13 @@ func TestAdminReleasesReturnsDatabaseRegistryAndEmptyComponents(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("admin releases = %d, %s", response.Code, response.Body.String())
 	}
-	var registry central.ReleaseRegistry
-	if err := json.Unmarshal(response.Body.Bytes(), &registry); err != nil {
+	registry := &releasepb.Registry{}
+	if err := protojson.Unmarshal(response.Body.Bytes(), registry); err != nil {
 		t.Fatal(err)
 	}
-	if registry.Generation != 2 || len(registry.Components.Launcher) != 3 ||
-		len(registry.Components.Client) != 3 || len(registry.Components.Browser) != 3 ||
-		len(registry.Components.Playwright) != 3 || len(registry.Components.Probe) != 1 {
+	if registry.GetGeneration() != 2 || len(registry.GetLaunchers().GetReleases()) != 3 ||
+		len(registry.GetClients().GetReleases()) != 3 || len(registry.GetBrowsers().GetReleases()) != 3 ||
+		len(registry.GetPlaywright().GetReleases()) != 3 || len(registry.GetProbes().GetReleases()) != 1 {
 		t.Fatalf("admin release registry = %+v", registry)
 	}
 
@@ -58,12 +60,12 @@ func TestAdminReleasesReturnsDatabaseRegistryAndEmptyComponents(t *testing.T) {
 	// only the ClientService's last in-memory generation.
 	repository.generation = 17
 	fresh := requestWithCookie(t, server, http.MethodGet, "/v1/admin/releases", cookie)
-	var refreshed central.ReleaseRegistry
-	if err := json.Unmarshal(fresh.Body.Bytes(), &refreshed); err != nil {
+	refreshed := &releasepb.Registry{}
+	if err := protojson.Unmarshal(fresh.Body.Bytes(), refreshed); err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.Generation != 17 || clients.ReleaseGeneration() != 2 {
-		t.Fatalf("fresh registry generation = %d, cached generation = %d", refreshed.Generation, clients.ReleaseGeneration())
+	if refreshed.GetGeneration() != 17 || clients.ReleaseGeneration() != 2 {
+		t.Fatalf("fresh registry generation = %d, cached generation = %d", refreshed.GetGeneration(), clients.ReleaseGeneration())
 	}
 
 	emptyServer, _ := newAdminReleaseServer(t, &apiClientRepository{generation: 6})
@@ -72,13 +74,13 @@ func TestAdminReleasesReturnsDatabaseRegistryAndEmptyComponents(t *testing.T) {
 	if empty.Code != http.StatusOK {
 		t.Fatalf("empty admin releases = %d, %s", empty.Code, empty.Body.String())
 	}
-	var emptyRegistry central.ReleaseRegistry
-	if err := json.Unmarshal(empty.Body.Bytes(), &emptyRegistry); err != nil {
+	emptyRegistry := &releasepb.Registry{}
+	if err := protojson.Unmarshal(empty.Body.Bytes(), emptyRegistry); err != nil {
 		t.Fatal(err)
 	}
-	if emptyRegistry.Generation != 6 || emptyRegistry.Components.Launcher == nil ||
-		emptyRegistry.Components.Client == nil || emptyRegistry.Components.Browser == nil ||
-		emptyRegistry.Components.Playwright == nil || emptyRegistry.Components.Probe == nil {
+	if emptyRegistry.GetGeneration() != 6 || !emptyRegistry.HasLaunchers() ||
+		!emptyRegistry.HasClients() || !emptyRegistry.HasBrowsers() ||
+		!emptyRegistry.HasPlaywright() || !emptyRegistry.HasProbes() {
 		t.Fatalf("empty admin release registry = %+v", emptyRegistry)
 	}
 }

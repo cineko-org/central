@@ -15,9 +15,14 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	contracts "github.com/cineko-org/central/internal/domain/catalog"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
+	"github.com/cineko-org/central/internal/support/numeric"
 	"github.com/cineko-org/central/internal/telemetry"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 const (
@@ -236,7 +241,7 @@ func (engine *Engine) scheduleSeatMapBackfill(
 	if target == nil {
 		return nil
 	}
-	policy := Policy{TaskKind: contracts.CapabilityCGVSeatMapCapture}
+	policy := Policy{TaskKind: probedomain.CapabilityCGVSeatMapCapture}
 	candidates, err := cycle.EligibleProbes(ctx, policy, now, now.Add(-engine.config.ProbeHeartbeatTTL))
 	if err != nil {
 		return fmt.Errorf("list seat-map backfill probes: %w", err)
@@ -258,7 +263,7 @@ func (engine *Engine) scheduleSeatMapBackfill(
 		Deadline: now.Add(seatMapBackfillWindow), CreatedAt: now,
 		Candidates: slices.Clone(candidates), Task: target.Task,
 	}
-	assignment.Task.EgressPolicyID = contracts.EgressPolicyScanDefault
+	assignment.Task.SetEgress(managedScanEgress())
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 		if errors.Is(err, ErrTargetBusy) {
 			report.SeatMapBackfillWaiting = true
@@ -284,7 +289,7 @@ func (engine *Engine) scheduleCatalogRefresh(
 	if !required {
 		return nil
 	}
-	policy := Policy{TaskKind: contracts.CapabilityCGVCatalogCapture}
+	policy := Policy{TaskKind: probedomain.CapabilityCGVCatalogCapture}
 	candidates, err := cycle.EligibleProbes(ctx, policy, now, now.Add(-engine.config.ProbeHeartbeatTTL))
 	if err != nil {
 		return fmt.Errorf("list catalog refresh probes: %w", err)
@@ -298,18 +303,16 @@ func (engine *Engine) scheduleCatalogRefresh(
 		return fmt.Errorf("generate catalog refresh assignment id: %w", err)
 	}
 	sourceKey := "__catalog__"
+	theater := &catalogpb.Theater{}
+	theater.SetId(contracts.CatalogID(contracts.ProviderCGV, "theater", sourceKey))
+	theater.SetProviderId(contracts.ProviderCGV)
+	theater.SetSourceKey(sourceKey)
+	theater.SetRegion("system")
+	theater.SetName("CGV catalog")
 	assignment := NewAssignment{
 		ID: id, Priority: 100, Status: "queued", NotBefore: now,
 		Deadline: now.Add(catalogRefreshWindow), CreatedAt: now, Candidates: slices.Clone(candidates),
-		Task: central.AssignmentTask{
-			Kind: contracts.CapabilityCGVCatalogCapture,
-			Theater: central.Theater{
-				ID:         contracts.CatalogID(contracts.ProviderCGV, "theater", sourceKey),
-				ProviderID: contracts.ProviderCGV, SourceKey: sourceKey,
-				Region: "system", Name: "CGV catalog",
-			},
-			Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: contracts.EgressPolicyScanDefault,
-		},
+		Task: catalogAssignmentTask(theater, nil, "ko-KR", "Asia/Seoul"),
 	}
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 		if errors.Is(err, ErrTargetBusy) {
@@ -557,14 +560,71 @@ func (engine *Engine) newAssignment(
 	return NewAssignment{
 		ID: id, PolicyID: policy.ID, Priority: policy.Priority, Status: status,
 		Lane: plan.Lane, HotTargetFingerprint: plan.HotTargetFingerprint,
-		Task: central.AssignmentTask{
-			Kind: policy.TaskKind, Theater: policy.Theater, TargetDates: plan.TargetDates,
-			Locale: policy.Locale, TimeZone: policy.TimeZone,
-			EgressPolicyID: contracts.EgressPolicyID(policy.EgressPolicyID),
-		},
+		Task:      scheduleAssignmentTask(policy.Theater, plan.TargetDates, policy.Locale, policy.TimeZone),
 		NotBefore: now, Deadline: now.Add(policy.ExecutionWindow), FinishedAt: finishedAt,
 		ReasonCode: reason, CreatedAt: now, Candidates: slices.Clone(candidates),
 	}, nil
+}
+
+func managedScanEgress() *commonpb.EgressPolicy {
+	policy := &commonpb.EgressPolicy{}
+	policy.SetManagedScan(&commonpb.ManagedScanEgress{})
+	return policy
+}
+
+func scheduleAssignmentTask(
+	theater *catalogpb.Theater,
+	targetDates []string,
+	locale string,
+	timeZone string,
+) *observationpb.AssignmentTask {
+	return observationAssignmentTask(func(task *observationpb.AssignmentTask) {
+		schedule := &observationpb.ScheduleTask{}
+		schedule.SetTheater(theater)
+		schedule.SetTargetDates(protoLocalDates(targetDates))
+		schedule.SetLocale(locale)
+		schedule.SetTimeZone(timeZone)
+		task.SetSchedule(schedule)
+	})
+}
+
+func catalogAssignmentTask(
+	theater *catalogpb.Theater,
+	targetDates []string,
+	locale string,
+	timeZone string,
+) *observationpb.AssignmentTask {
+	return observationAssignmentTask(func(task *observationpb.AssignmentTask) {
+		catalog := &observationpb.CatalogTask{}
+		catalog.SetTheater(theater)
+		catalog.SetTargetDates(protoLocalDates(targetDates))
+		catalog.SetLocale(locale)
+		catalog.SetTimeZone(timeZone)
+		task.SetCatalog(catalog)
+	})
+}
+
+func observationAssignmentTask(setPayload func(*observationpb.AssignmentTask)) *observationpb.AssignmentTask {
+	task := &observationpb.AssignmentTask{}
+	setPayload(task)
+	task.SetEgress(managedScanEgress())
+	return task
+}
+
+func protoLocalDates(values []string) []*commonpb.LocalDate {
+	dates := make([]*commonpb.LocalDate, 0, len(values))
+	for _, value := range values {
+		parsed, err := time.Parse(time.DateOnly, value)
+		if err != nil {
+			continue
+		}
+		date := &commonpb.LocalDate{}
+		date.SetYear(numeric.ClampInt32(parsed.Year()))
+		date.SetMonth(numeric.ClampInt32(int(parsed.Month())))
+		date.SetDay(numeric.ClampInt32(parsed.Day()))
+		dates = append(dates, date)
+	}
+	return dates
 }
 
 func (engine *Engine) advanceMissedPolicy(
@@ -610,14 +670,14 @@ func policyPlan(policy Policy, now time.Time) (planning.Result, error) {
 }
 
 func validatePolicyRuntime(policy Policy) (*time.Location, error) {
-	if strings.TrimSpace(policy.TaskKind) == "" || strings.TrimSpace(policy.Theater.ID) == "" ||
-		strings.TrimSpace(policy.Theater.ProviderID) == "" || strings.TrimSpace(policy.Theater.SourceKey) == "" ||
+	if strings.TrimSpace(policy.TaskKind) == "" || policy.Theater == nil || strings.TrimSpace(policy.Theater.GetId()) == "" ||
+		strings.TrimSpace(policy.Theater.GetProviderId()) == "" || strings.TrimSpace(policy.Theater.GetSourceKey()) == "" ||
 		strings.TrimSpace(policy.Locale) == "" || policy.MinimumInterval <= 0 ||
 		policy.MaximumInterval < policy.MinimumInterval ||
 		policy.ExecutionWindow <= 0 {
 		return nil, errors.New("policy runtime configuration is incomplete")
 	}
-	if err := contracts.RequireEgressPolicy(contracts.EgressPolicyID(policy.EgressPolicyID)); err != nil {
+	if err := central.RequireEgressPolicy(central.EgressPolicyID(policy.EgressPolicyID)); err != nil {
 		return nil, err
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(policy.TimeZone))

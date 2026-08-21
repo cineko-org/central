@@ -18,6 +18,11 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestProbeRegistrationAndHeartbeatContract(t *testing.T) {
@@ -36,25 +41,31 @@ func TestProbeRegistrationAndHeartbeatContract(t *testing.T) {
 		t.Fatalf("livez status = %d", livez.Code)
 	}
 	health := request(t, server.Handler(), http.MethodGet, "/health", nil, nil)
-	if health.Code != http.StatusOK || health.Body.String() != "{\"status\":\"ready\"}\n" {
+	if health.Code != http.StatusOK || health.Body.String() != "{\"ready\":{}}" {
 		t.Fatalf("health status = %d, body = %s", health.Code, health.Body.String())
 	}
 
-	registration := map[string]any{
-		"installationId": "install_api", "kind": "container",
-		"capabilities": []string{"cgv.schedule.capture.v2"}, "maxConcurrency": 1,
-		"runtime": map[string]any{
-			"version": "0.1.0", "protocol": central.ProtocolVersion, "browserRevision": "1228",
-			"platform": "darwin", "arch": "arm64",
+	registration := probepb.RegisterRequest_builder{
+		InstallationId: stringPointer("install_api"),
+		Kind: probepb.ProbeKind_builder{
+			Container: probepb.ContainerProbe_builder{}.Build(),
+		}.Build(),
+		Capabilities: []*observationpb.Capability{
+			observationpb.Capability_builder{
+				ScheduleCapture: observationpb.ScheduleCapture_builder{}.Build(),
+			}.Build(),
 		},
-	}
-	missingProtocol := request(t, server.Handler(), http.MethodPost, "/v1/probes/register", registration, map[string]string{
-		"Authorization": "Bearer enroll", "Idempotency-Key": "register_api",
-	})
-	assertAPIError(t, missingProtocol, http.StatusBadRequest, "unsupported_protocol")
+		MaxConcurrency: int32Pointer(1),
+		Runtime: commonpb.Runtime_builder{
+			ComponentVersion: stringPointer("0.1.0"),
+			BrowserRevision:  stringPointer("1228"),
+			Platform:         stringPointer("darwin"),
+			Architecture:     stringPointer("arm64"),
+		}.Build(),
+	}.Build()
 
 	baseHeaders := map[string]string{
-		"X-Cineko-Protocol": "3", "Authorization": "Bearer enroll",
+		"Authorization": "Bearer enroll",
 	}
 	missingKey := request(t, server.Handler(), http.MethodPost, "/v1/probes/register", registration, baseHeaders)
 	assertAPIError(t, missingKey, http.StatusBadRequest, "idempotency_key_required")
@@ -71,27 +82,33 @@ func TestProbeRegistrationAndHeartbeatContract(t *testing.T) {
 	if registered.Code != http.StatusOK {
 		t.Fatalf("register status = %d, body = %s", registered.Code, registered.Body.String())
 	}
-	var registrationResponse central.RegisterProbeResponse
-	if err := json.Unmarshal(registered.Body.Bytes(), &registrationResponse); err != nil {
+	registrationResponse := &probepb.RegisterResponse{}
+	if err := protojson.Unmarshal(registered.Body.Bytes(), registrationResponse); err != nil {
 		t.Fatal(err)
 	}
-	if registrationResponse.ProbeID == "" || registrationResponse.AccessToken == "" {
+	if registrationResponse.GetProbeId() == "" || registrationResponse.GetAccessToken() == "" {
 		t.Fatalf("registration response = %+v", registrationResponse)
 	}
 
 	probeHeaders := map[string]string{
-		"X-Cineko-Protocol": "3", "Authorization": "Bearer " + registrationResponse.AccessToken,
+		"Authorization": "Bearer " + registrationResponse.GetAccessToken(),
 	}
 	heartbeat := request(t, server.Handler(), http.MethodPut,
-		"/v1/probes/"+registrationResponse.ProbeID+"/heartbeat",
-		map[string]any{"draining": false, "activeAssignmentIds": []string{}, "availableSlots": 1, "health": "healthy"},
+		"/v1/probes/"+registrationResponse.GetProbeId()+"/heartbeat",
+		probepb.HeartbeatRequest_builder{
+			Draining:       boolPointer(false),
+			AvailableSlots: int32Pointer(1),
+			Health: probepb.ProbeHealth_builder{
+				Healthy: probepb.Healthy_builder{}.Build(),
+			}.Build(),
+		}.Build(),
 		probeHeaders,
 	)
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("heartbeat status = %d, body = %s", heartbeat.Code, heartbeat.Body.String())
 	}
 	claim := request(t, server.Handler(), http.MethodPost,
-		"/v1/probes/"+registrationResponse.ProbeID+"/assignments:claim", nil, probeHeaders,
+		"/v1/probes/"+registrationResponse.GetProbeId()+"/assignments:claim", nil, probeHeaders,
 	)
 	if claim.Code != http.StatusNoContent {
 		t.Fatalf("empty claim status = %d, body = %s", claim.Code, claim.Body.String())
@@ -143,7 +160,6 @@ func TestRequestBodyIsStrict(t *testing.T) {
 		context.Background(), http.MethodPost, "/v1/probes/register", bytes.NewBufferString(`{"unknown":true}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Cineko-Protocol", "3")
 	request.Header.Set("Authorization", "Bearer enroll")
 	request.Header.Set("Idempotency-Key", "strict")
 	server.Handler().ServeHTTP(recorder, request)
@@ -171,7 +187,7 @@ func TestExpectedRevisionPreconditions(t *testing.T) {
 			request := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/v1/settings", nil)
 			request.Header.Set("If-Match", test.ifMatch)
 			request.Header.Set("If-None-Match", test.ifNoneMatch)
-			got, valid := expectedRevision(recorder, request)
+			got, valid := (&Server{}).expectedRevision(recorder, request)
 			if valid != test.valid || !equalOptionalInt64(got, test.want) {
 				t.Fatalf("expectedRevision() = %v, %t; want %v, %t", got, valid, test.want, test.valid)
 			}
@@ -183,6 +199,12 @@ func TestExpectedRevisionPreconditions(t *testing.T) {
 }
 
 func pointerToInt64(value int64) *int64 { return &value }
+
+func stringPointer(value string) *string { return &value }
+
+func int32Pointer(value int32) *int32 { return &value }
+
+func boolPointer(value bool) *bool { return &value }
 
 func equalOptionalInt64(left, right *int64) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
@@ -253,7 +275,13 @@ func request(
 	t.Helper()
 	var encoded bytes.Buffer
 	if body != nil {
-		if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+		if message, ok := body.(proto.Message); ok {
+			payload, err := protojson.Marshal(message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded.Write(payload)
+		} else if err := json.NewEncoder(&encoded).Encode(body); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -274,16 +302,12 @@ func assertAPIError(t *testing.T, recorder *httptest.ResponseRecorder, status in
 	if recorder.Code != status {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, status, recorder.Body.String())
 	}
-	var response struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+	response := &commonpb.APIErrorResponse{}
+	if err := protojson.Unmarshal(recorder.Body.Bytes(), response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Error.Code != code {
-		t.Fatalf("error code = %q, want %q", response.Error.Code, code)
+	if response.GetError().GetCode() != code {
+		t.Fatalf("error code = %q, want %q", response.GetError().GetCode(), code)
 	}
 }
 
@@ -332,10 +356,10 @@ func (repository *apiRepository) AuthenticateProbe(
 func (repository *apiRepository) HeartbeatProbe(
 	_ context.Context,
 	_ string,
-	heartbeat central.ProbeHeartbeatRequest,
+	heartbeat *probepb.HeartbeatRequest,
 	_ time.Time,
 ) (central.Probe, error) {
-	repository.probe.Draining = heartbeat.Draining
+	repository.probe.Draining = heartbeat.GetDraining()
 	return repository.probe, nil
 }
 
@@ -363,6 +387,6 @@ func (*apiRepository) HeartbeatAssignment(
 	return errors.New("not implemented")
 }
 
-func (*apiRepository) CommitResult(context.Context, central.ResultCommit) (central.ResultReceipt, error) {
-	return central.ResultReceipt{}, errors.New("not implemented")
+func (*apiRepository) CommitResult(context.Context, central.ResultCommit) (*observationpb.ResultReceipt, error) {
+	return nil, errors.New("not implemented")
 }

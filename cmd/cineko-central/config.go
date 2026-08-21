@@ -15,6 +15,9 @@ import (
 	centralapi "github.com/cineko-org/central/internal/central/api"
 	"github.com/cineko-org/central/internal/central/bootstrap"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type applicationConfig struct {
@@ -29,11 +32,11 @@ type applicationConfig struct {
 	clientCredentials      []central.ClientCredentialSeed
 	clientSessionTTL       time.Duration
 	clientRefreshTTL       time.Duration
-	clientReleases         []central.ClientRelease
-	browserReleases        []central.BrowserRelease
-	playwrightReleases     []central.PlaywrightRelease
-	launcherReleases       []central.LauncherRelease
-	probeReleases          []central.ProbeRelease
+	clientReleases         *releasepb.ClientReleaseSet
+	browserReleases        *releasepb.BrowserReleaseSet
+	playwrightReleases     *releasepb.PlaywrightReleaseSet
+	launcherReleases       *releasepb.LauncherReleaseSet
+	probeReleases          *releasepb.ProbeReleaseSet
 	releasePublishToken    string
 	clientPINPepper        string
 	adminCredentials       []centralapi.AdminCredential
@@ -270,40 +273,39 @@ func loadProbeBootstrapSigner(
 	return signer, nil
 }
 
-func parseClientReleases(value string) ([]central.ClientRelease, error) {
-	return parseReleaseJSON[central.ClientRelease]("CINEKO_CLIENT_RELEASES_JSON", value)
+func parseClientReleases(value string) (*releasepb.ClientReleaseSet, error) {
+	set := &releasepb.ClientReleaseSet{}
+	return set, parseReleaseProtoJSON("CINEKO_CLIENT_RELEASES_JSON", value, set)
 }
 
-func parseBrowserReleases(value string) ([]central.BrowserRelease, error) {
-	return parseReleaseJSON[central.BrowserRelease]("CINEKO_BROWSER_RELEASES_JSON", value)
+func parseBrowserReleases(value string) (*releasepb.BrowserReleaseSet, error) {
+	set := &releasepb.BrowserReleaseSet{}
+	return set, parseReleaseProtoJSON("CINEKO_BROWSER_RELEASES_JSON", value, set)
 }
 
-func parsePlaywrightReleases(value string) ([]central.PlaywrightRelease, error) {
-	return parseReleaseJSON[central.PlaywrightRelease]("CINEKO_PLAYWRIGHT_RELEASES_JSON", value)
+func parsePlaywrightReleases(value string) (*releasepb.PlaywrightReleaseSet, error) {
+	set := &releasepb.PlaywrightReleaseSet{}
+	return set, parseReleaseProtoJSON("CINEKO_PLAYWRIGHT_RELEASES_JSON", value, set)
 }
 
-func parseLauncherReleases(value string) ([]central.LauncherRelease, error) {
-	return parseReleaseJSON[central.LauncherRelease]("CINEKO_LAUNCHER_RELEASES_JSON", value)
+func parseLauncherReleases(value string) (*releasepb.LauncherReleaseSet, error) {
+	set := &releasepb.LauncherReleaseSet{}
+	return set, parseReleaseProtoJSON("CINEKO_LAUNCHER_RELEASES_JSON", value, set)
 }
 
-func parseProbeReleases(value string) ([]central.ProbeRelease, error) {
-	return parseReleaseJSON[central.ProbeRelease]("CINEKO_PROBE_RELEASES_JSON", value)
+func parseProbeReleases(value string) (*releasepb.ProbeReleaseSet, error) {
+	set := &releasepb.ProbeReleaseSet{}
+	return set, parseReleaseProtoJSON("CINEKO_PROBE_RELEASES_JSON", value, set)
 }
 
-func parseReleaseJSON[T any](name string, value string) ([]T, error) {
+func parseReleaseProtoJSON(name string, value string, set proto.Message) error {
 	if value == "" {
-		return nil, nil
+		return nil
 	}
-	var releases []T
-	decoder := json.NewDecoder(strings.NewReader(value))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&releases); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", name, err)
+	if err := protojson.Unmarshal([]byte(value), set); err != nil {
+		return fmt.Errorf("decode %s: %w", name, err)
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%s must contain one JSON value", name)
-	}
-	return releases, nil
+	return nil
 }
 
 func parseClientCredentials(value string) ([]central.ClientCredentialSeed, error) {

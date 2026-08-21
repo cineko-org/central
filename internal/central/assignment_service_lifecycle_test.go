@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 func TestServiceCommitsFailedAttemptForRepositoryRetryDecision(t *testing.T) {
@@ -17,8 +19,9 @@ func TestServiceCommitsFailedAttemptForRepositoryRetryDecision(t *testing.T) {
 	}
 	service.clock = func() time.Time { return now }
 	result := validResult(now)
-	result.Status = "failed"
-	result.Captures = nil
+	failed := &observationpb.Failed{}
+	failed.SetReasonCode("provider_error")
+	result.SetFailed(failed)
 
 	receipt, err := service.CommitResult(
 		context.Background(), Probe{ID: "probe"}, "assignment", "lease", result,
@@ -26,7 +29,7 @@ func TestServiceCommitsFailedAttemptForRepositoryRetryDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.Status != "failed" || repository.commit.Result.Status != "failed" ||
+	if receipt.GetRunId() != result.GetRunId() || repository.commit.Result.GetFailed() == nil ||
 		repository.commit.CommittedAt != now || len(repository.commit.Payload) == 0 ||
 		repository.commit.PayloadHash == "" {
 		t.Fatalf("receipt = %+v, commit = %+v", receipt, repository.commit)
@@ -49,15 +52,14 @@ type assignmentCommitRecorder struct {
 func (repository *assignmentCommitRecorder) CommitResult(
 	_ context.Context,
 	commit ResultCommit,
-) (ResultReceipt, error) {
+) (*observationpb.ResultReceipt, error) {
 	repository.commit = commit
 	if repository.err != nil {
-		return ResultReceipt{}, repository.err
+		return nil, repository.err
 	}
-	return ResultReceipt{
-		AssignmentID: commit.AssignmentID,
-		RunID:        commit.Result.RunID,
-		ContentHash:  commit.PayloadHash,
-		Status:       commit.Result.Status,
-	}, nil
+	receipt := &observationpb.ResultReceipt{}
+	receipt.SetAssignmentId(commit.AssignmentID)
+	receipt.SetRunId(commit.Result.GetRunId())
+	receipt.SetContentHash(commit.PayloadHash)
+	return receipt, nil
 }

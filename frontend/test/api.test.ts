@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CentralAPIError, loadJSON, request } from '../src/central/api';
+import { LoginResponseSchema } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { CentralAPIError, loadProto, request } from '../src/central/api';
 
 describe('Central API client', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('adds JSON request defaults and returns successful responses', async () => {
-    const response = new Response(JSON.stringify({ ready: true }), { status: 200 });
+    const response = new Response(JSON.stringify({ principal: { userId: 'admin' } }), { status: 200 });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(loadJSON<{ ready: boolean }>('/status', { method: 'POST', body: '{}' }))
-      .resolves.toEqual({ ready: true });
+    await expect(loadProto(LoginResponseSchema, '/status', { method: 'POST', body: '{}' }))
+      .resolves.toMatchObject({ principal: { userId: 'admin' } });
     expect(fetchMock).toHaveBeenCalledWith('/status', expect.objectContaining({
       credentials: 'same-origin',
       method: 'POST',

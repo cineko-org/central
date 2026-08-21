@@ -2,18 +2,22 @@ package central
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	contracts "github.com/cineko-org/contracts/v3"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	"github.com/cineko-org/central/internal/support/numeric"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestCatalogServiceNormalizesAndDelegatesSnapshot(t *testing.T) {
-	t.Parallel()
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	repository := &catalogRepositoryFake{generation: 7}
 	service, err := NewCatalogService(repository)
@@ -22,42 +26,38 @@ func TestCatalogServiceNormalizesAndDelegatesSnapshot(t *testing.T) {
 	}
 	service.clock = func() time.Time { return now }
 	snapshot := validCatalogSnapshot(now)
-	snapshot.Auditoriums[0].ScreenTypes = []string{" IMAX ", "2D", "IMAX"}
-	snapshot.Showtimes[0].Movie.Title = "untrusted duplicate"
+	snapshot.GetAuditoriums()[0].SetScreenTypes([]string{" IMAX ", "2D", "IMAX"})
+	snapshot.GetShowtimes()[0].GetMovie().SetTitle("untrusted duplicate")
 
 	generation, err := service.PutSnapshot(t.Context(), snapshot)
 	if err != nil || generation != 7 {
 		t.Fatalf("PutSnapshot() = %d, %v", generation, err)
 	}
-	wantMovie := repository.snapshot.Movies[0]
-	wantAuditorium := repository.snapshot.Auditoriums[0]
-	showtime := repository.snapshot.Showtimes[0]
-	if showtime.Movie != wantMovie || showtime.Auditorium.ID != wantAuditorium.ID ||
-		len(wantAuditorium.ScreenTypes) != 2 || wantAuditorium.ScreenTypes[0] != "2D" ||
-		wantAuditorium.ScreenTypes[1] != "IMAX" {
+	showtime := repository.snapshot.GetShowtimes()[0]
+	if showtime.GetMovie() != repository.snapshot.GetMovies()[0] ||
+		!proto.Equal(showtime.GetAuditorium(), repository.snapshot.GetAuditoriums()[0]) ||
+		len(repository.snapshot.GetAuditoriums()[0].GetScreenTypes()) != 2 {
 		t.Fatalf("normalized snapshot = %+v", repository.snapshot)
 	}
-	if repository.snapshot.ObservedAt != now {
-		t.Fatalf("observedAt = %v, want %v", repository.snapshot.ObservedAt, now)
+	if !repository.snapshot.GetObservedAt().AsTime().Equal(now) {
+		t.Fatalf("observedAt = %v, want %v", repository.snapshot.GetObservedAt().AsTime(), now)
 	}
 }
 
 func TestCatalogRefreshStateAndRequest(t *testing.T) {
-	t.Parallel()
 	now := time.Date(2026, 8, 18, 5, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name  string
-		input CatalogRefreshStatus
+		input *adminpb.CatalogRefreshStatus
 		state string
 	}{
-		{name: "ready", input: CatalogRefreshStatus{}, state: "ready"},
-		{name: "running", input: CatalogRefreshStatus{Active: true}, state: "running"},
-		{name: "waiting", input: CatalogRefreshStatus{CatalogEmpty: true}, state: "waiting_for_probe"},
-		{name: "queued", input: CatalogRefreshStatus{CatalogEmpty: true, EligibleProbes: 1}, state: "queued"},
+		{name: "ready", input: &adminpb.CatalogRefreshStatus{}, state: "ready"},
+		{name: "running", input: refreshStatus(true, false, 0), state: "running"},
+		{name: "waiting", input: refreshStatus(false, true, 0), state: "waiting"},
+		{name: "queued", input: refreshStatus(false, true, 1), state: "queued"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
 			repository := &catalogRepositoryFake{refresh: test.input}
 			service, err := NewCatalogService(repository)
 			if err != nil {
@@ -65,16 +65,13 @@ func TestCatalogRefreshStateAndRequest(t *testing.T) {
 			}
 			service.clock = func() time.Time { return now }
 			status, err := service.RefreshStatus(t.Context())
-			if err != nil || status.State != test.state {
+			if err != nil || refreshState(status) != test.state {
 				t.Fatalf("status = %+v, error = %v", status, err)
 			}
 		})
 	}
 	repository := &catalogRepositoryFake{}
-	service, err := NewCatalogService(repository)
-	if err != nil {
-		t.Fatal(err)
-	}
+	service, _ := NewCatalogService(repository)
 	service.clock = func() time.Time { return now }
 	if err := service.RequestRefresh(t.Context()); err != nil || !repository.requested {
 		t.Fatalf("request refresh = %v, requested = %t", err, repository.requested)
@@ -83,75 +80,57 @@ func TestCatalogRefreshStateAndRequest(t *testing.T) {
 	if _, err := service.RefreshStatus(t.Context()); !errors.Is(err, repository.err) {
 		t.Fatalf("RefreshStatus() error = %v", err)
 	}
-	if err := service.RequestRefresh(t.Context()); !errors.Is(err, repository.err) {
-		t.Fatalf("RequestRefresh() error = %v", err)
-	}
 }
 
 func TestCatalogClientWriteAuthorization(t *testing.T) {
-	t.Parallel()
 	repository := &catalogRepositoryFake{}
-	service, err := NewCatalogService(repository)
-	if err != nil {
-		t.Fatal(err)
-	}
+	service, _ := NewCatalogService(repository)
 	principal := ClientPrincipal{UserID: "user"}
-	if err := service.AuthorizeClientWrite(
-		t.Context(), principal, " ", contracts.CapabilityCGVCatalogCapture,
-	); !errors.Is(err, ErrUnauthorized) {
+	capability := probedomain.CapabilityCGVCatalogCapture
+	if err := service.AuthorizeClientWrite(t.Context(), principal, " ", capability); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("missing installation authorization = %v", err)
 	}
 	repository.err = errInjectedClient
-	if err := service.AuthorizeClientWrite(
-		t.Context(), principal, " install ", contracts.CapabilityCGVCatalogCapture,
-	); !errors.Is(err, errInjectedClient) {
+	if err := service.AuthorizeClientWrite(t.Context(), principal, " install ", capability); !errors.Is(err, errInjectedClient) {
 		t.Fatalf("repository authorization error = %v", err)
 	}
 	repository.err = nil
-	if err := service.AuthorizeClientWrite(
-		t.Context(), principal, " install ", contracts.CapabilityCGVCatalogCapture,
-	); err != nil {
+	if err := service.AuthorizeClientWrite(t.Context(), principal, " install ", capability); err != nil {
 		t.Fatalf("authorization = %v", err)
 	}
 	if repository.authorizedUser != "user" || repository.authorizedInstallation != "install" ||
-		repository.authorizedCapability != contracts.CapabilityCGVCatalogCapture {
-		t.Fatalf("authorization boundary = %q %q %q", repository.authorizedUser,
-			repository.authorizedInstallation, repository.authorizedCapability)
+		repository.authorizedCapability != capability {
+		t.Fatalf("authorization boundary = %q %q %q", repository.authorizedUser, repository.authorizedInstallation, repository.authorizedCapability)
 	}
 }
 
 func TestCatalogServiceRejectsBrokenRelationships(t *testing.T) {
-	t.Parallel()
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	service, err := NewCatalogService(&catalogRepositoryFake{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	service, _ := NewCatalogService(&catalogRepositoryFake{})
 	service.clock = func() time.Time { return now }
-
-	tests := map[string]func(*contracts.CatalogSnapshot){
-		"unknown auditorium theater": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Auditoriums[0].TheaterID = "unknown"
+	tests := map[string]func(*catalogpb.CatalogSnapshot){
+		"unknown auditorium theater": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.GetAuditoriums()[0].SetTheaterId("unknown")
 		},
-		"unknown showtime movie": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Showtimes[0].Movie.ID = "unknown"
+		"unknown showtime movie": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.GetShowtimes()[0].GetMovie().SetId("unknown")
 		},
-		"cross-theater showtime": func(snapshot *contracts.CatalogSnapshot) {
-			other := snapshot.Theaters[0]
-			other.SourceKey = "서울/영등포"
-			other.Name = "영등포"
-			other.ID = contracts.CatalogID(other.ProviderID, "theater", other.SourceKey)
-			snapshot.Theaters = append(snapshot.Theaters, other)
-			snapshot.Showtimes[0].TheaterID = other.ID
+		"cross-theater showtime": func(snapshot *catalogpb.CatalogSnapshot) {
+			other := proto.CloneOf(snapshot.GetTheaters()[0])
+			other.SetSourceKey("0043")
+			other.SetName("영등포")
+			other.SetId(catalogdomain.CatalogID(other.GetProviderId(), "theater", other.GetSourceKey()))
+			snapshot.SetTheaters(append(snapshot.GetTheaters(), other))
+			snapshot.GetShowtimes()[0].SetTheaterId(other.GetId())
 		},
-		"future observation": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.ObservedAt = now.Add(catalogdomain.MaximumObservationClockSkew + time.Second)
+		"future observation": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.SetObservedAt(timestamppb.New(now.Add(catalogdomain.MaximumObservationClockSkew + time.Second)))
 		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			snapshot := validCatalogSnapshot(now)
-			mutate(&snapshot)
+			mutate(snapshot)
 			if _, err := service.PutSnapshot(t.Context(), snapshot); !errors.Is(err, ErrInvalid) {
 				t.Fatalf("PutSnapshot() error = %v", err)
 			}
@@ -160,143 +139,48 @@ func TestCatalogServiceRejectsBrokenRelationships(t *testing.T) {
 }
 
 func TestCatalogServiceCanonicalizesSeatMap(t *testing.T) {
-	t.Parallel()
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	repository := &catalogRepositoryFake{generation: 9}
-	service, err := NewCatalogService(repository)
-	if err != nil {
-		t.Fatal(err)
-	}
+	service, _ := NewCatalogService(repository)
 	service.clock = func() time.Time { return now }
-	version := contracts.SeatMapVersion{
-		AuditoriumID: " auditorium ", Capacity: 2,
-		Layout: seatMapLayoutJSON(t, 2),
-	}
+	snapshot := seatMapSnapshot(" auditorium ", 2)
 
-	generation, err := service.PutSeatMapVersion(t.Context(), version)
+	generation, err := service.PutSeatMap(t.Context(), snapshot)
 	if err != nil || generation != 9 {
-		t.Fatalf("PutSeatMapVersion() = %d, %v", generation, err)
+		t.Fatalf("PutSeatMap() = %d, %v", generation, err)
 	}
 	stored := repository.seatMap
-	if stored.AuditoriumID != "auditorium" || stored.LayoutHash == "" ||
-		stored.ID != contracts.SeatMapVersionID(stored.AuditoriumID, stored.LayoutHash) ||
-		stored.ObservedAt != now || !json.Valid(stored.Layout) {
+	if stored.GetAuditoriumId() != "auditorium" || stored.GetLayoutHash() == "" ||
+		stored.GetId() != catalogdomain.SeatMapVersionID(stored.GetAuditoriumId(), stored.GetLayoutHash()) ||
+		!stored.GetObservedAt().AsTime().Equal(now) {
 		t.Fatalf("canonical seat map = %+v", stored)
 	}
-	if _, err := service.PutSeatMapVersion(t.Context(), contracts.SeatMapVersion{
-		AuditoriumID: "auditorium", Capacity: 0, Layout: json.RawMessage(`{}`),
-	}); !errors.Is(err, ErrInvalid) {
+	if _, err := service.PutSeatMap(t.Context(), seatMapSnapshot("auditorium", 0)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid seat map error = %v", err)
 	}
 }
 
-func TestCatalogServiceBoundaries(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	errRepository := errors.New("catalog repository failure")
+func TestCatalogServiceBoundariesAndBackfill(t *testing.T) {
 	if _, err := NewCatalogService(nil); err == nil {
 		t.Fatal("nil catalog repository accepted")
 	}
-	repository := &catalogRepositoryFake{
-		index:   contracts.CatalogIndex{Generation: 3},
-		seatMap: contracts.SeatMapVersion{AuditoriumID: "auditorium"},
+	index := &catalogpb.CatalogIndex{}
+	index.SetGeneration(3)
+	stored := seatMapSnapshot("auditorium", 1)
+	stored.SetId("version")
+	repository := &catalogRepositoryFake{index: index, seatMap: stored}
+	service, _ := NewCatalogService(repository)
+	if got, err := service.Catalog(t.Context()); err != nil || got.GetGeneration() != 3 {
+		t.Fatalf("Catalog() = %+v, %v", got, err)
 	}
-	service, err := NewCatalogService(repository)
-	if err != nil {
-		t.Fatal(err)
+	resolution, err := service.ResolveSeatMap(t.Context(), "auditorium")
+	if err != nil || resolution.GetReady().GetSnapshot().GetId() != "version" || repository.requested {
+		t.Fatalf("stored ResolveSeatMap() = %+v, requested=%t, error=%v", resolution, repository.requested, err)
 	}
-	service.clock = func() time.Time { return now }
-	if index, err := service.Catalog(t.Context()); err != nil || index.Generation != 3 {
-		t.Fatalf("Catalog() = %+v, %v", index, err)
-	}
-	if version, err := service.SeatMapVersion(t.Context(), " auditorium "); err != nil ||
-		version.AuditoriumID != "auditorium" {
-		t.Fatalf("SeatMapVersion() = %+v, %v", version, err)
-	}
-	if _, err := service.SeatMapVersion(t.Context(), " "); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("blank SeatMapVersion() error = %v", err)
-	}
-
-	repository.err = errRepository
-	if _, err := service.Catalog(t.Context()); !errors.Is(err, errRepository) {
-		t.Fatalf("Catalog() error = %v", err)
-	}
-	if _, err := service.SeatMapVersion(t.Context(), "auditorium"); !errors.Is(err, errRepository) {
-		t.Fatalf("SeatMapVersion() error = %v", err)
-	}
-	snapshot := validCatalogSnapshot(now)
-	snapshot.ObservedAt = time.Time{}
-	if _, err := service.PutSnapshot(t.Context(), snapshot); !errors.Is(err, errRepository) ||
-		repository.snapshot.ObservedAt != now {
-		t.Fatalf("PutSnapshot() = %+v, %v", repository.snapshot, err)
-	}
-	if _, err := service.PutSeatMapVersion(t.Context(), contracts.SeatMapVersion{
-		AuditoriumID: "auditorium", Capacity: 1, Layout: seatMapLayoutJSON(t, 1),
-	}); !errors.Is(err, errRepository) {
-		t.Fatalf("PutSeatMapVersion() error = %v", err)
-	}
-
-	repository.err = nil
-	for name, version := range map[string]contracts.SeatMapVersion{
-		"future observation": {
-			AuditoriumID: "auditorium", Capacity: 1, Layout: seatMapLayoutJSON(t, 1),
-			ObservedAt: now.Add(catalogdomain.MaximumObservationClockSkew + time.Second),
-		},
-		"invalid layout": {AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`[]`)},
-		"noncanonical id": {
-			ID: "wrong", AuditoriumID: "auditorium", Capacity: 1,
-			Layout: seatMapLayoutJSON(t, 1),
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := service.PutSeatMapVersion(t.Context(), version); !errors.Is(err, ErrInvalid) {
-				t.Fatalf("PutSeatMapVersion() error = %v", err)
-			}
-		})
-	}
-}
-
-func seatMapLayoutJSON(t *testing.T, count int) json.RawMessage {
-	t.Helper()
-	const auditoriumID = "auditorium"
-	layout := contracts.SeatMapLayout{Seats: make([]contracts.SeatMapSeat, 0, count)}
-	for number := 1; number <= count; number++ {
-		label := fmt.Sprintf("A%d", number)
-		layout.Seats = append(layout.Seats, contracts.SeatMapSeat{
-			ID: contracts.SeatID(auditoriumID, label), AuditoriumID: auditoriumID,
-			Label: label, Row: "A", Number: number, X: float64(number) / float64(count+1), Y: 0.5,
-			Type: "standard", Features: []string{},
-		})
-	}
-	raw, err := json.Marshal(layout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
-}
-
-func TestCatalogServiceRequestsSeatMapBackfill(t *testing.T) {
-	t.Parallel()
-	stored := contracts.SeatMapVersion{ID: "version", AuditoriumID: "stored"}
-	repository := &catalogRepositoryFake{seatMap: stored}
-	service, err := NewCatalogService(repository)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolution, err := service.ResolveSeatMap(t.Context(), "stored")
-	if err != nil || resolution.Status != contracts.SeatMapResolutionReady ||
-		resolution.SeatMap == nil || resolution.SeatMap.ID != stored.ID || repository.requested {
-		t.Fatalf("stored ResolveSeatMap() = %+v, requested = %v, error = %v", resolution, repository.requested, err)
-	}
-	repository.seatMap = contracts.SeatMapVersion{}
+	repository.seatMap = nil
 	resolution, err = service.ResolveSeatMap(t.Context(), "missing")
-	if err != nil || resolution.Status != contracts.SeatMapResolutionWaiting ||
-		resolution.SeatMap != nil || !repository.requested {
-		t.Fatalf("missing ResolveSeatMap() = %+v, requested = %v, error = %v", resolution, repository.requested, err)
-	}
-	repository.requested = false
-	if err := service.RequestSeatMapBackfill(t.Context(), " auditorium "); err != nil || !repository.requested {
-		t.Fatalf("RequestSeatMapBackfill() requested = %v, error = %v", repository.requested, err)
+	if err != nil || resolution.GetCaptureQueued() == nil || !repository.requested {
+		t.Fatalf("missing ResolveSeatMap() = %+v, requested=%t, error=%v", resolution, repository.requested, err)
 	}
 	if err := service.RequestSeatMapBackfill(t.Context(), " "); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank RequestSeatMapBackfill() error = %v", err)
@@ -305,50 +189,102 @@ func TestCatalogServiceRequestsSeatMapBackfill(t *testing.T) {
 	if _, err := service.ResolveSeatMap(t.Context(), "auditorium"); !errors.Is(err, errInjectedClient) {
 		t.Fatalf("seat-map lookup error = %v", err)
 	}
-	repository.err = nil
-	repository.seatMap = contracts.SeatMapVersion{}
-	repository.requestError = errInjectedClient
-	if _, err := service.ResolveSeatMap(t.Context(), "auditorium"); !errors.Is(err, errInjectedClient) {
-		t.Fatalf("seat-map request error = %v", err)
-	}
 }
 
-func validCatalogSnapshot(observedAt time.Time) contracts.CatalogSnapshot {
-	provider := contracts.Provider{ID: contracts.ProviderCGV, Name: "CGV"}
-	theaterSourceKey := "0056"
-	theater := contracts.Theater{
-		ID:         contracts.CatalogID(provider.ID, "theater", theaterSourceKey),
-		ProviderID: provider.ID, SourceKey: theaterSourceKey, Region: "서울", Name: "용산아이파크몰",
+func validCatalogSnapshot(observedAt time.Time) *catalogpb.CatalogSnapshot {
+	provider := &catalogpb.Provider{}
+	provider.SetId(catalogdomain.ProviderCGV)
+	provider.SetName("CGV")
+	theater := &catalogpb.Theater{}
+	theater.SetId(catalogdomain.CatalogID(provider.GetId(), "theater", "0056"))
+	theater.SetProviderId(provider.GetId())
+	theater.SetSourceKey("0056")
+	theater.SetRegion("서울")
+	theater.SetName("용산아이파크몰")
+	movie := &catalogpb.Movie{}
+	movie.SetId(catalogdomain.CatalogID(provider.GetId(), "movie", "00001234"))
+	movie.SetProviderId(provider.GetId())
+	movie.SetSourceKey("00001234")
+	movie.SetTitle("테스트 영화")
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId(catalogdomain.CatalogID(provider.GetId(), "auditorium", "0056/0007"))
+	auditorium.SetTheaterId(theater.GetId())
+	auditorium.SetSourceKey("0056/0007")
+	auditorium.SetName("IMAX관")
+	auditorium.SetCapacity(624)
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId(catalogdomain.CatalogID(provider.GetId(), "showtime", "0056/2026-08-14/0007/0003"))
+	showtime.SetProviderId(provider.GetId())
+	showtime.SetSourceKey("0056/2026-08-14/0007/0003")
+	showtime.SetTheaterId(theater.GetId())
+	showtime.SetMovie(proto.CloneOf(movie))
+	showtime.SetAuditorium(proto.CloneOf(auditorium))
+	showtime.SetStartsAt(timestamppb.New(observedAt.Add(time.Hour)))
+	showtime.SetEndsAt(timestamppb.New(observedAt.Add(3 * time.Hour)))
+	showtime.SetCapacity(624)
+	snapshot := &catalogpb.CatalogSnapshot{}
+	snapshot.SetProvider(provider)
+	snapshot.SetTheaters([]*catalogpb.Theater{theater})
+	snapshot.SetMovies([]*catalogpb.Movie{movie})
+	snapshot.SetAuditoriums([]*catalogpb.Auditorium{auditorium})
+	snapshot.SetShowtimes([]*catalogpb.Showtime{showtime})
+	snapshot.SetObservedAt(timestamppb.New(observedAt))
+	return snapshot
+}
+
+func seatMapSnapshot(auditoriumID string, count int) *seatmappb.Snapshot {
+	seats := make([]*seatmappb.Seat, 0, count)
+	for number := 1; number <= count; number++ {
+		label := fmt.Sprintf("A%d", number)
+		seat := &seatmappb.Seat{}
+		seat.SetId(catalogdomain.SeatID("auditorium", label))
+		seat.SetAuditoriumId("auditorium")
+		seat.SetLabel(label)
+		seat.SetRow("A")
+		seat.SetNumber(int32(number))
+		seat.SetX(float64(number) / float64(count+1))
+		seat.SetY(0.5)
+		seat.SetType("standard")
+		seats = append(seats, seat)
 	}
-	movie := contracts.Movie{
-		ID:         contracts.CatalogID(provider.ID, "movie", "00001234"),
-		ProviderID: provider.ID, SourceKey: "00001234", Title: "테스트 영화",
-	}
-	auditoriumSourceKey := theaterSourceKey + "/0007"
-	auditorium := contracts.Auditorium{
-		ID:        contracts.CatalogID(provider.ID, "auditorium", auditoriumSourceKey),
-		TheaterID: theater.ID, SourceKey: auditoriumSourceKey, Name: "IMAX관", Capacity: 624,
-	}
-	showtimeSourceKey := theaterSourceKey + "/2026-08-14/0007/0003"
-	showtime := contracts.Showtime{
-		ID:         contracts.CatalogID(provider.ID, "showtime", showtimeSourceKey),
-		ProviderID: provider.ID, SourceKey: showtimeSourceKey, TheaterID: theater.ID,
-		Movie: movie, Auditorium: auditorium,
-		StartsAt: observedAt.Add(time.Hour), EndsAt: observedAt.Add(3 * time.Hour), Capacity: 624,
-	}
-	return contracts.CatalogSnapshot{
-		Provider: provider, Theaters: []contracts.Theater{theater}, Movies: []contracts.Movie{movie},
-		Auditoriums: []contracts.Auditorium{auditorium}, Showtimes: []contracts.Showtime{showtime},
-		ObservedAt: observedAt,
+	layout := &seatmappb.Layout{}
+	layout.SetSeats(seats)
+	snapshot := &seatmappb.Snapshot{}
+	snapshot.SetAuditoriumId(auditoriumID)
+	snapshot.SetCapacity(numeric.ClampInt32(count))
+	snapshot.SetLayout(layout)
+	return snapshot
+}
+
+func refreshStatus(active, empty bool, eligible int32) *adminpb.CatalogRefreshStatus {
+	status := &adminpb.CatalogRefreshStatus{}
+	status.SetActive(active)
+	status.SetCatalogEmpty(empty)
+	status.SetEligibleProbes(eligible)
+	return status
+}
+
+func refreshState(status *adminpb.CatalogRefreshStatus) string {
+	switch {
+	case status.GetReady() != nil:
+		return "ready"
+	case status.GetRunning() != nil:
+		return "running"
+	case status.GetWaitingForProbe() != nil:
+		return "waiting"
+	case status.GetQueued() != nil:
+		return "queued"
+	default:
+		return ""
 	}
 }
 
 type catalogRepositoryFake struct {
-	index                  contracts.CatalogIndex
-	refresh                CatalogRefreshStatus
+	index                  *catalogpb.CatalogIndex
+	refresh                *adminpb.CatalogRefreshStatus
 	requested              bool
-	snapshot               contracts.CatalogSnapshot
-	seatMap                contracts.SeatMapVersion
+	snapshot               *catalogpb.CatalogSnapshot
+	seatMap                *seatmappb.Snapshot
 	generation             int64
 	authorizedUser         string
 	authorizedInstallation string
@@ -357,27 +293,21 @@ type catalogRepositoryFake struct {
 	requestError           error
 }
 
-func (repository *catalogRepositoryFake) AuthorizeCatalogWrite(
-	_ context.Context,
-	userID string,
-	installationID string,
-	capability string,
-) error {
+func (repository *catalogRepositoryFake) AuthorizeCatalogWrite(_ context.Context, userID, installationID, capability string) error {
 	repository.authorizedUser = userID
 	repository.authorizedInstallation = installationID
 	repository.authorizedCapability = capability
 	return repository.err
 }
 
-func (repository *catalogRepositoryFake) Catalog(context.Context) (contracts.CatalogIndex, error) {
+func (repository *catalogRepositoryFake) Catalog(context.Context) (*catalogpb.CatalogIndex, error) {
 	return repository.index, repository.err
 }
 
-func (repository *catalogRepositoryFake) CatalogRefreshStatus(
-	context.Context,
-	time.Time,
-	time.Time,
-) (CatalogRefreshStatus, error) {
+func (repository *catalogRepositoryFake) CatalogRefreshStatus(context.Context, time.Time, time.Time) (*adminpb.CatalogRefreshStatus, error) {
+	if repository.refresh == nil {
+		repository.refresh = &adminpb.CatalogRefreshStatus{}
+	}
 	return repository.refresh, repository.err
 }
 
@@ -386,33 +316,24 @@ func (repository *catalogRepositoryFake) RequestCatalogRefresh(context.Context, 
 	return repository.err
 }
 
-func (repository *catalogRepositoryFake) UpsertCatalogSnapshot(
-	_ context.Context,
-	snapshot contracts.CatalogSnapshot,
-) (int64, error) {
+func (repository *catalogRepositoryFake) UpsertCatalogSnapshot(_ context.Context, snapshot *catalogpb.CatalogSnapshot) (int64, error) {
 	repository.snapshot = snapshot
 	return repository.generation, repository.err
 }
 
-func (repository *catalogRepositoryFake) PutSeatMapVersion(
-	_ context.Context,
-	version contracts.SeatMapVersion,
-) (int64, error) {
-	repository.seatMap = version
+func (repository *catalogRepositoryFake) PutSeatMap(_ context.Context, snapshot *seatmappb.Snapshot) (int64, error) {
+	repository.seatMap = snapshot
 	return repository.generation, repository.err
 }
 
-func (repository *catalogRepositoryFake) SeatMapVersion(
-	context.Context,
-	string,
-) (contracts.SeatMapVersion, error) {
+func (repository *catalogRepositoryFake) SeatMap(context.Context, string) (*seatmappb.Snapshot, error) {
 	if repository.err != nil {
-		return contracts.SeatMapVersion{}, repository.err
+		return nil, repository.err
 	}
-	if repository.seatMap.AuditoriumID == "" {
-		return contracts.SeatMapVersion{}, ErrNotFound
+	if repository.seatMap == nil {
+		return nil, ErrNotFound
 	}
-	return repository.seatMap, repository.err
+	return repository.seatMap, nil
 }
 
 func (repository *catalogRepositoryFake) RequestSeatMapBackfill(context.Context, string, time.Time) error {

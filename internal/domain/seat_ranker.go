@@ -5,6 +5,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 type SeatGroup struct {
@@ -18,7 +20,7 @@ func (SeatRanker) Rank(
 	seatMap SeatMap,
 	liveSeats []LiveSeat,
 	count int,
-	preference SeatPreference,
+	preference *clientpb.SeatPreference,
 ) ([]SeatGroup, error) {
 	if count < 1 {
 		return nil, errors.New("seat count must be positive")
@@ -37,7 +39,7 @@ func (SeatRanker) Rank(
 	var groups []SeatGroup
 	for _, row := range rows {
 		sort.Slice(row, func(i, j int) bool { return row[i].Number < row[j].Number })
-		if !preference.Together {
+		if !preference.GetTogether() {
 			for _, seat := range row {
 				groups = append(groups, SeatGroup{Seats: []Seat{seat}, Score: scoreSeat(seat, preference)})
 			}
@@ -55,7 +57,7 @@ func (SeatRanker) Rank(
 		}
 	}
 
-	if !preference.Together && count > 1 {
+	if !preference.GetTogether() && count > 1 {
 		sort.Slice(groups, func(i, j int) bool { return groups[i].Score > groups[j].Score })
 		if len(groups) < count {
 			return nil, errors.New("not enough available seats")
@@ -88,7 +90,7 @@ func consecutive(seats []Seat) bool {
 	return true
 }
 
-func scoreGroup(seats []Seat, preference SeatPreference) float64 {
+func scoreGroup(seats []Seat, preference *clientpb.SeatPreference) float64 {
 	score := 0.0
 	for _, seat := range seats {
 		score += scoreSeat(seat, preference)
@@ -96,24 +98,24 @@ func scoreGroup(seats []Seat, preference SeatPreference) float64 {
 	return score / float64(len(seats))
 }
 
-func scoreSeat(seat Seat, preference SeatPreference) float64 {
+func scoreSeat(seat Seat, preference *clientpb.SeatPreference) float64 {
 	score := 100.0
-	if explicitRank := slices.Index(preference.ExplicitSeats, seat.Label); explicitRank >= 0 {
+	if explicitRank := slices.Index(preference.GetExplicitSeats(), seat.Label); explicitRank >= 0 {
 		score += 10_000 - float64(explicitRank*100)
 	}
-	if rowRank := slices.Index(preference.PreferredRows, seat.Row); rowRank >= 0 {
+	if rowRank := slices.Index(preference.GetPreferredRows(), seat.Row); rowRank >= 0 {
 		score += 2_000 - float64(rowRank*100)
 	}
-	for _, zone := range preference.PreferredZones {
-		if zone.Contains(seat.X, seat.Y) {
-			score += float64(zone.Weight) * 10
+	for _, zone := range preference.GetPreferredZones() {
+		if seatZoneContains(zone, seat.X, seat.Y) {
+			score += float64(zone.GetWeight()) * 10
 		}
 	}
-	if typeRank := slices.Index(preference.PreferredTypes, seat.Type); typeRank >= 0 {
+	if typeRank := slices.Index(preference.GetPreferredTypes(), string(seat.Type)); typeRank >= 0 {
 		score += 500 - float64(typeRank*25)
 	}
 	score -= math.Hypot(seat.X-0.5, seat.Y-0.55) * 100
-	if preference.AvoidEdges && (seat.X < 0.08 || seat.X > 0.92) {
+	if preference.GetAvoidEdges() && (seat.X < 0.08 || seat.X > 0.92) {
 		score -= 500
 	}
 	return score

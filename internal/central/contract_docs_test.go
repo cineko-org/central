@@ -18,7 +18,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	document := contractReadFile(t, filepath.Join(root, "docs/api-contract.md"))
 
 	staticRoute := regexp.MustCompile(`mux\.Handle(?:Func)?\("([A-Z]+ /[^"]*)"`)
-	static := make([]string, 0, 58)
+	static := make([]string, 0, 56)
 	for _, line := range strings.Split(source, "\n") {
 		if strings.Contains(line, "+resource") {
 			continue
@@ -28,7 +28,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 			static = append(static, match[1])
 		}
 	}
-	if len(static) != 58 {
+	if len(static) != 56 {
 		t.Fatalf("literal HTTP service points = %d, update contract inventory", len(static))
 	}
 	for _, route := range static {
@@ -53,8 +53,8 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 			t.Errorf("HTTP contract does not document family %s", family)
 		}
 	}
-	if concrete := len(static) + len(resources)*len(families); concrete != 83 ||
-		!strings.Contains(document, "83 concrete method/path") {
+	if concrete := len(static) + len(resources)*len(families); concrete != 81 ||
+		!strings.Contains(document, "81 concrete method/path") {
 		t.Fatalf("expanded HTTP service points = %d, update contract inventory", concrete)
 	}
 	methodCounts := map[string]int{}
@@ -64,7 +64,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	for _, family := range families {
 		methodCounts[strings.SplitN(family, " ", 2)[0]] += len(resources)
 	}
-	wantMethodCounts := map[string]int{"GET": 35, "POST": 26, "PUT": 14, "DELETE": 8}
+	wantMethodCounts := map[string]int{"GET": 34, "POST": 26, "PUT": 13, "DELETE": 8}
 	for method, want := range wantMethodCounts {
 		if methodCounts[method] != want {
 			t.Errorf("%s service points = %d, want %d", method, methodCounts[method], want)
@@ -97,9 +97,9 @@ func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 
 	currentSchema := map[string][]string{
 		"cineko_schema_migrations":         {"version", "applied_at"},
-		"probe_runtimes":                   {"id", "installation_id", "kind", "network_id", "network_hint", "capabilities", "max_concurrency", "runtime_version", "protocol", "browser_revision", "platform", "architecture", "token_hash", "token_expires_at", "status", "draining", "available_slots", "health", "reason_code", "last_heartbeat_at", "created_at", "updated_at", "owner_user_id", "device_id", "available_capabilities"},
+		"probe_runtimes":                   {"id", "installation_id", "kind", "network_id", "network_hint", "capabilities", "max_concurrency", "runtime_version", "browser_revision", "platform", "architecture", "token_hash", "token_expires_at", "status", "draining", "available_slots", "health", "reason_code", "last_heartbeat_at", "created_at", "updated_at", "owner_user_id", "device_id", "available_capabilities"},
 		"observation_policies":             {"id", "enabled", "revision", "task_kind", "theater_id", "theater_region", "theater_name", "target_date_mode", "target_dates", "horizon_days", "locale", "time_zone", "egress_policy_id", "priority", "min_interval_seconds", "max_interval_seconds", "execution_window_seconds", "next_run_at", "last_finished_at", "last_outcome", "last_error_code", "created_at", "updated_at", "deleted_at", "display_name", "demand_min_interval_seconds", "demand_max_interval_seconds", "burst_min_interval_seconds", "burst_max_interval_seconds", "burst_duration_seconds", "burst_until", "theater_provider_id", "theater_source_key"},
-		"observation_assignments":          {"id", "task_kind", "theater_id", "theater_region", "theater_name", "target_dates", "locale", "time_zone", "egress_policy_id", "status", "not_before", "deadline", "probe_id", "lease_token_hash", "lease_expires_at", "run_id", "result_hash", "result_payload", "started_at", "finished_at", "created_at", "updated_at", "policy_id", "priority", "terminal_reason", "completed_by_probe_id", "theater_provider_id", "theater_source_key", "task_data"},
+		"observation_assignments":          {"id", "task_kind", "theater_id", "theater_region", "theater_name", "target_dates", "locale", "time_zone", "egress_policy_id", "status", "not_before", "deadline", "probe_id", "lease_token_hash", "lease_expires_at", "run_id", "result_hash", "result_payload", "started_at", "finished_at", "created_at", "updated_at", "policy_id", "priority", "terminal_reason", "completed_by_probe_id", "theater_provider_id", "theater_source_key", "task_data", "lane", "hot_target_fingerprint"},
 		"assignment_attempts":              {"assignment_id", "probe_id", "attempt", "started_at", "finished_at", "status", "error_code", "lease_token_hash", "network_id", "run_id", "result_hash", "result_payload"},
 		"assignment_eligible_probes":       {"assignment_id", "probe_id", "network_id", "eligible_at"},
 		"observation_payloads":             {"content_hash", "payload", "created_at"},
@@ -114,7 +114,7 @@ func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 		"client_commands":                  {"user_id", "command_id", "operation", "resource_kind", "resource_id", "result_revision", "created_at"},
 		"client_events":                    {"sequence", "id", "user_id", "event_type", "resource_kind", "resource_id", "resource_revision", "payload", "occurred_at"},
 		"client_event_cursors":             {"user_id", "pruned_through", "updated_at"},
-		"client_launch_tickets":            {"id", "user_id", "installation_id", "device_id", "client_version", "artifact_sha256", "protocol", "browser_revision", "launcher_nonce", "client_nonce", "token_hash", "expires_at", "consumed_at", "created_at", "release_generation", "browser_artifact_sha256", "playwright_version", "playwright_artifact_sha256"},
+		"client_launch_tickets":            {"id", "user_id", "installation_id", "device_id", "client_version", "artifact_sha256", "browser_revision", "launcher_nonce", "client_nonce", "token_hash", "expires_at", "consumed_at", "created_at", "release_generation", "browser_artifact_sha256", "playwright_version", "playwright_artifact_sha256"},
 		"client_execution_commands":        {"id", "user_id", "monitor_id", "showtime_id", "starts_at", "payload", "status", "leased_installation_id", "last_installation_id", "lease_token_hash", "lease_expires_at", "attempt_count", "reason_code", "completed_at", "created_at", "updated_at"},
 		"client_pins":                      {"user_id", "pin_digest", "revoked_at", "created_at", "updated_at"},
 		"client_pin_attempts":              {"scope_hash", "failure_count", "blocked_until", "updated_at"},
@@ -127,8 +127,8 @@ func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 		"auditoriums":                      {"id", "theater_id", "source_key", "name", "screen_types", "capacity", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at", "current_seat_map_version_id", "seat_map_requested_at"},
 		"showtimes":                        {"id", "provider_id", "source_key", "theater_id", "movie_id", "auditorium_id", "starts_at", "ends_at", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
 		"seat_map_versions":                {"id", "auditorium_id", "layout_hash", "capacity", "layout", "observed_at", "first_seen_at", "last_seen_at"},
-		"release_components":               {"kind", "channel", "platform", "architecture", "version", "schema_version", "payload", "published_at", "created_at"},
-		"desktop_release_registry_state":   {"singleton", "generation", "active_manifest_sha256", "resolver_version", "updated_at"},
+		"release_components":               {"kind", "channel", "platform", "architecture", "version", "payload", "published_at", "created_at"},
+		"desktop_release_registry_state":   {"singleton", "generation", "active_manifest_sha256", "updated_at"},
 	}
 	if len(currentSchema) != 33 {
 		t.Fatalf("current schema tables = %d, want 33", len(currentSchema))

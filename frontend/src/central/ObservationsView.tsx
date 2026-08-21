@@ -1,19 +1,31 @@
+import { create } from '@bufbuild/protobuf';
 import { useCallback, useState } from 'react';
-import { CentralAPIError, loadJSON, request } from './api';
-import type { AdminObservationPolicy, CatalogIndex, CatalogRefreshStatus, ObservationPolicyInput } from './types';
+import {
+  CreateObservationPolicyResponseSchema,
+  GetCatalogRefreshStatusResponseSchema,
+  ListObservationPoliciesResponseSchema,
+  ObservationPolicyInputSchema,
+  RequestCatalogRefreshResponseSchema,
+  UpdateObservationPolicyResponseSchema,
+  type CatalogRefreshStatus,
+  type ObservationPolicy,
+  type ObservationPolicyInput,
+} from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { CatalogSnapshotSchema, type CatalogSnapshot } from '@cineko/contracts/gen/ts/cineko/catalog/catalog_pb';
+import { CentralAPIError, loadProto, protoBody, request } from './api';
 import { ObservationsPageView } from './ui/ObservationsPageView';
 import { useInitialRefresh } from './useInitialRefresh';
 
-const emptyPolicy: ObservationPolicyInput = {
+const emptyPolicy = (): ObservationPolicyInput => create(ObservationPolicyInputSchema, {
   theaterId: '', enabled: true, horizonDays: 14,
-};
+});
 
 export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [policies, setPolicies] = useState<AdminObservationPolicy[]>();
-  const [catalog, setCatalog] = useState<CatalogIndex>();
+  const [policies, setPolicies] = useState<ObservationPolicy[]>();
+  const [catalog, setCatalog] = useState<CatalogSnapshot>();
   const [catalogRefresh, setCatalogRefresh] = useState<CatalogRefreshStatus>();
-  const [editing, setEditing] = useState<AdminObservationPolicy>();
-  const [draft, setDraft] = useState<ObservationPolicyInput>(emptyPolicy);
+  const [editing, setEditing] = useState<ObservationPolicy>();
+  const [draft, setDraft] = useState<ObservationPolicyInput>(emptyPolicy());
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [requestingCatalog, setRequestingCatalog] = useState(false);
@@ -25,13 +37,13 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
     setFailed(false);
     try {
       const [policyResponse, catalogResponse, catalogRefreshResponse] = await Promise.all([
-        loadJSON<{ data: AdminObservationPolicy[] }>('/v1/admin/observation-policies'),
-        loadJSON<CatalogIndex>('/v1/admin/catalog'),
-        loadJSON<CatalogRefreshStatus>('/v1/admin/catalog-refresh'),
+        loadProto(ListObservationPoliciesResponseSchema, '/v1/admin/observation-policies'),
+        loadProto(CatalogSnapshotSchema, '/v1/admin/catalog'),
+        loadProto(GetCatalogRefreshStatusResponseSchema, '/v1/admin/catalog-refresh'),
       ]);
-      setPolicies(policyResponse.data);
+      setPolicies(policyResponse.policies);
       setCatalog(catalogResponse);
-      setCatalogRefresh(catalogRefreshResponse);
+      setCatalogRefresh(catalogRefreshResponse.status);
     } catch (error) {
       handleError(error);
     }
@@ -41,7 +53,7 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
     setRequestingCatalog(true);
     setFailed(false);
     try {
-      await loadJSON<CatalogRefreshStatus>('/v1/admin/catalog-refresh', { method: 'POST' });
+      await loadProto(RequestCatalogRefreshResponseSchema, '/v1/admin/catalog-refresh', { method: 'POST' });
       await refresh();
     } catch (error) {
       handleError(error);
@@ -57,13 +69,15 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
     setFailed(false);
     try {
       const path = editing ? `/v1/admin/observation-policies/${encodeURIComponent(editing.id)}` : '/v1/admin/observation-policies';
-      await loadJSON<AdminObservationPolicy>(path, {
+      const init: RequestInit = {
         method: editing ? 'PUT' : 'POST',
-        headers: editing ? { 'If-Match': `"${editing.revision}"` } : { 'If-None-Match': '*' },
-        body: JSON.stringify(draft),
-      });
+        headers: editing ? new Headers({ 'If-Match': `"${editing.revision}"` }) : new Headers({ 'If-None-Match': '*' }),
+        body: protoBody(ObservationPolicyInputSchema, draft),
+      };
+      if (editing) await loadProto(UpdateObservationPolicyResponseSchema, path, init);
+      else await loadProto(CreateObservationPolicyResponseSchema, path, init);
       setEditing(undefined);
-      setDraft(emptyPolicy);
+      setDraft(emptyPolicy());
       await refresh();
     } catch (error) {
       handleError(error);
@@ -72,7 +86,7 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
     }
   }, [draft, editing, handleError, refresh]);
 
-  const remove = useCallback(async (policy: AdminObservationPolicy) => {
+  const remove = useCallback(async (policy: ObservationPolicy) => {
     setSaving(true);
     setFailed(false);
     try {
@@ -80,7 +94,7 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
         method: 'DELETE', headers: { 'If-Match': `"${policy.revision}"` },
       });
       setEditing(undefined);
-      setDraft(emptyPolicy);
+      setDraft(emptyPolicy());
       await refresh();
     } catch (error) {
       handleError(error);
@@ -95,8 +109,10 @@ export function ObservationsView({ onUnauthorized }: { onUnauthorized: () => voi
     failed={failed} saving={saving} requestingCatalog={requestingCatalog}
     onDraftChange={setDraft} onSave={() => { if (!saving) void save(); }} onRefresh={() => void refresh()}
     onRequestCatalogRefresh={() => void requestCatalogRefresh()}
-    onEdit={(policy) => { setEditing(policy); setDraft({ theaterId: policy.theater.id, enabled: policy.enabled, horizonDays: policy.horizonDays }); }}
-    onCancel={() => { setEditing(undefined); setDraft(emptyPolicy); }}
+    onEdit={(policy) => { setEditing(policy); setDraft(create(ObservationPolicyInputSchema, {
+      theaterId: policy.theater?.id ?? '', enabled: policy.input?.enabled ?? true, horizonDays: policy.input?.horizonDays ?? 14,
+    })); }}
+    onCancel={() => { setEditing(undefined); setDraft(emptyPolicy()); }}
     onDelete={(policy) => { if (!saving) void remove(policy); }}
   />;
 }

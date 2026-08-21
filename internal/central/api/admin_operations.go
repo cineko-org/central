@@ -9,62 +9,10 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
+	"github.com/cineko-org/central/internal/support/numeric"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-type AdminProbe struct {
-	ID              string     `json:"id"`
-	Kind            string     `json:"kind"`
-	OwnerUserID     string     `json:"ownerUserId,omitempty"`
-	NetworkID       string     `json:"networkId"`
-	RuntimeVersion  string     `json:"runtimeVersion"`
-	BrowserRevision string     `json:"browserRevision"`
-	Platform        string     `json:"platform"`
-	Arch            string     `json:"arch"`
-	Status          string     `json:"status"`
-	Draining        bool       `json:"draining"`
-	AvailableSlots  int        `json:"availableSlots"`
-	MaxConcurrency  int        `json:"maxConcurrency"`
-	Health          string     `json:"health"`
-	ReasonCode      string     `json:"reasonCode,omitempty"`
-	LastHeartbeatAt *time.Time `json:"lastHeartbeatAt,omitempty"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
-}
-
-type AdminDataSummary struct {
-	Providers                 int64      `json:"providers"`
-	Theaters                  int64      `json:"theaters"`
-	Auditoriums               int64      `json:"auditoriums"`
-	Movies                    int64      `json:"movies"`
-	Showtimes                 int64      `json:"showtimes"`
-	SeatMapVersions           int64      `json:"seatMapVersions"`
-	ScheduleCaptures          int64      `json:"scheduleCaptures"`
-	ShowtimeObservations      int64      `json:"showtimeObservations"`
-	ObservationPolicies       int64      `json:"observationPolicies"`
-	ActiveObservationPolicies int64      `json:"activeObservationPolicies"`
-	QueuedAssignments         int64      `json:"queuedAssignments"`
-	LeasedAssignments         int64      `json:"leasedAssignments"`
-	CompletedAssignments      int64      `json:"completedAssignments"`
-	FailedAssignments         int64      `json:"failedAssignments"`
-	LatestScheduleObservedAt  *time.Time `json:"latestScheduleObservedAt,omitempty"`
-}
-
-type AdminObservationPolicyInput struct {
-	TheaterID            string `json:"theaterId"`
-	Enabled              bool   `json:"enabled"`
-	HorizonDays          int    `json:"horizonDays"`
-	Priority             int    `json:"priority"`
-	BaselineMinSeconds   int    `json:"baselineMinSeconds"`
-	BaselineMaxSeconds   int    `json:"baselineMaxSeconds"`
-	DemandMinSeconds     int    `json:"demandMinSeconds"`
-	DemandMaxSeconds     int    `json:"demandMaxSeconds"`
-	BurstMinSeconds      int    `json:"burstMinSeconds"`
-	BurstMaxSeconds      int    `json:"burstMaxSeconds"`
-	BurstDurationSeconds int    `json:"burstDurationSeconds"`
-	Locale               string `json:"locale"`
-	TimeZone             string `json:"timeZone"`
-	EgressPolicyID       string `json:"egressPolicyId"`
-}
 
 const (
 	observationPolicyPriority           = 50
@@ -78,32 +26,13 @@ const (
 	observationPolicyMaximumHorizonDays = 14
 )
 
-type AdminObservationPolicy struct {
-	ID       string          `json:"id"`
-	Revision int64           `json:"revision"`
-	Theater  central.Theater `json:"theater"`
-	AdminObservationPolicyInput
-	EffectiveMode       string     `json:"effectiveMode"`
-	EffectivePriority   int        `json:"effectivePriority"`
-	EffectiveMinSeconds int        `json:"effectiveMinSeconds"`
-	EffectiveMaxSeconds int        `json:"effectiveMaxSeconds"`
-	DemandActive        bool       `json:"demandActive"`
-	BurstUntil          *time.Time `json:"burstUntil,omitempty"`
-	NextRunAt           *time.Time `json:"nextRunAt,omitempty"`
-	LastFinishedAt      *time.Time `json:"lastFinishedAt,omitempty"`
-	LastOutcome         string     `json:"lastOutcome,omitempty"`
-	LastErrorCode       string     `json:"lastErrorCode,omitempty"`
-	CreatedAt           time.Time  `json:"createdAt"`
-	UpdatedAt           time.Time  `json:"updatedAt"`
-}
-
 type adminOperations interface {
-	ListAdminProbes(context.Context) ([]AdminProbe, error)
+	ListAdminProbes(context.Context) ([]*adminpb.Probe, error)
 	DeleteAdminProbe(context.Context, string) error
-	AdminDataSummary(context.Context) (AdminDataSummary, error)
-	ListAdminObservationPolicies(context.Context) ([]AdminObservationPolicy, error)
-	CreateAdminObservationPolicy(context.Context, AdminObservationPolicyInput) (AdminObservationPolicy, error)
-	UpdateAdminObservationPolicy(context.Context, string, int64, AdminObservationPolicyInput) (AdminObservationPolicy, error)
+	AdminDataSummary(context.Context) (*adminpb.DataSummary, error)
+	ListAdminObservationPolicies(context.Context) ([]*adminpb.ObservationPolicy, error)
+	CreateAdminObservationPolicy(context.Context, *adminpb.ObservationPolicyInput) (*adminpb.ObservationPolicy, error)
+	UpdateAdminObservationPolicy(context.Context, string, int64, *adminpb.ObservationPolicyInput) (*adminpb.ObservationPolicy, error)
 	DeleteAdminObservationPolicy(context.Context, string, int64) error
 	AdminObservationIntelligence(context.Context, *time.Location) (domain.ScheduleIntelligence, error)
 }
@@ -113,19 +42,17 @@ func WithAdminOperations(operations adminOperations) Option {
 }
 
 func (server *Server) adminProbes(writer http.ResponseWriter, request *http.Request) {
-	if _, ok := server.authenticatedAdmin(writer, request); !ok {
+	if !server.requireAdminOperations(writer, request) {
 		return
 	}
-	if server.adminOperations == nil {
-		server.writeAPIError(writer, request, http.StatusServiceUnavailable, "admin_operations_unavailable", "admin operations are unavailable", true)
-		return
-	}
-	probes, err := server.adminOperations.ListAdminProbes(request.Context())
-	if err != nil {
-		server.writeAPIError(writer, request, http.StatusInternalServerError, "admin_probes_failed", "load probes failed", true)
-		return
-	}
-	server.writeJSON(writer, http.StatusOK, map[string]any{"data": probes})
+	writeAdminProtoCall(server, writer, request, "admin_probes_failed", "load probes failed", server.loadAdminProbes)
+}
+
+func (server *Server) loadAdminProbes(ctx context.Context) (*adminpb.ListProbesResponse, error) {
+	probes, err := server.adminOperations.ListAdminProbes(ctx)
+	response := &adminpb.ListProbesResponse{}
+	response.SetProbes(probes)
+	return response, err
 }
 
 func (server *Server) deleteAdminProbe(writer http.ResponseWriter, request *http.Request) {
@@ -145,19 +72,17 @@ func (server *Server) deleteAdminProbe(writer http.ResponseWriter, request *http
 }
 
 func (server *Server) adminData(writer http.ResponseWriter, request *http.Request) {
-	if _, ok := server.authenticatedAdmin(writer, request); !ok {
+	if !server.requireAdminOperations(writer, request) {
 		return
 	}
-	if server.adminOperations == nil {
-		server.writeAPIError(writer, request, http.StatusServiceUnavailable, "admin_operations_unavailable", "admin operations are unavailable", true)
-		return
-	}
-	summary, err := server.adminOperations.AdminDataSummary(request.Context())
-	if err != nil {
-		server.writeAPIError(writer, request, http.StatusInternalServerError, "admin_data_failed", "load data summary failed", true)
-		return
-	}
-	server.writeJSON(writer, http.StatusOK, summary)
+	writeAdminProtoCall(server, writer, request, "admin_data_failed", "load data summary failed", server.loadAdminData)
+}
+
+func (server *Server) loadAdminData(ctx context.Context) (*adminpb.GetDataSummaryResponse, error) {
+	summary, err := server.adminOperations.AdminDataSummary(ctx)
+	response := &adminpb.GetDataSummaryResponse{}
+	response.SetSummary(summary)
+	return response, err
 }
 
 func (server *Server) listAdminObservationPolicies(writer http.ResponseWriter, request *http.Request) {
@@ -169,16 +94,18 @@ func (server *Server) listAdminObservationPolicies(writer http.ResponseWriter, r
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, map[string]any{"data": policies})
+	response := &adminpb.ListObservationPoliciesResponse{}
+	response.SetPolicies(policies)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) createAdminObservationPolicy(writer http.ResponseWriter, request *http.Request) {
 	if !server.sameOriginAdminRequest(writer, request) || !server.requireAdminOperations(writer, request) {
 		return
 	}
-	if expected, valid := expectedRevision(writer, request); !valid || expected != nil {
+	if expected, valid := server.expectedRevision(writer, request); !valid || expected != nil {
 		if valid {
-			writeInvalidRevision(writer, "policy creation requires If-None-Match: *")
+			server.writeInvalidRevision(writer, request, "policy creation requires If-None-Match: *")
 		}
 		return
 	}
@@ -191,17 +118,19 @@ func (server *Server) createAdminObservationPolicy(writer http.ResponseWriter, r
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusCreated, policy)
+	response := &adminpb.CreateObservationPolicyResponse{}
+	response.SetPolicy(policy)
+	server.writeProtoJSON(writer, http.StatusCreated, response)
 }
 
 func (server *Server) updateAdminObservationPolicy(writer http.ResponseWriter, request *http.Request) {
 	if !server.sameOriginAdminRequest(writer, request) || !server.requireAdminOperations(writer, request) {
 		return
 	}
-	revision, valid := expectedRevision(writer, request)
+	revision, valid := server.expectedRevision(writer, request)
 	if !valid || revision == nil {
 		if valid {
-			writeInvalidRevision(writer, "policy update requires If-Match")
+			server.writeInvalidRevision(writer, request, "policy update requires If-Match")
 		}
 		return
 	}
@@ -216,17 +145,19 @@ func (server *Server) updateAdminObservationPolicy(writer http.ResponseWriter, r
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, policy)
+	response := &adminpb.UpdateObservationPolicyResponse{}
+	response.SetPolicy(policy)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) deleteAdminObservationPolicy(writer http.ResponseWriter, request *http.Request) {
 	if !server.sameOriginAdminRequest(writer, request) || !server.requireAdminOperations(writer, request) {
 		return
 	}
-	revision, valid := expectedRevision(writer, request)
+	revision, valid := server.expectedRevision(writer, request)
 	if !valid || revision == nil {
 		if valid {
-			writeInvalidRevision(writer, "policy deletion requires If-Match")
+			server.writeInvalidRevision(writer, request, "policy deletion requires If-Match")
 		}
 		return
 	}
@@ -250,7 +181,9 @@ func (server *Server) adminObservationIntelligence(writer http.ResponseWriter, r
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, value)
+	response := &adminpb.GetObservationIntelligenceResponse{}
+	response.SetIntelligence(observationIntelligenceProto(value))
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) requireAdminOperations(writer http.ResponseWriter, request *http.Request) bool {
@@ -267,43 +200,43 @@ func (server *Server) requireAdminOperations(writer http.ResponseWriter, request
 func (server *Server) decodeObservationPolicyInput(
 	writer http.ResponseWriter,
 	request *http.Request,
-) (AdminObservationPolicyInput, bool) {
-	var input AdminObservationPolicyInput
-	if !server.decodeJSON(writer, request, &input) {
-		return AdminObservationPolicyInput{}, false
+) (*adminpb.ObservationPolicyInput, bool) {
+	input := &adminpb.ObservationPolicyInput{}
+	if !server.decodeProtoJSON(writer, request, input) {
+		return nil, false
 	}
 	normalized, err := normalizeObservationPolicyInput(input)
 	if err != nil {
 		server.writeError(writer, request, err)
-		return AdminObservationPolicyInput{}, false
+		return nil, false
 	}
 	return normalized, true
 }
 
-func normalizeObservationPolicyInput(input AdminObservationPolicyInput) (AdminObservationPolicyInput, error) {
-	input.TheaterID = strings.TrimSpace(input.TheaterID)
-	input.Priority = observationPolicyPriority
-	input.BaselineMinSeconds = observationBaselineMinSeconds
-	input.BaselineMaxSeconds = observationBaselineMaxSeconds
-	input.DemandMinSeconds = observationDemandStoredMinSeconds
-	input.DemandMaxSeconds = observationDemandStoredMaxSeconds
-	input.BurstMinSeconds = observationBurstStoredMinSeconds
-	input.BurstMaxSeconds = observationBurstStoredMaxSeconds
-	input.BurstDurationSeconds = observationBurstDurationSeconds
-	input.Locale = "ko-KR"
-	input.TimeZone = "Asia/Seoul"
-	input.EgressPolicyID = string(contracts.EgressPolicyScanDefault)
-	if input.TheaterID == "" {
-		return AdminObservationPolicyInput{}, central.InvalidRequest("theater id is required")
+func normalizeObservationPolicyInput(input *adminpb.ObservationPolicyInput) (*adminpb.ObservationPolicyInput, error) {
+	input.SetTheaterId(strings.TrimSpace(input.GetTheaterId()))
+	input.SetPriority(observationPolicyPriority)
+	input.SetBaselineMinSeconds(observationBaselineMinSeconds)
+	input.SetBaselineMaxSeconds(observationBaselineMaxSeconds)
+	input.SetDemandMinSeconds(observationDemandStoredMinSeconds)
+	input.SetDemandMaxSeconds(observationDemandStoredMaxSeconds)
+	input.SetBurstMinSeconds(observationBurstStoredMinSeconds)
+	input.SetBurstMaxSeconds(observationBurstStoredMaxSeconds)
+	input.SetBurstDurationSeconds(observationBurstDurationSeconds)
+	input.SetLocale("ko-KR")
+	input.SetTimeZone("Asia/Seoul")
+	input.SetEgressPolicyId(string(central.EgressPolicyScanDefault))
+	if input.GetTheaterId() == "" {
+		return nil, central.InvalidRequest("theater id is required")
 	}
 	if err := validateObservationPolicyRanges(input); err != nil {
-		return AdminObservationPolicyInput{}, err
+		return nil, err
 	}
 	return input, nil
 }
 
-func validateObservationPolicyRanges(input AdminObservationPolicyInput) error {
-	if input.HorizonDays < 1 || input.HorizonDays > observationPolicyMaximumHorizonDays {
+func validateObservationPolicyRanges(input *adminpb.ObservationPolicyInput) error {
+	if input.GetHorizonDays() < 1 || input.GetHorizonDays() > observationPolicyMaximumHorizonDays {
 		return central.InvalidRequest(fmt.Sprintf(
 			"observation horizon must be between 1 and %d days", observationPolicyMaximumHorizonDays,
 		))
@@ -313,21 +246,67 @@ func validateObservationPolicyRanges(input AdminObservationPolicyInput) error {
 		maximum int
 		floor   int
 	}{
-		{input.BaselineMinSeconds, input.BaselineMaxSeconds, 30},
-		{input.DemandMinSeconds, input.DemandMaxSeconds, 30},
-		{input.BurstMinSeconds, input.BurstMaxSeconds, 15},
+		{int(input.GetBaselineMinSeconds()), int(input.GetBaselineMaxSeconds()), 30},
+		{int(input.GetDemandMinSeconds()), int(input.GetDemandMaxSeconds()), 30},
+		{int(input.GetBurstMinSeconds()), int(input.GetBurstMaxSeconds()), 15},
 	}
 	for _, interval := range ranges {
 		if interval.minimum < interval.floor || interval.maximum <= interval.minimum {
 			return central.InvalidRequest("observation intervals are invalid")
 		}
 	}
-	if input.BurstDurationSeconds < 300 || input.BurstDurationSeconds > 21600 {
+	if input.GetBurstDurationSeconds() < 300 || input.GetBurstDurationSeconds() > 21600 {
 		return central.InvalidRequest("observation intervals are invalid")
 	}
-	if input.DemandMinSeconds > input.BaselineMinSeconds || input.DemandMaxSeconds > input.BaselineMaxSeconds ||
-		input.BurstMinSeconds > input.DemandMinSeconds || input.BurstMaxSeconds > input.DemandMaxSeconds {
+	if input.GetDemandMinSeconds() > input.GetBaselineMinSeconds() || input.GetDemandMaxSeconds() > input.GetBaselineMaxSeconds() ||
+		input.GetBurstMinSeconds() > input.GetDemandMinSeconds() || input.GetBurstMaxSeconds() > input.GetDemandMaxSeconds() {
 		return central.InvalidRequest("boosted intervals must be no slower than baseline")
 	}
 	return nil
+}
+
+func observationIntelligenceProto(value domain.ScheduleIntelligence) *adminpb.ObservationIntelligence {
+	result := &adminpb.ObservationIntelligence{}
+	result.SetSnapshotCount(numeric.ClampInt32(value.SnapshotCount))
+	result.SetShowtimeObservations(numeric.ClampInt32(value.ShowtimeObservations))
+	if !value.LastObservedAt.IsZero() {
+		result.SetLastObservedAt(timestamppb.New(value.LastObservedAt))
+	}
+	openingPatterns := make([]*adminpb.OpeningPattern, 0, len(value.OpeningPatterns))
+	for _, value := range value.OpeningPatterns {
+		pattern := &adminpb.OpeningPattern{}
+		pattern.SetTheaterId(value.TheaterID)
+		pattern.SetTheaterName(value.TheaterName)
+		pattern.SetAuditoriumId(value.AuditoriumID)
+		pattern.SetAuditoriumName(value.AuditoriumName)
+		pattern.SetMovie(value.Movie)
+		pattern.SetScreenTypes(value.ScreenTypes)
+		pattern.SetSampleSize(numeric.ClampInt32(value.SampleSize))
+		pattern.SetTypicalOpenTime(value.TypicalOpenTime)
+		pattern.SetTypicalLeadHours(numeric.ClampInt32(value.TypicalLeadHours))
+		pattern.SetTypicalPrecisionMinutes(numeric.ClampInt32(value.TypicalPrecisionMins))
+		pattern.SetLastObservedAt(timestamppb.New(value.LastObservedAt))
+		openingPatterns = append(openingPatterns, pattern)
+	}
+	result.SetOpeningPatterns(openingPatterns)
+	demandPatterns := make([]*adminpb.DemandPattern, 0, len(value.DemandPatterns))
+	for _, value := range value.DemandPatterns {
+		pattern := &adminpb.DemandPattern{}
+		pattern.SetTheaterId(value.TheaterID)
+		pattern.SetTheaterName(value.TheaterName)
+		pattern.SetAuditoriumId(value.AuditoriumID)
+		pattern.SetAuditoriumName(value.AuditoriumName)
+		pattern.SetMovie(value.Movie)
+		pattern.SetOccurrenceCount(numeric.ClampInt32(value.OccurrenceCount))
+		pattern.SetFirstHourSampleSize(numeric.ClampInt32(value.FirstHourSampleSize))
+		pattern.SetTypicalFirstHourSellThrough(numeric.ClampInt32(value.TypicalFirstHourSellThrough))
+		pattern.SetHalfSoldSampleSize(numeric.ClampInt32(value.HalfSoldSampleSize))
+		pattern.SetTypicalHalfSoldMinutes(numeric.ClampInt32(value.TypicalHalfSoldMinutes))
+		pattern.SetSoldOutSampleSize(numeric.ClampInt32(value.SoldOutSampleSize))
+		pattern.SetTypicalSoldOutMinutes(numeric.ClampInt32(value.TypicalSoldOutMinutes))
+		pattern.SetLastObservedAt(timestamppb.New(value.LastObservedAt))
+		demandPatterns = append(demandPatterns, pattern)
+	}
+	result.SetDemandPatterns(demandPatterns)
+	return result
 }

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -33,12 +35,6 @@ type AdminAuth struct {
 	verifyPassword func(string, string) (bool, error)
 	dummyHash      string
 	loginLimiter   *adminLoginLimiter
-}
-
-type adminPrincipal struct {
-	UserID      string `json:"userId"`
-	DisplayName string `json:"displayName"`
-	ExpiresAt   int64  `json:"expiresAt"`
 }
 
 func NewAdminAuth(
@@ -102,12 +98,12 @@ func (auth *AdminAuth) Login(
 	source string,
 	userID string,
 	password string,
-) (string, adminPrincipal, error) {
+) (string, *adminpb.Principal, error) {
 	userID = strings.TrimSpace(userID)
 	now := auth.clock().UTC()
 	release, err := auth.loginLimiter.acquire(source, userID, now)
 	if err != nil {
-		return "", adminPrincipal{}, err
+		return "", nil, err
 	}
 	defer release()
 	credential, err := auth.repository.FindAdminCredential(ctx, userID)
@@ -115,60 +111,63 @@ func (auth *AdminAuth) Login(
 		if errors.Is(err, central.ErrUnauthorized) {
 			_, _ = auth.verifyPassword(password, auth.dummyHash)
 			if auth.loginLimiter.recordFailure(source, userID, false, now) {
-				return "", adminPrincipal{}, central.ErrRateLimited
+				return "", nil, central.ErrRateLimited
 			}
-			return "", adminPrincipal{}, central.ErrUnauthorized
+			return "", nil, central.ErrUnauthorized
 		}
-		return "", adminPrincipal{}, err
+		return "", nil, err
 	}
 	verified, err := auth.verifyPassword(password, credential.PasswordHash)
 	if err != nil || !verified {
 		if auth.loginLimiter.recordFailure(source, userID, true, now) {
-			return "", adminPrincipal{}, central.ErrRateLimited
+			return "", nil, central.ErrRateLimited
 		}
-		return "", adminPrincipal{}, central.ErrUnauthorized
+		return "", nil, central.ErrUnauthorized
 	}
 	if credential.UserID == "" {
-		return "", adminPrincipal{}, central.ErrUnauthorized
+		return "", nil, central.ErrUnauthorized
 	}
-	principal := adminPrincipal{
-		UserID: credential.UserID, DisplayName: credential.DisplayName,
-		ExpiresAt: now.Add(auth.ttl).Unix(),
-	}
+	expiresAt := now.Add(auth.ttl)
+	principal := &adminpb.Principal{}
+	principal.SetUserId(credential.UserID)
+	principal.SetDisplayName(credential.DisplayName)
+	principal.SetExpiresAt(timestamppb.New(expiresAt))
 	tokenBytes := make([]byte, 32)
 	if count, err := auth.random(tokenBytes); err != nil || count != len(tokenBytes) {
 		if err == nil {
 			err = errors.New("generate complete admin session token")
 		}
-		return "", adminPrincipal{}, err
+		return "", nil, err
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 	if err := auth.repository.CreateAdminSession(ctx, central.AdminSession{
-		TokenHash: sha256.Sum256([]byte(token)), UserID: principal.UserID,
-		DisplayName: principal.DisplayName, ExpiresAt: time.Unix(principal.ExpiresAt, 0), CreatedAt: now,
+		TokenHash: sha256.Sum256([]byte(token)), UserID: principal.GetUserId(),
+		DisplayName: principal.GetDisplayName(), ExpiresAt: expiresAt, CreatedAt: now,
 	}); err != nil {
-		return "", adminPrincipal{}, err
+		return "", nil, err
 	}
 	return token, principal, nil
 }
 
-func (auth *AdminAuth) Verify(ctx context.Context, token string) (adminPrincipal, error) {
+func (auth *AdminAuth) Verify(ctx context.Context, token string) (*adminpb.Principal, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return adminPrincipal{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	session, err := auth.repository.AuthenticateAdminSession(
 		ctx, sha256.Sum256([]byte(token)), auth.clock().UTC(),
 	)
 	if err != nil {
 		if errors.Is(err, central.ErrUnauthorized) {
-			return adminPrincipal{}, central.ErrUnauthorized
+			return nil, central.ErrUnauthorized
 		}
-		return adminPrincipal{}, err
+		return nil, err
 	}
-	return adminPrincipal{
-		UserID: session.UserID, DisplayName: session.DisplayName, ExpiresAt: session.ExpiresAt.Unix(),
-	}, nil
+	principal := &adminpb.Principal{}
+	principal.SetUserId(session.UserID)
+	principal.SetDisplayName(session.DisplayName)
+	principal.SetExpiresAt(timestamppb.New(session.ExpiresAt))
+	return principal, nil
 }
 
 func (auth *AdminAuth) Logout(ctx context.Context, token string) error {

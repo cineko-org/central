@@ -1,3 +1,6 @@
+import { create, fromJson, toJson, type DescMessage, type MessageInitShape, type MessageShape } from '@bufbuild/protobuf';
+import { APIErrorResponseSchema } from '@cineko/contracts/gen/ts/cineko/common/common_pb';
+
 export class CentralAPIError extends Error {
   constructor(
     readonly status: number,
@@ -20,10 +23,9 @@ export async function request(path: string, init?: RequestInit): Promise<Respons
     headers,
   });
   if (!response.ok) {
-    let detail: { code?: string; message?: string; retryable?: boolean; requestId?: string } | undefined;
+    let detail;
     try {
-      const payload = await response.json() as { error?: typeof detail };
-      detail = payload.error;
+      detail = fromJson(APIErrorResponseSchema, await response.json()).error;
     } catch {
       // A non-JSON intermediary response still maps to a stable typed failure.
     }
@@ -38,7 +40,15 @@ export async function request(path: string, init?: RequestInit): Promise<Respons
   return response;
 }
 
-export async function loadJSON<T>(path: string, init?: RequestInit): Promise<T> {
+export async function loadProto<T extends DescMessage>(
+  schema: T,
+  path: string,
+  init?: RequestInit,
+): Promise<MessageShape<T>> {
   const response = await request(path, init);
-  return response.json() as Promise<T>;
+  return fromJson(schema, await response.json());
+}
+
+export function protoBody<T extends DescMessage>(schema: T, value: MessageInitShape<T>): string {
+  return JSON.stringify(toJson(schema, create(schema, value)));
 }

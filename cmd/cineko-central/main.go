@@ -16,7 +16,9 @@ import (
 	centralapi "github.com/cineko-org/central/internal/central/api"
 	centralpostgres "github.com/cineko-org/central/internal/central/postgres"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	"github.com/cineko-org/central/internal/support/numeric"
 	"github.com/cineko-org/central/internal/telemetry"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -140,21 +142,21 @@ func buildCentral(
 	return server, reconciler, nil
 }
 
-func adminConfiguration(config applicationConfig) centralapi.AdminConfiguration {
-	return centralapi.AdminConfiguration{
-		ListenAddress:             config.listenAddress,
-		MinimumRuntimeVersion:     config.minimumRuntimeVersion,
-		MinimumBrowserRevision:    config.minimumBrowserRevision,
-		ClientSessionSeconds:      int64(config.clientSessionTTL / time.Second),
-		ClientRefreshSeconds:      int64(config.clientRefreshTTL / time.Second),
-		AdminSessionSeconds:       int64(config.adminSessionTTL / time.Second),
-		ReconcileIntervalSeconds:  int64(config.reconciler.TickInterval / time.Second),
-		ProbeHeartbeatTTLSeconds:  int64(config.reconciler.ProbeHeartbeatTTL / time.Second),
-		ProbeOfflineRetentionDays: int64(config.reconciler.OfflineRetention / (24 * time.Hour)),
-		AssignmentRetryMinSeconds: int64(config.reconciler.RetryMinimum / time.Second),
-		AssignmentRetryMaxSeconds: int64(config.reconciler.RetryMaximum / time.Second),
-		ReconcileBatchSize:        config.reconciler.BatchSize,
-	}
+func adminConfiguration(config applicationConfig) *adminpb.Configuration {
+	configuration := &adminpb.Configuration{}
+	configuration.SetListenAddress(config.listenAddress)
+	configuration.SetMinimumRuntimeVersion(config.minimumRuntimeVersion)
+	configuration.SetMinimumBrowserRevision(config.minimumBrowserRevision)
+	configuration.SetClientSessionSeconds(int64(config.clientSessionTTL / time.Second))
+	configuration.SetClientRefreshSeconds(int64(config.clientRefreshTTL / time.Second))
+	configuration.SetAdminSessionSeconds(int64(config.adminSessionTTL / time.Second))
+	configuration.SetReconcileIntervalSeconds(int64(config.reconciler.TickInterval / time.Second))
+	configuration.SetProbeHeartbeatTtlSeconds(int64(config.reconciler.ProbeHeartbeatTTL / time.Second))
+	configuration.SetProbeOfflineRetentionDays(int64(config.reconciler.OfflineRetention / (24 * time.Hour)))
+	configuration.SetAssignmentRetryMinSeconds(int64(config.reconciler.RetryMinimum / time.Second))
+	configuration.SetAssignmentRetryMaxSeconds(int64(config.reconciler.RetryMaximum / time.Second))
+	configuration.SetReconcileBatchSize(numeric.ClampInt32(config.reconciler.BatchSize))
+	return configuration
 }
 
 func serveCentral(ctx context.Context, server *http.Server, reconciler *reconcile.Engine) error {

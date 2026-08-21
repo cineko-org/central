@@ -1,22 +1,19 @@
 package central
 
 import (
+	"fmt"
 	"time"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 const (
-	ProtocolVersion          = contracts.ProtocolVersion
 	DefaultHeartbeatInterval = 30 * time.Second
 	DefaultProbeHeartbeatTTL = 3 * DefaultHeartbeatInterval
 	DefaultProbeTokenTTL     = 24 * time.Hour
 	DefaultAssignmentLease   = 90 * time.Second
 )
-
-type Runtime = contracts.Runtime
-
-type RegisterProbeRequest = contracts.RegisterProbeRequest
 
 type Probe struct {
 	ID                    string
@@ -29,7 +26,7 @@ type Probe struct {
 	Capabilities          []string
 	AvailableCapabilities []string
 	MaxConcurrency        int
-	Runtime               Runtime
+	Runtime               *commonpb.Runtime
 	TokenHash             [32]byte
 	TokenExpiresAt        time.Time
 	Status                string
@@ -49,19 +46,21 @@ type RegistrationAuthorization struct {
 	ExpiresAt   time.Time
 }
 
-type RegisterProbeResponse = contracts.RegisterProbeResponse
+type EgressPolicyID string
 
-type ProbeHeartbeatRequest = contracts.ProbeHeartbeatRequest
+const EgressPolicyScanDefault EgressPolicyID = "scan_default"
 
-type ProbeHeartbeatResponse = contracts.ProbeHeartbeatResponse
-
-type Theater = contracts.Theater
-
-type AssignmentTask = contracts.AssignmentTask
+// RequireEgressPolicy rejects assignment routes Central does not own.
+func RequireEgressPolicy(value EgressPolicyID) error {
+	if value != EgressPolicyScanDefault {
+		return fmt.Errorf("%w: unsupported egress policy", ErrInvalid)
+	}
+	return nil
+}
 
 type Assignment struct {
 	ID             string
-	Task           AssignmentTask
+	Task           *observationpb.AssignmentTask
 	Status         string
 	NotBefore      time.Time
 	Deadline       time.Time
@@ -71,19 +70,3 @@ type Assignment struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
-
-type ClaimAssignmentResponse = contracts.ClaimAssignmentResponse
-
-type AssignmentHeartbeatResponse = contracts.AssignmentHeartbeatResponse
-
-type Movie = contracts.Movie
-
-type Auditorium = contracts.Auditorium
-
-type Showtime = contracts.Showtime
-
-type Capture = contracts.Capture
-
-type AssignmentResult = contracts.AssignmentResult
-
-type ResultReceipt = contracts.ResultReceipt

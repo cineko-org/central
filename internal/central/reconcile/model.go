@@ -5,8 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/observation/planning"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 const (
@@ -22,7 +23,7 @@ type Policy struct {
 	ID                       string
 	Enabled                  bool
 	TaskKind                 string
-	Theater                  central.Theater
+	Theater                  *catalogpb.Theater
 	TargetDateMode           string
 	TargetDates              []string
 	HorizonDays              int
@@ -83,7 +84,7 @@ type TerminalPolicyRun struct {
 type NewAssignment struct {
 	ID                   string
 	PolicyID             string
-	Task                 central.AssignmentTask
+	Task                 *observationpb.AssignmentTask
 	Lane                 planning.Lane
 	HotTargetFingerprint string
 	Priority             int
@@ -97,7 +98,7 @@ type NewAssignment struct {
 }
 
 type SeatMapBackfillTarget struct {
-	Task      central.AssignmentTask
+	Task      *observationpb.AssignmentTask
 	Requested bool
 }
 

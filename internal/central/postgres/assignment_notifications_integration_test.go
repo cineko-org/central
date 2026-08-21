@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 func TestPostgresAssignmentNotificationWakesWaitingProbe(t *testing.T) {
@@ -49,18 +51,30 @@ func TestPostgresAssignmentNotificationWakesWaitingProbe(t *testing.T) {
 	// Give LISTEN and the durable pre-check time to complete before the
 	// transaction below emits its post-commit notification.
 	time.Sleep(100 * time.Millisecond)
+	theater := &catalogpb.Theater{}
+	theater.SetId(catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", "0056"))
+	theater.SetProviderId(catalogdomain.ProviderCGV)
+	theater.SetSourceKey("0056")
+	theater.SetRegion("서울")
+	theater.SetName("용산아이파크몰")
+	schedule := &observationpb.ScheduleTask{}
+	schedule.SetTheater(theater)
+	schedule.SetTargetDates([]*commonpb.LocalDate{{}})
+	schedule.GetTargetDates()[0].SetYear(2026)
+	schedule.GetTargetDates()[0].SetMonth(8)
+	schedule.GetTargetDates()[0].SetDay(22)
+	schedule.SetLocale("ko-KR")
+	schedule.SetTimeZone("Asia/Seoul")
+	task := &observationpb.AssignmentTask{}
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	task.SetEgress(egress)
+	task.SetSchedule(schedule)
 	leader, err := store.RunLeaderCycle(ctx, func(repository reconcile.CycleRepository) error {
 		return repository.CreateAssignment(ctx, reconcile.NewAssignment{
 			ID: assignmentID, Priority: 100, Status: "queued", NotBefore: now,
 			Deadline: now.Add(time.Minute), CreatedAt: now,
-			Task: central.AssignmentTask{
-				Kind: contracts.CapabilityCGVScheduleCapture,
-				Theater: central.Theater{
-					ID:         contracts.CatalogID(contracts.ProviderCGV, "theater", "0056"),
-					ProviderID: contracts.ProviderCGV, SourceKey: "0056", Region: "서울", Name: "용산아이파크몰",
-				},
-				Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: "scan_default",
-			},
+			Task:       task,
 			Candidates: []reconcile.CandidateProbe{{ID: probeID, NetworkID: "net_" + probeID}},
 		})
 	})

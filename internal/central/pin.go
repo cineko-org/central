@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -22,27 +24,14 @@ const (
 	pinGenerationAttempts = 8
 )
 
-type ClientPINUser struct {
-	User        ClientUser `json:"user"`
-	PINActive   bool       `json:"pinActive"`
-	DeviceCount int        `json:"deviceCount"`
-}
-
-type ClientPINIssue struct {
-	User ClientUser `json:"user"`
-	PIN  string     `json:"pin"`
-}
-
-type ClientPINExchangeRequest = contracts.ClientPINExchangeRequest
-
 type ClientPINRepository interface {
-	ListClientPINUsers(context.Context) ([]ClientPINUser, error)
-	CreateClientPINUser(context.Context, ClientUser, [32]byte) error
-	RotateClientPIN(context.Context, string, [32]byte, time.Time) (ClientUser, error)
+	ListClientPINUsers(context.Context) ([]*adminpb.ClientPinUser, error)
+	CreateClientPINUser(context.Context, *clientpb.User, [32]byte) error
+	RotateClientPIN(context.Context, string, [32]byte, time.Time) (*clientpb.User, error)
 	DeleteClientPINUser(context.Context, string, time.Time) error
 	ExchangeClientPIN(
 		context.Context, [32]byte, []PINAttemptScope, time.Time,
-	) (ClientUser, error)
+	) (*clientpb.User, error)
 }
 
 // PINAttemptScope defines one independently enforced brute-force boundary.
@@ -77,58 +66,68 @@ func NewPINService(
 	}, nil
 }
 
-func (service *PINService) ListUsers(ctx context.Context) ([]ClientPINUser, error) {
+func (service *PINService) ListUsers(ctx context.Context) ([]*adminpb.ClientPinUser, error) {
 	return service.repository.ListClientPINUsers(ctx)
 }
 
-func (service *PINService) CreateUser(ctx context.Context, displayName string) (ClientPINIssue, error) {
+func (service *PINService) CreateUser(ctx context.Context, displayName string) (*adminpb.ClientPinIssue, error) {
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" || len([]rune(displayName)) > 100 {
-		return ClientPINIssue{}, fmt.Errorf("%w: displayName is required and must not exceed 100 characters", ErrInvalid)
+		return nil, fmt.Errorf("%w: displayName is required and must not exceed 100 characters", ErrInvalid)
 	}
 	for range pinGenerationAttempts {
 		userID, err := service.userID()
 		if err != nil {
-			return ClientPINIssue{}, err
+			return nil, err
 		}
 		pin, err := service.pin()
 		if err != nil {
-			return ClientPINIssue{}, err
+			return nil, err
 		}
 		now := service.clock().UTC()
-		user := ClientUser{ID: userID, DisplayName: displayName, CreatedAt: now, UpdatedAt: now}
+		user := &clientpb.User{}
+		user.SetId(userID)
+		user.SetDisplayName(displayName)
+		user.SetCreatedAt(timestamppb.New(now))
+		user.SetUpdatedAt(timestamppb.New(now))
 		err = service.repository.CreateClientPINUser(ctx, user, service.digest("pin", pin))
 		if err == nil {
-			return ClientPINIssue{User: user, PIN: pin}, nil
+			issue := &adminpb.ClientPinIssue{}
+			issue.SetUser(user)
+			issue.SetPin(pin)
+			return issue, nil
 		}
 		if !errors.Is(err, ErrConflict) {
-			return ClientPINIssue{}, err
+			return nil, err
 		}
 	}
-	return ClientPINIssue{}, errors.New("generate unique Client PIN")
+	return nil, errors.New("generate unique Client PIN")
 }
 
-func (service *PINService) Rotate(ctx context.Context, userID string) (ClientPINIssue, error) {
+func (service *PINService) Rotate(ctx context.Context, userID string) (*adminpb.ClientPinIssue, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
-		return ClientPINIssue{}, fmt.Errorf("%w: userId is required", ErrInvalid)
+		return nil, fmt.Errorf("%w: userId is required", ErrInvalid)
 	}
 	for range pinGenerationAttempts {
 		pin, err := service.pin()
 		if err != nil {
-			return ClientPINIssue{}, err
+			return nil, err
 		}
 		user, err := service.repository.RotateClientPIN(
 			ctx, userID, service.digest("pin", pin), service.clock().UTC(),
 		)
 		if err == nil {
-			return ClientPINIssue{User: user, PIN: pin}, nil
+			issue := &adminpb.ClientPinIssue{}
+			issue.SetUser(user)
+			issue.SetPin(pin)
+			return issue, nil
 		}
 		if !errors.Is(err, ErrConflict) {
-			return ClientPINIssue{}, err
+			return nil, err
 		}
 	}
-	return ClientPINIssue{}, errors.New("generate unique Client PIN")
+	return nil, errors.New("generate unique Client PIN")
 }
 
 func (service *PINService) DeleteUser(ctx context.Context, userID string) error {
@@ -141,40 +140,40 @@ func (service *PINService) DeleteUser(ctx context.Context, userID string) error 
 
 func (service *PINService) Exchange(
 	ctx context.Context,
-	request ClientPINExchangeRequest,
+	request *clientpb.PinExchangeRequest,
 	source string,
-) (AuthExchangeResponse, error) {
-	request.PIN = strings.TrimSpace(request.PIN)
-	request.InstallationID = strings.TrimSpace(request.InstallationID)
-	request.DeviceID = strings.TrimSpace(request.DeviceID)
-	if !validPIN(request.PIN) || !validPINIdentity(request.InstallationID) ||
-		!validPINIdentity(request.DeviceID) || strings.TrimSpace(source) == "" {
-		return AuthExchangeResponse{}, ErrUnauthorized
+) (*clientpb.AuthenticationResponse, error) {
+	pin := strings.TrimSpace(request.GetPin())
+	installationID := strings.TrimSpace(request.GetInstallationId())
+	deviceID := strings.TrimSpace(request.GetDeviceId())
+	if !validPIN(pin) || !validPINIdentity(installationID) ||
+		!validPINIdentity(deviceID) || strings.TrimSpace(source) == "" {
+		return nil, ErrUnauthorized
 	}
 	user, err := service.repository.ExchangeClientPIN(
 		ctx,
-		service.digest("pin", request.PIN),
+		service.digest("pin", pin),
 		[]PINAttemptScope{
 			{
 				Hash: service.digest("source", source), FailureLimit: ClientPINFailureLimit,
 				BlockTime: ClientPINBlockTime,
 			},
 			{
-				Hash:         service.digest("device", request.InstallationID+"\x00"+request.DeviceID),
+				Hash:         service.digest("device", installationID+"\x00"+deviceID),
 				FailureLimit: ClientPINFailureLimit, BlockTime: ClientPINBlockTime, ResetOnSuccess: true,
 			},
 		},
 		service.clock().UTC(),
 	)
 	if err != nil {
-		return AuthExchangeResponse{}, err
+		return nil, err
 	}
 	response, session, err := service.clients.issueSession(user, service.clock().UTC())
 	if err != nil {
-		return AuthExchangeResponse{}, err
+		return nil, err
 	}
 	if err := service.clients.repository.CreateClientSession(ctx, session); err != nil {
-		return AuthExchangeResponse{}, err
+		return nil, err
 	}
 	return response, nil
 }

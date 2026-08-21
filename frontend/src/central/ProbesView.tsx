@@ -1,18 +1,18 @@
 import { useCallback, useState } from 'react';
-import { CentralAPIError, loadJSON, request } from './api';
-import type { AdminProbe } from './types';
+import { ListProbesResponseSchema, type Probe } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { CentralAPIError, loadProto, request } from './api';
 import { ProbesPageView } from './ui/ProbesPageView';
 import { useInitialRefresh } from './useInitialRefresh';
 
 export function ProbesView({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [probes, setProbes] = useState<AdminProbe[]>();
-  const [removing, setRemoving] = useState<AdminProbe>();
+  const [probes, setProbes] = useState<Probe[]>();
+  const [removing, setRemoving] = useState<Probe>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<'load' | 'remove'>();
   const refresh = useCallback(async () => {
     setFailure(undefined);
     try {
-      setProbes((await loadJSON<{ data: AdminProbe[] }>('/v1/admin/probes')).data);
+      setProbes((await loadProto(ListProbesResponseSchema, '/v1/admin/probes')).probes);
     } catch (error) {
       if (error instanceof CentralAPIError && error.status === 401) onUnauthorized();
       else setFailure('load');

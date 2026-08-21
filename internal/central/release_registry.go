@@ -3,7 +3,6 @@ package central
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,28 +10,21 @@ import (
 	"time"
 
 	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
 	"golang.org/x/mod/semver"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
+// ReleaseRecord is the database identity and serialized latest-Proto payload for one release.
 type ReleaseRecord struct {
-	Kind          string
-	Channel       string
-	Platform      string
-	Arch          string
-	Version       string
-	SchemaVersion int
-	Payload       json.RawMessage
-	PublishedAt   time.Time
-}
-
-const (
-	legacyReleasePayloadSchemaVersion  = 1
-	currentReleasePayloadSchemaVersion = 2
-)
-
-type releasePayloadEnvelope struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	Payload       json.RawMessage `json:"payload"`
+	Kind        string
+	Channel     string
+	Platform    string
+	Arch        string
+	Version     string
+	Payload     []byte
+	PublishedAt time.Time
 }
 
 type ReleaseRepository interface {
@@ -41,50 +33,19 @@ type ReleaseRepository interface {
 	InsertReleaseSet(context.Context, []ReleaseRecord) (int64, bool, error)
 }
 
-type activeDesktopManifest struct {
-	ResolverVersion int                           `json:"resolverVersion"`
-	Targets         []activeDesktopTargetManifest `json:"targets"`
-}
-
-type activeDesktopTargetManifest struct {
-	Platform string           `json:"platform"`
-	Arch     string           `json:"arch"`
-	Launcher *LauncherRelease `json:"launcher"`
-	Runtime  *RuntimeRelease  `json:"runtime"`
-}
-
-type ReleaseRegistry struct {
-	Generation int64                     `json:"generation"`
-	Components ReleaseRegistryComponents `json:"components"`
-}
-
-type ReleaseRegistryComponents struct {
-	Launcher   []LauncherRelease   `json:"launcher"`
-	Client     []ClientRelease     `json:"client"`
-	Browser    []BrowserRelease    `json:"browser"`
-	Playwright []PlaywrightRelease `json:"playwright"`
-	Probe      []ProbeRelease      `json:"probe"`
-}
-
-func (service *ClientService) ReleaseRegistry(ctx context.Context) (ReleaseRegistry, error) {
+func (service *ClientService) ReleaseRegistry(ctx context.Context) (*releasepb.Registry, error) {
 	if service.releaseRepository == nil {
-		return ReleaseRegistry{}, errors.New("release repository is unavailable")
+		return nil, errors.New("release repository is unavailable")
 	}
 	records, generation, err := service.releaseRepository.ListReleases(ctx)
 	if err != nil {
-		return ReleaseRegistry{}, err
+		return nil, err
 	}
 	snapshot, err := decodeReleaseRegistry(records)
 	if err != nil {
-		return ReleaseRegistry{}, err
+		return nil, err
 	}
-	return ReleaseRegistry{
-		Generation: generation,
-		Components: ReleaseRegistryComponents{
-			Launcher: snapshot.launchers, Client: snapshot.clients, Browser: snapshot.browsers,
-			Playwright: snapshot.playwright, Probe: snapshot.probes,
-		},
-	}, nil
+	return snapshot.registry(generation), nil
 }
 
 func (service *ClientService) CurrentReleaseGeneration(ctx context.Context) (int64, error) {
@@ -99,15 +60,9 @@ func (service *ClientService) CurrentRuntimeReleaseSnapshot(
 	channel string,
 	platform string,
 	arch string,
-) (RuntimeRelease, int64, error) {
+) (*releasepb.RuntimeRelease, int64, error) {
 	return currentDesktopReleaseSnapshot(
-		ctx,
-		service,
-		channel,
-		platform,
-		arch,
-		service.CurrentRuntimeRelease,
-		releasepolicy.CurrentRuntime,
+		ctx, service, channel, platform, arch, service.CurrentRuntimeRelease, releasepolicy.CurrentRuntime,
 	)
 }
 
@@ -116,32 +71,22 @@ func (service *ClientService) CurrentLauncherReleaseSnapshot(
 	channel string,
 	platform string,
 	arch string,
-) (LauncherRelease, int64, error) {
+) (*releasepb.LauncherRelease, int64, error) {
 	return currentDesktopReleaseSnapshot(
-		ctx,
-		service,
-		channel,
-		platform,
-		arch,
-		service.CurrentLauncherRelease,
-		releasepolicy.CurrentLauncher,
+		ctx, service, channel, platform, arch, service.CurrentLauncherRelease, releasepolicy.CurrentLauncher,
 	)
 }
 
 func (service *ClientService) CurrentProbeReleaseSnapshot(
 	ctx context.Context,
 	channel string,
-) (ProbeRelease, int64, error) {
+) (*releasepb.ProbeRelease, int64, error) {
 	return currentChannelReleaseSnapshot(
-		ctx,
-		service,
-		channel,
-		service.CurrentProbeRelease,
-		releasepolicy.CurrentProbe,
+		ctx, service, channel, service.CurrentProbeRelease, releasepolicy.CurrentProbe,
 	)
 }
 
-func currentDesktopReleaseSnapshot[Release any](
+func currentDesktopReleaseSnapshot[Release proto.Message](
 	ctx context.Context,
 	service *ClientService,
 	channel string,
@@ -167,7 +112,7 @@ func currentDesktopReleaseSnapshot[Release any](
 	return release, generation, nil
 }
 
-func currentChannelReleaseSnapshot[Release any](
+func currentChannelReleaseSnapshot[Release proto.Message](
 	ctx context.Context,
 	service *ClientService,
 	channel string,
@@ -234,12 +179,37 @@ func (service *ClientService) applyReleaseRegistry(records []ReleaseRecord, gene
 	return nil
 }
 
+type releaseRegistrySnapshot struct {
+	clients    []*releasepb.ClientRelease
+	browsers   []*releasepb.BrowserRelease
+	playwright []*releasepb.PlaywrightRelease
+	launchers  []*releasepb.LauncherRelease
+	probes     []*releasepb.ProbeRelease
+}
+
+func (snapshot releaseRegistrySnapshot) registry(generation int64) *releasepb.Registry {
+	clients := &releasepb.ClientReleaseSet{}
+	clients.SetReleases(snapshot.clients)
+	browsers := &releasepb.BrowserReleaseSet{}
+	browsers.SetReleases(snapshot.browsers)
+	playwright := &releasepb.PlaywrightReleaseSet{}
+	playwright.SetReleases(snapshot.playwright)
+	launchers := &releasepb.LauncherReleaseSet{}
+	launchers.SetReleases(snapshot.launchers)
+	probes := &releasepb.ProbeReleaseSet{}
+	probes.SetReleases(snapshot.probes)
+	registry := &releasepb.Registry{}
+	registry.SetGeneration(generation)
+	registry.SetClients(clients)
+	registry.SetBrowsers(browsers)
+	registry.SetPlaywright(playwright)
+	registry.SetLaunchers(launchers)
+	registry.SetProbes(probes)
+	return registry
+}
+
 func decodeReleaseRegistry(records []ReleaseRecord) (releaseRegistrySnapshot, error) {
-	snapshot := releaseRegistrySnapshot{
-		clients: make([]ClientRelease, 0), browsers: make([]BrowserRelease, 0),
-		playwright: make([]PlaywrightRelease, 0), launchers: make([]LauncherRelease, 0),
-		probes: make([]ProbeRelease, 0),
-	}
+	snapshot := releaseRegistrySnapshot{}
 	for _, record := range records {
 		if err := snapshot.add(record); err != nil {
 			return releaseRegistrySnapshot{}, err
@@ -251,52 +221,59 @@ func decodeReleaseRegistry(records []ReleaseRecord) (releaseRegistrySnapshot, er
 	return snapshot, nil
 }
 
-// ActiveDesktopManifestFingerprint resolves the same Launcher and Runtime
-// manifests served to desktop clients and hashes their canonical aggregate.
-func ActiveDesktopManifestFingerprint(records []ReleaseRecord) (string, error) {
-	snapshot, err := decodeReleaseRegistry(records)
+func (snapshot *releaseRegistrySnapshot) add(record ReleaseRecord) error {
+	message, err := newReleaseMessage(record.Kind)
 	if err != nil {
-		return "", err
+		return err
 	}
-	catalog, err := configuredReleaseCatalog(snapshot)
+	if err := protojson.Unmarshal(record.Payload, message); err != nil {
+		return fmt.Errorf("decode stored %s release: %w", record.Kind, err)
+	}
+	expected, err := releaseRecord(record.Kind, message)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("validate stored %s release: %w", record.Kind, err)
 	}
-	manifest := activeDesktopManifest{
-		ResolverVersion: releasepolicy.ActiveDesktopResolverVersion,
-		Targets:         make([]activeDesktopTargetManifest, 0, len(releasepolicy.SupportedDesktopTargets())),
+	if expected.Channel != record.Channel || expected.Platform != record.Platform ||
+		expected.Arch != record.Arch || expected.Version != record.Version {
+		return fmt.Errorf("stored %s release identity does not match its payload", record.Kind)
 	}
-	for _, target := range releasepolicy.SupportedDesktopTargets() {
-		resolved := activeDesktopTargetManifest{Platform: target.Platform, Arch: target.Arch}
-		if launcher, exists := releasepolicy.CurrentLauncher(
-			catalog, "stable", target.Platform, target.Arch,
-		); exists {
-			resolved.Launcher = &launcher
-		}
-		if runtime, exists := releasepolicy.CurrentRuntime(
-			catalog, "stable", target.Platform, target.Arch,
-		); exists {
-			resolved.Runtime = &runtime
-		}
-		manifest.Targets = append(manifest.Targets, resolved)
+	switch release := message.(type) {
+	case *releasepb.ClientRelease:
+		snapshot.clients = append(snapshot.clients, release)
+	case *releasepb.BrowserRelease:
+		snapshot.browsers = append(snapshot.browsers, release)
+	case *releasepb.PlaywrightRelease:
+		snapshot.playwright = append(snapshot.playwright, release)
+	case *releasepb.LauncherRelease:
+		snapshot.launchers = append(snapshot.launchers, release)
+	case *releasepb.ProbeRelease:
+		snapshot.probes = append(snapshot.probes, release)
 	}
-	encoded, err := json.Marshal(manifest)
-	return fmt.Sprintf("%x", sha256.Sum256(encoded)), err
+	return nil
 }
 
-type releaseRegistrySnapshot struct {
-	clients    []ClientRelease
-	browsers   []BrowserRelease
-	playwright []PlaywrightRelease
-	launchers  []LauncherRelease
-	probes     []ProbeRelease
+func newReleaseMessage(kind string) (proto.Message, error) {
+	switch kind {
+	case "client":
+		return &releasepb.ClientRelease{}, nil
+	case "browser":
+		return &releasepb.BrowserRelease{}, nil
+	case "playwright":
+		return &releasepb.PlaywrightRelease{}, nil
+	case "launcher":
+		return &releasepb.LauncherRelease{}, nil
+	case "probe":
+		return &releasepb.ProbeRelease{}, nil
+	default:
+		return nil, fmt.Errorf("stored release has unsupported kind %q", kind)
+	}
 }
 
 func configuredReleaseCatalog(snapshot releaseRegistrySnapshot) (releasepolicy.Catalog, error) {
 	candidate := ClientService{
-		clients: make(map[string]ClientRelease), browsers: make(map[string]BrowserRelease),
-		playwright: make(map[string]PlaywrightRelease), launchers: make(map[string]LauncherRelease),
-		probes: make(map[string]ProbeRelease),
+		clients: make(map[string]*releasepb.ClientRelease), browsers: make(map[string]*releasepb.BrowserRelease),
+		playwright: make(map[string]*releasepb.PlaywrightRelease), launchers: make(map[string]*releasepb.LauncherRelease),
+		probes: make(map[string]*releasepb.ProbeRelease),
 	}
 	if len(snapshot.clients) > 0 {
 		if err := candidate.ConfigureReleases(snapshot.clients); err != nil {
@@ -323,76 +300,34 @@ func configuredReleaseCatalog(snapshot releaseRegistrySnapshot) (releasepolicy.C
 			return releasepolicy.Catalog{}, err
 		}
 	}
-	return releasepolicy.Catalog{
-		Clients: candidate.clients, Browsers: candidate.browsers, Playwright: candidate.playwright,
-		Launchers: candidate.launchers, Probes: candidate.probes,
-	}, nil
+	return candidate.releaseCatalog(), nil
 }
 
-func (snapshot *releaseRegistrySnapshot) add(record ReleaseRecord) error {
-	switch record.Kind {
-	case "client":
-		return appendStoredRelease(record, &snapshot.clients)
-	case "browser":
-		return appendStoredRelease(record, &snapshot.browsers)
-	case "playwright":
-		return appendStoredRelease(record, &snapshot.playwright)
-	case "launcher":
-		return appendStoredRelease(record, &snapshot.launchers)
-	case "probe":
-		return appendStoredRelease(record, &snapshot.probes)
-	default:
-		return fmt.Errorf("stored release has unsupported kind %q", record.Kind)
-	}
-}
-
-func appendStoredRelease[Release any](record ReleaseRecord, releases *[]Release) error {
-	payload, err := decodeStoredReleasePayload(record)
+// ActiveDesktopManifestFingerprint hashes the releases actually selected for every desktop target.
+func ActiveDesktopManifestFingerprint(records []ReleaseRecord) (string, error) {
+	snapshot, err := decodeReleaseRegistry(records)
 	if err != nil {
-		return fmt.Errorf("decode stored %s release envelope: %w", record.Kind, err)
+		return "", err
 	}
-	var release Release
-	if err := json.Unmarshal(payload, &release); err != nil {
-		return fmt.Errorf("decode stored %s release: %w", record.Kind, err)
-	}
-	expected, err := releaseRecord(record.Kind, release)
+	catalog, err := configuredReleaseCatalog(snapshot)
 	if err != nil {
-		return fmt.Errorf("validate stored %s release: %w", record.Kind, err)
+		return "", err
 	}
-	if expected.Kind != record.Kind || expected.Channel != record.Channel || expected.Platform != record.Platform ||
-		expected.Arch != record.Arch || expected.Version != record.Version {
-		return fmt.Errorf("stored %s release identity does not match its payload", record.Kind)
+	selected := releaseRegistrySnapshot{}
+	for _, target := range releasepolicy.SupportedDesktopTargets() {
+		if launcher, exists := releasepolicy.CurrentLauncher(catalog, "stable", target.Platform, target.Arch); exists {
+			selected.launchers = append(selected.launchers, launcher)
+		}
+		if runtime, exists := releasepolicy.CurrentRuntime(catalog, "stable", target.Platform, target.Arch); exists {
+			selected.clients = append(selected.clients, runtime.GetClient())
+			selected.browsers = append(selected.browsers, runtime.GetBrowser())
+			selected.playwright = append(selected.playwright, runtime.GetPlaywright())
+		}
 	}
-	*releases = append(*releases, release)
-	return nil
-}
-
-func decodeStoredReleasePayload(record ReleaseRecord) (json.RawMessage, error) {
-	switch record.SchemaVersion {
-	case 0, legacyReleasePayloadSchemaVersion:
-		if !json.Valid(record.Payload) {
-			return nil, errors.New("legacy release payload is invalid JSON")
-		}
-		return record.Payload, nil
-	case currentReleasePayloadSchemaVersion:
-		var envelope releasePayloadEnvelope
-		if err := json.Unmarshal(record.Payload, &envelope); err != nil {
-			return nil, err
-		}
-		if envelope.SchemaVersion != record.SchemaVersion {
-			return nil, fmt.Errorf(
-				"release payload schema version %d does not match record schema version %d",
-				envelope.SchemaVersion,
-				record.SchemaVersion,
-			)
-		}
-		if len(envelope.Payload) == 0 || !json.Valid(envelope.Payload) {
-			return nil, errors.New("release payload envelope has invalid payload")
-		}
-		return envelope.Payload, nil
-	default:
-		return nil, fmt.Errorf("unsupported release payload schema version %d", record.SchemaVersion)
-	}
+	// The registry is composed exclusively from generated messages, so deterministic
+	// marshaling cannot fail on an unsupported handwritten Proto implementation.
+	encoded, _ := proto.MarshalOptions{Deterministic: true}.Marshal(selected.registry(0))
+	return fmt.Sprintf("%x", sha256.Sum256(encoded)), nil
 }
 
 func validateStoredReleaseSets(records []ReleaseRecord) error {
@@ -411,11 +346,9 @@ func validateStoredReleaseSets(records []ReleaseRecord) error {
 		sets[identity] = set
 	}
 	for identity, set := range sets {
-		if set.kind == "probe" {
-			if len(set.targets) == 1 {
-				if _, valid := set.targets["/"]; valid {
-					continue
-				}
+		if set.kind == "probe" && len(set.targets) == 1 {
+			if _, valid := set.targets["/"]; valid {
+				continue
 			}
 		} else if releasepolicy.CompleteDesktopTargetSet(set.targets) {
 			continue
@@ -427,11 +360,11 @@ func validateStoredReleaseSets(records []ReleaseRecord) error {
 
 func (service *ClientService) BootstrapReleaseRegistry(
 	ctx context.Context,
-	clients []ClientRelease,
-	browsers []BrowserRelease,
-	playwright []PlaywrightRelease,
-	launchers []LauncherRelease,
-	probes []ProbeRelease,
+	clients *releasepb.ClientReleaseSet,
+	browsers *releasepb.BrowserReleaseSet,
+	playwright *releasepb.PlaywrightReleaseSet,
+	launchers *releasepb.LauncherReleaseSet,
+	probes *releasepb.ProbeReleaseSet,
 ) error {
 	if service.releaseRepository == nil {
 		return errors.New("release repository is unavailable")
@@ -448,21 +381,21 @@ func (service *ClientService) BootstrapReleaseRegistry(
 		existing[record.Kind] = struct{}{}
 	}
 	seeds := []struct {
-		kind     string
-		releases any
-		present  bool
+		kind string
+		set  proto.Message
+		has  bool
 	}{
-		{kind: "client", releases: clients, present: len(clients) > 0},
-		{kind: "browser", releases: browsers, present: len(browsers) > 0},
-		{kind: "playwright", releases: playwright, present: len(playwright) > 0},
-		{kind: "launcher", releases: launchers, present: len(launchers) > 0},
-		{kind: "probe", releases: probes, present: len(probes) > 0},
+		{kind: "client", set: clients, has: len(clients.GetReleases()) > 0},
+		{kind: "browser", set: browsers, has: len(browsers.GetReleases()) > 0},
+		{kind: "playwright", set: playwright, has: len(playwright.GetReleases()) > 0},
+		{kind: "launcher", set: launchers, has: len(launchers.GetReleases()) > 0},
+		{kind: "probe", set: probes, has: len(probes.GetReleases()) > 0},
 	}
 	for _, seed := range seeds {
-		if _, found := existing[seed.kind]; found || !seed.present {
+		if _, found := existing[seed.kind]; found || !seed.has {
 			continue
 		}
-		if _, _, err := service.PublishReleaseSet(ctx, seed.kind, seed.releases); err != nil {
+		if _, _, err := service.PublishReleaseSet(ctx, seed.kind, seed.set); err != nil {
 			return err
 		}
 	}
@@ -472,11 +405,11 @@ func (service *ClientService) BootstrapReleaseRegistry(
 func (service *ClientService) PublishReleaseSet(
 	ctx context.Context,
 	kind string,
-	releases any,
+	set proto.Message,
 ) (int64, bool, error) {
 	service.releasePublishMu.Lock()
 	defer service.releasePublishMu.Unlock()
-	records, err := releaseRecords(kind, releases)
+	records, err := releaseRecords(kind, set)
 	if err != nil {
 		return 0, false, err
 	}
@@ -493,14 +426,21 @@ func (service *ClientService) PublishReleaseSet(
 	return generation, inserted, nil
 }
 
-func releaseRecords(kind string, releases any) ([]ReleaseRecord, error) {
-	values, validType := releaseValues(releases)
-	if !validType || len(values) == 0 {
+func releaseRecords(kind string, set proto.Message) ([]ReleaseRecord, error) {
+	values, err := releaseMessages(set)
+	if err != nil || len(values) == 0 {
 		return nil, ErrInvalid
 	}
-	records, err := buildReleaseRecords(kind, values)
-	if err != nil {
-		return nil, err
+	if kind == "probe" && len(values) != 1 {
+		return nil, fmt.Errorf("%w: probe release set must contain one image", ErrInvalid)
+	}
+	records := make([]ReleaseRecord, len(values))
+	for index, value := range values {
+		record, recordErr := releaseRecord(kind, value)
+		if recordErr != nil {
+			return nil, recordErr
+		}
+		records[index] = record
 	}
 	if err := validateReleaseSet(kind, records); err != nil {
 		return nil, err
@@ -508,36 +448,62 @@ func releaseRecords(kind string, releases any) ([]ReleaseRecord, error) {
 	return records, nil
 }
 
-func releaseValues(releases any) ([]any, bool) {
-	switch typed := releases.(type) {
-	case []ClientRelease:
-		return toAny(typed), true
-	case []BrowserRelease:
-		return toAny(typed), true
-	case []PlaywrightRelease:
-		return toAny(typed), true
-	case []LauncherRelease:
-		return toAny(typed), true
-	case []ProbeRelease:
-		return toAny(typed), true
+func releaseMessages(set proto.Message) ([]proto.Message, error) {
+	switch typed := set.(type) {
+	case *releasepb.ClientReleaseSet:
+		return messages(typed.GetReleases()), nil
+	case *releasepb.BrowserReleaseSet:
+		return messages(typed.GetReleases()), nil
+	case *releasepb.PlaywrightReleaseSet:
+		return messages(typed.GetReleases()), nil
+	case *releasepb.LauncherReleaseSet:
+		return messages(typed.GetReleases()), nil
+	case *releasepb.ProbeReleaseSet:
+		return messages(typed.GetReleases()), nil
 	default:
-		return nil, false
+		return nil, ErrInvalid
 	}
 }
 
-func buildReleaseRecords(kind string, values []any) ([]ReleaseRecord, error) {
-	if kind == "probe" && len(values) != 1 {
-		return nil, fmt.Errorf("%w: probe release set must contain one image", ErrInvalid)
+func messages[Message proto.Message](values []Message) []proto.Message {
+	result := make([]proto.Message, len(values))
+	for index := range values {
+		result[index] = values[index]
 	}
-	records := make([]ReleaseRecord, len(values))
-	for index, value := range values {
-		record, err := releaseRecord(kind, value)
-		if err != nil {
-			return nil, err
-		}
-		records[index] = record
+	return result
+}
+
+func releaseRecord(kind string, release proto.Message) (ReleaseRecord, error) {
+	var record ReleaseRecord
+	var validationError error
+	switch value := release.(type) {
+	case *releasepb.ClientRelease:
+		validationError = validateCanonicalClientRelease(value)
+		record = ReleaseRecord{Kind: "client", Channel: value.GetChannel(), Platform: value.GetPlatform(), Arch: value.GetArchitecture(), Version: value.GetVersion(), PublishedAt: value.GetPublishedAt().AsTime()}
+	case *releasepb.BrowserRelease:
+		validationError = validateCanonicalBrowserRelease(value)
+		record = ReleaseRecord{Kind: "browser", Channel: value.GetChannel(), Platform: value.GetPlatform(), Arch: value.GetArchitecture(), Version: value.GetRevision(), PublishedAt: value.GetPublishedAt().AsTime()}
+	case *releasepb.PlaywrightRelease:
+		validationError = validateCanonicalPlaywrightRelease(value)
+		record = ReleaseRecord{Kind: "playwright", Channel: value.GetChannel(), Platform: value.GetPlatform(), Arch: value.GetArchitecture(), Version: value.GetVersion(), PublishedAt: value.GetPublishedAt().AsTime()}
+	case *releasepb.LauncherRelease:
+		validationError = validateCanonicalLauncherRelease(value)
+		record = ReleaseRecord{Kind: "launcher", Channel: value.GetChannel(), Platform: value.GetPlatform(), Arch: value.GetArchitecture(), Version: value.GetVersion(), PublishedAt: value.GetPublishedAt().AsTime()}
+	case *releasepb.ProbeRelease:
+		validationError = validateCanonicalProbeRelease(value)
+		record = ReleaseRecord{Kind: "probe", Channel: value.GetChannel(), Version: value.GetVersion(), PublishedAt: value.GetPublishedAt().AsTime()}
+	default:
+		return ReleaseRecord{}, ErrInvalid
 	}
-	return records, nil
+	if record.Kind != kind || validationError != nil {
+		return ReleaseRecord{}, fmt.Errorf("%w: invalid %s release", ErrInvalid, kind)
+	}
+	payload, err := protojson.Marshal(release)
+	if err != nil {
+		return ReleaseRecord{}, err
+	}
+	record.Payload = payload
+	return record, nil
 }
 
 func validateReleaseSet(kind string, records []ReleaseRecord) error {
@@ -559,67 +525,19 @@ func validateReleaseSet(kind string, records []ReleaseRecord) error {
 	return nil
 }
 
-func toAny[Value any](values []Value) []any {
-	result := make([]any, len(values))
-	for index := range values {
-		result[index] = values[index]
-	}
-	return result
-}
-
-func (service *ClientService) ReleaseGeneration() int64 {
-	return service.releaseGeneration.Load()
-}
-
-func releaseRecord(kind string, release any) (ReleaseRecord, error) {
-	var record ReleaseRecord
-	var validationError error
-	switch value := release.(type) {
-	case ClientRelease:
-		validationError = validateCanonicalClientRelease(value)
-		record = ReleaseRecord{Kind: "client", Channel: value.Channel, Platform: value.Platform, Arch: value.Arch, Version: value.Version, PublishedAt: value.PublishedAt}
-	case BrowserRelease:
-		validationError = validateCanonicalBrowserRelease(value)
-		record = ReleaseRecord{Kind: "browser", Channel: value.Channel, Platform: value.Platform, Arch: value.Arch, Version: value.Revision, PublishedAt: value.PublishedAt}
-	case PlaywrightRelease:
-		validationError = validateCanonicalPlaywrightRelease(value)
-		record = ReleaseRecord{Kind: "playwright", Channel: value.Channel, Platform: value.Platform, Arch: value.Arch, Version: value.Version, PublishedAt: value.PublishedAt}
-	case LauncherRelease:
-		validationError = validateCanonicalLauncherRelease(value)
-		record = ReleaseRecord{Kind: "launcher", Channel: value.Channel, Platform: value.Platform, Arch: value.Arch, Version: value.Version, PublishedAt: value.PublishedAt}
-	case ProbeRelease:
-		validationError = validateCanonicalProbeRelease(value)
-		record = ReleaseRecord{Kind: "probe", Channel: value.Channel, Version: value.Version, PublishedAt: value.PublishedAt}
-	default:
-		return ReleaseRecord{}, ErrInvalid
-	}
-	if record.Kind != kind || validationError != nil {
-		return ReleaseRecord{}, fmt.Errorf("%w: invalid %s release", ErrInvalid, kind)
-	}
-	payload, err := json.Marshal(release)
-	if err != nil {
-		return ReleaseRecord{}, err
-	}
-	envelope, err := json.Marshal(releasePayloadEnvelope{
-		SchemaVersion: currentReleasePayloadSchemaVersion,
-		Payload:       payload,
-	})
-	record.SchemaVersion = currentReleasePayloadSchemaVersion
-	record.Payload = envelope
-	return record, err
-}
-
-func validateCanonicalClientRelease(release ClientRelease) error {
+func validateCanonicalClientRelease(release *releasepb.ClientRelease) error {
 	if err := validateClientRelease(release); err != nil {
 		return err
 	}
-	if !canonicalReleaseTarget(release.Channel, release.Platform, release.Arch) ||
-		!canonicalSemanticVersion(release.Version) || !canonicalSemanticVersion(release.MinimumLauncherVersion) ||
-		!canonicalNumericRevision(release.MinimumBrowserRevision) ||
-		!canonicalSemanticVersion(release.PlaywrightVersion) || !canonicalReleaseArtifact(release.Artifact) {
+	if !canonicalReleaseTarget(release.GetChannel(), release.GetPlatform(), release.GetArchitecture()) ||
+		!canonicalSemanticVersion(release.GetVersion()) ||
+		!canonicalSemanticVersion(release.GetMinimumLauncherVersion()) ||
+		!canonicalNumericRevision(release.GetMinimumBrowserRevision()) ||
+		!canonicalSemanticVersion(release.GetPlaywrightVersion()) ||
+		!canonicalReleaseArtifact(release.GetArtifact()) {
 		return errors.New("client release fields must use canonical formatting")
 	}
-	for keyID := range release.ProbeBootstrapPublicKeys {
+	for keyID := range release.GetProbeBootstrapPublicKeys() {
 		if keyID != strings.TrimSpace(keyID) {
 			return errors.New("client Probe key IDs must use canonical formatting")
 		}
@@ -627,18 +545,19 @@ func validateCanonicalClientRelease(release ClientRelease) error {
 	return nil
 }
 
-func validateCanonicalBrowserRelease(release BrowserRelease) error {
+func validateCanonicalBrowserRelease(release *releasepb.BrowserRelease) error {
 	if err := validateBrowserRelease(release); err != nil {
 		return err
 	}
-	if !canonicalReleaseTarget(release.Channel, release.Platform, release.Arch) ||
-		!canonicalNumericRevision(release.Revision) || !canonicalReleaseArtifact(release.Artifact) {
+	if !canonicalReleaseTarget(release.GetChannel(), release.GetPlatform(), release.GetArchitecture()) ||
+		!canonicalNumericRevision(release.GetRevision()) || !canonicalReleaseArtifact(release.GetArtifact()) {
 		return errors.New("browser release fields must use canonical formatting")
 	}
-	if !sort.StringsAreSorted(release.CompatiblePlaywrightVersions) {
+	versions := release.GetCompatiblePlaywrightVersions()
+	if !sort.StringsAreSorted(versions) {
 		return errors.New("browser compatible Playwright versions must be sorted")
 	}
-	for _, version := range release.CompatiblePlaywrightVersions {
+	for _, version := range versions {
 		if !canonicalSemanticVersion(version) {
 			return errors.New("browser compatible Playwright versions must use canonical formatting")
 		}
@@ -646,21 +565,23 @@ func validateCanonicalBrowserRelease(release BrowserRelease) error {
 	return nil
 }
 
-func validateCanonicalPlaywrightRelease(release PlaywrightRelease) error {
+func validateCanonicalPlaywrightRelease(release *releasepb.PlaywrightRelease) error {
 	if err := validatePlaywrightRelease(release); err != nil {
 		return err
 	}
 	return validateCanonicalDesktopArtifactRelease(
-		release.Channel, release.Platform, release.Arch, release.Version, release.Artifact, "playwright",
+		release.GetChannel(), release.GetPlatform(), release.GetArchitecture(), release.GetVersion(),
+		release.GetArtifact(), "playwright",
 	)
 }
 
-func validateCanonicalLauncherRelease(release LauncherRelease) error {
+func validateCanonicalLauncherRelease(release *releasepb.LauncherRelease) error {
 	if err := validateLauncherRelease(release); err != nil {
 		return err
 	}
 	return validateCanonicalDesktopArtifactRelease(
-		release.Channel, release.Platform, release.Arch, release.Version, release.Launcher, "launcher",
+		release.GetChannel(), release.GetPlatform(), release.GetArchitecture(), release.GetVersion(),
+		release.GetLauncher(), "launcher",
 	)
 }
 
@@ -669,7 +590,7 @@ func validateCanonicalDesktopArtifactRelease(
 	platform string,
 	arch string,
 	version string,
-	artifact ReleaseArtifact,
+	artifact *releasepb.Artifact,
 	label string,
 ) error {
 	if !canonicalReleaseTarget(channel, platform, arch) ||
@@ -679,13 +600,14 @@ func validateCanonicalDesktopArtifactRelease(
 	return nil
 }
 
-func validateCanonicalProbeRelease(release ProbeRelease) error {
+func validateCanonicalProbeRelease(release *releasepb.ProbeRelease) error {
 	if err := validateProbeRelease(release); err != nil {
 		return err
 	}
-	if release.Channel != "stable" || !canonicalSemanticVersion(release.Version) ||
-		!canonicalNumericRevision(release.BrowserRevision) || release.Image != strings.TrimSpace(release.Image) ||
-		release.ImageDigest != strings.ToLower(strings.TrimSpace(release.ImageDigest)) {
+	if release.GetChannel() != "stable" || !canonicalSemanticVersion(release.GetVersion()) ||
+		!canonicalNumericRevision(release.GetBrowserRevision()) ||
+		release.GetImage() != strings.TrimSpace(release.GetImage()) ||
+		release.GetImageDigest() != strings.ToLower(strings.TrimSpace(release.GetImageDigest())) {
 		return errors.New("probe release fields must use canonical formatting")
 	}
 	return nil
@@ -713,28 +635,14 @@ func canonicalNumericRevision(value string) bool {
 	return true
 }
 
-func canonicalReleaseArtifact(artifact ReleaseArtifact) bool {
-	return artifact.URL == strings.TrimSpace(artifact.URL) &&
-		artifact.SHA256 == strings.ToLower(strings.TrimSpace(artifact.SHA256)) &&
-		artifact.Executable == strings.TrimSpace(artifact.Executable)
+func canonicalReleaseArtifact(artifact *releasepb.Artifact) bool {
+	return artifact != nil && artifact.GetUrl() == strings.TrimSpace(artifact.GetUrl()) &&
+		artifact.GetSha256() == strings.ToLower(strings.TrimSpace(artifact.GetSha256())) &&
+		artifact.GetExecutable() == strings.TrimSpace(artifact.GetExecutable())
 }
 
-func (service *ClientService) configureAvailableReleases(
-	clients []ClientRelease,
-	browsers []BrowserRelease,
-	playwright []PlaywrightRelease,
-	launchers []LauncherRelease,
-	probes []ProbeRelease,
-	_ int64,
-) error {
-	catalog, err := configuredReleaseCatalog(releaseRegistrySnapshot{
-		clients: clients, browsers: browsers, playwright: playwright, launchers: launchers, probes: probes,
-	})
-	if err != nil {
-		return err
-	}
-	service.applyReleaseCatalog(catalog, 0)
-	return nil
+func (service *ClientService) ReleaseGeneration() int64 {
+	return service.releaseGeneration.Load()
 }
 
 func (service *ClientService) applyReleaseCatalog(catalog releasepolicy.Catalog, generation int64) {

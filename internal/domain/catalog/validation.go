@@ -3,7 +3,6 @@ package catalog
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,22 +12,24 @@ import (
 	"strings"
 	"time"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// MaximumObservationClockSkew is the future tolerance for provider and seat
-// map observations accepted by Central.
+// MaximumObservationClockSkew is the future tolerance for provider observations.
 const MaximumObservationClockSkew = 5 * time.Minute
 
-// NormalizeSnapshot canonicalizes catalog identities and verifies all
-// provider, theater, movie, auditorium, and showtime relationships.
-func NormalizeSnapshot(snapshot *contracts.CatalogSnapshot) error {
-	if snapshot == nil {
-		return errors.New("catalog snapshot is required")
+// NormalizeSnapshot canonicalizes catalog identities and verifies relationships.
+func NormalizeSnapshot(snapshot *catalogpb.CatalogSnapshot) error {
+	if snapshot == nil || snapshot.GetProvider() == nil {
+		return errors.New("catalog snapshot and provider are required")
 	}
-	snapshot.Provider.ID = strings.TrimSpace(snapshot.Provider.ID)
-	snapshot.Provider.Name = strings.TrimSpace(snapshot.Provider.Name)
-	if snapshot.Provider.ID == "" || snapshot.Provider.Name == "" {
+	provider := snapshot.GetProvider()
+	provider.SetId(strings.TrimSpace(provider.GetId()))
+	provider.SetName(strings.TrimSpace(provider.GetName()))
+	if provider.GetId() == "" || provider.GetName() == "" {
 		return errors.New("catalog provider is incomplete")
 	}
 	seen := make(map[string]struct{})
@@ -47,135 +48,177 @@ func NormalizeSnapshot(snapshot *contracts.CatalogSnapshot) error {
 	return normalizeShowtimes(snapshot, theaters, movies, auditoriums, seen)
 }
 
-// NormalizeSeatMapVersion canonicalizes layout bytes and derives the stable
-// seat-map version ID from the auditorium and canonical layout hash.
-func NormalizeSeatMapVersion(version *contracts.SeatMapVersion, now time.Time) error {
-	if version == nil {
-		return errors.New("seat map version is required")
+// NormalizeSeatMap canonicalizes a layout and derives its stable snapshot identity.
+func NormalizeSeatMap(snapshot *seatmappb.Snapshot, now time.Time) error {
+	if snapshot == nil || snapshot.GetLayout() == nil {
+		return errors.New("seat map snapshot and layout are required")
 	}
-	if version.ObservedAt.IsZero() {
-		version.ObservedAt = now
+	if snapshot.GetObservedAt() == nil {
+		snapshot.SetObservedAt(timestamppb.New(now.UTC()))
 	}
-	version.ObservedAt = version.ObservedAt.UTC()
-	if version.ObservedAt.After(now.Add(MaximumObservationClockSkew)) {
+	if err := snapshot.GetObservedAt().CheckValid(); err != nil {
+		return errors.New("seat map observation time is invalid")
+	}
+	if snapshot.GetObservedAt().AsTime().After(now.Add(MaximumObservationClockSkew)) {
 		return errors.New("seat map observation is in the future")
 	}
-	version.AuditoriumID = strings.TrimSpace(version.AuditoriumID)
-	claimedID := strings.TrimSpace(version.ID)
-	if version.AuditoriumID == "" || version.Capacity < 1 {
-		return errors.New("seat map identity and capacity are required")
+	auditoriumID := strings.TrimSpace(snapshot.GetAuditoriumId())
+	claimedID := strings.TrimSpace(snapshot.GetId())
+	if auditoriumID == "" || snapshot.GetCapacity() < 1 || len(snapshot.GetLayout().GetSeats()) != int(snapshot.GetCapacity()) {
+		return errors.New("seat map identity, capacity, and seat count are required")
 	}
-	canonical, hash, err := canonicalLayout(version.Layout, version.AuditoriumID, version.Capacity)
-	if err != nil {
+	snapshot.SetAuditoriumId(auditoriumID)
+	if err := normalizeLayout(snapshot.GetLayout(), auditoriumID); err != nil {
 		return err
 	}
-	version.Layout, version.LayoutHash = canonical, hash
-	version.ID = contracts.SeatMapVersionID(version.AuditoriumID, hash)
-	if claimedID != "" && claimedID != version.ID {
-		return errors.New("seat map version id is not canonical")
+	canonical, err := proto.MarshalOptions{Deterministic: true}.Marshal(snapshot.GetLayout())
+	if err != nil {
+		return fmt.Errorf("marshal normalized seat map: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	layoutHash := hex.EncodeToString(digest[:])
+	snapshot.SetLayoutHash(layoutHash)
+	snapshot.SetId(SeatMapVersionID(auditoriumID, layoutHash))
+	if claimedID != "" && claimedID != snapshot.GetId() {
+		return errors.New("seat map snapshot id is not canonical")
 	}
 	return nil
 }
 
-func normalizeTheaters(
-	snapshot *contracts.CatalogSnapshot,
-	seen map[string]struct{},
-) (map[string]contracts.Theater, error) {
-	theaters := make(map[string]contracts.Theater, len(snapshot.Theaters))
-	for index := range snapshot.Theaters {
-		theater := &snapshot.Theaters[index]
-		theater.ProviderID = strings.TrimSpace(theater.ProviderID)
-		theater.SourceKey = strings.TrimSpace(theater.SourceKey)
-		theater.Region = strings.TrimSpace(theater.Region)
-		theater.Name = strings.TrimSpace(theater.Name)
-		theater.ID = contracts.CatalogID(snapshot.Provider.ID, "theater", theater.SourceKey)
-		if theater.ProviderID != snapshot.Provider.ID || theater.SourceKey == "" ||
-			theater.Region == "" || theater.Name == "" {
+func normalizeTheaters(snapshot *catalogpb.CatalogSnapshot, seen map[string]struct{}) (map[string]*catalogpb.Theater, error) {
+	result := make(map[string]*catalogpb.Theater, len(snapshot.GetTheaters()))
+	for _, theater := range snapshot.GetTheaters() {
+		if theater == nil {
+			return nil, errors.New("catalog theater is required")
+		}
+		theater.SetProviderId(strings.TrimSpace(theater.GetProviderId()))
+		theater.SetSourceKey(strings.TrimSpace(theater.GetSourceKey()))
+		theater.SetRegion(strings.TrimSpace(theater.GetRegion()))
+		theater.SetName(strings.TrimSpace(theater.GetName()))
+		theater.SetId(CatalogID(snapshot.GetProvider().GetId(), "theater", theater.GetSourceKey()))
+		if theater.GetProviderId() != snapshot.GetProvider().GetId() || theater.GetSourceKey() == "" || theater.GetRegion() == "" || theater.GetName() == "" {
 			return nil, errors.New("catalog theater is incomplete")
 		}
-		if err := rememberID(seen, theater.ID); err != nil {
+		if err := rememberID(seen, theater.GetId()); err != nil {
 			return nil, err
 		}
-		theaters[theater.ID] = *theater
+		result[theater.GetId()] = theater
 	}
-	return theaters, nil
+	return result, nil
 }
 
-func normalizeMovies(
-	snapshot *contracts.CatalogSnapshot,
-	seen map[string]struct{},
-) (map[string]contracts.Movie, error) {
-	movies := make(map[string]contracts.Movie, len(snapshot.Movies))
-	for index := range snapshot.Movies {
-		movie := &snapshot.Movies[index]
-		movie.ProviderID = strings.TrimSpace(movie.ProviderID)
-		movie.SourceKey = strings.TrimSpace(movie.SourceKey)
-		movie.Title = strings.TrimSpace(movie.Title)
-		movie.PosterURL = strings.TrimSpace(movie.PosterURL)
-		movie.ID = contracts.CatalogID(snapshot.Provider.ID, "movie", movie.SourceKey)
-		if movie.ProviderID != snapshot.Provider.ID || movie.SourceKey == "" || movie.Title == "" {
+func normalizeMovies(snapshot *catalogpb.CatalogSnapshot, seen map[string]struct{}) (map[string]*catalogpb.Movie, error) {
+	result := make(map[string]*catalogpb.Movie, len(snapshot.GetMovies()))
+	for _, movie := range snapshot.GetMovies() {
+		if movie == nil {
+			return nil, errors.New("catalog movie is required")
+		}
+		movie.SetProviderId(strings.TrimSpace(movie.GetProviderId()))
+		movie.SetSourceKey(strings.TrimSpace(movie.GetSourceKey()))
+		movie.SetTitle(strings.TrimSpace(movie.GetTitle()))
+		movie.SetPosterUrl(strings.TrimSpace(movie.GetPosterUrl()))
+		movie.SetId(CatalogID(snapshot.GetProvider().GetId(), "movie", movie.GetSourceKey()))
+		if movie.GetProviderId() != snapshot.GetProvider().GetId() || movie.GetSourceKey() == "" || movie.GetTitle() == "" {
 			return nil, errors.New("catalog movie is incomplete")
 		}
-		if err := rememberID(seen, movie.ID); err != nil {
+		if err := rememberID(seen, movie.GetId()); err != nil {
 			return nil, err
 		}
-		movies[movie.ID] = *movie
+		result[movie.GetId()] = movie
 	}
-	return movies, nil
+	return result, nil
 }
 
-func normalizeAuditoriums(
-	snapshot *contracts.CatalogSnapshot,
-	theaters map[string]contracts.Theater,
-	seen map[string]struct{},
-) (map[string]contracts.Auditorium, error) {
-	auditoriums := make(map[string]contracts.Auditorium, len(snapshot.Auditoriums))
-	for index := range snapshot.Auditoriums {
-		auditorium := &snapshot.Auditoriums[index]
-		auditorium.TheaterID = strings.TrimSpace(auditorium.TheaterID)
-		auditorium.SourceKey = strings.TrimSpace(auditorium.SourceKey)
-		auditorium.Name = strings.TrimSpace(auditorium.Name)
-		auditorium.ScreenTypes = normalizedStrings(auditorium.ScreenTypes)
-		auditorium.ID = contracts.CatalogID(snapshot.Provider.ID, "auditorium", auditorium.SourceKey)
-		if _, known := theaters[auditorium.TheaterID]; !known || auditorium.SourceKey == "" || auditorium.Name == "" ||
-			auditorium.Capacity < 0 {
+func normalizeAuditoriums(snapshot *catalogpb.CatalogSnapshot, theaters map[string]*catalogpb.Theater, seen map[string]struct{}) (map[string]*catalogpb.Auditorium, error) {
+	result := make(map[string]*catalogpb.Auditorium, len(snapshot.GetAuditoriums()))
+	for _, auditorium := range snapshot.GetAuditoriums() {
+		if auditorium == nil {
+			return nil, errors.New("catalog auditorium is required")
+		}
+		auditorium.SetTheaterId(strings.TrimSpace(auditorium.GetTheaterId()))
+		auditorium.SetSourceKey(strings.TrimSpace(auditorium.GetSourceKey()))
+		auditorium.SetName(strings.TrimSpace(auditorium.GetName()))
+		auditorium.SetScreenTypes(normalizedStrings(auditorium.GetScreenTypes()))
+		auditorium.SetId(CatalogID(snapshot.GetProvider().GetId(), "auditorium", auditorium.GetSourceKey()))
+		if theaters[auditorium.GetTheaterId()] == nil || auditorium.GetSourceKey() == "" || auditorium.GetName() == "" || auditorium.GetCapacity() < 0 {
 			return nil, errors.New("catalog auditorium is incomplete")
 		}
-		if err := rememberID(seen, auditorium.ID); err != nil {
+		if err := rememberID(seen, auditorium.GetId()); err != nil {
 			return nil, err
 		}
-		auditoriums[auditorium.ID] = *auditorium
+		result[auditorium.GetId()] = auditorium
 	}
-	return auditoriums, nil
+	return result, nil
 }
 
-func normalizeShowtimes(
-	snapshot *contracts.CatalogSnapshot,
-	theaters map[string]contracts.Theater,
-	movies map[string]contracts.Movie,
-	auditoriums map[string]contracts.Auditorium,
-	seen map[string]struct{},
-) error {
-	for index := range snapshot.Showtimes {
-		showtime := &snapshot.Showtimes[index]
-		showtime.ProviderID = strings.TrimSpace(showtime.ProviderID)
-		showtime.SourceKey = strings.TrimSpace(showtime.SourceKey)
-		showtime.TheaterID = strings.TrimSpace(showtime.TheaterID)
-		showtime.ID = contracts.CatalogID(snapshot.Provider.ID, "showtime", showtime.SourceKey)
-		movie, movieKnown := movies[strings.TrimSpace(showtime.Movie.ID)]
-		auditorium, auditoriumKnown := auditoriums[strings.TrimSpace(showtime.Auditorium.ID)]
-		_, theaterKnown := theaters[showtime.TheaterID]
-		if showtime.ProviderID != snapshot.Provider.ID || showtime.SourceKey == "" || !theaterKnown ||
-			!movieKnown || !auditoriumKnown || auditorium.TheaterID != showtime.TheaterID ||
-			showtime.StartsAt.IsZero() || !showtime.EndsAt.After(showtime.StartsAt) {
+//nolint:gocyclo,cyclop // Cross-entity identity checks are intentionally explicit at the catalog contract boundary.
+func normalizeShowtimes(snapshot *catalogpb.CatalogSnapshot, theaters map[string]*catalogpb.Theater, movies map[string]*catalogpb.Movie, auditoriums map[string]*catalogpb.Auditorium, seen map[string]struct{}) error {
+	for _, showtime := range snapshot.GetShowtimes() {
+		if showtime == nil || showtime.GetMovie() == nil || showtime.GetAuditorium() == nil {
+			return errors.New("catalog showtime is required")
+		}
+		showtime.SetProviderId(strings.TrimSpace(showtime.GetProviderId()))
+		showtime.SetSourceKey(strings.TrimSpace(showtime.GetSourceKey()))
+		showtime.SetTheaterId(strings.TrimSpace(showtime.GetTheaterId()))
+		showtime.SetId(CatalogID(snapshot.GetProvider().GetId(), "showtime", showtime.GetSourceKey()))
+		movie := movies[strings.TrimSpace(showtime.GetMovie().GetId())]
+		auditorium := auditoriums[strings.TrimSpace(showtime.GetAuditorium().GetId())]
+		startsAt, endsAt := showtime.GetStartsAt(), showtime.GetEndsAt()
+		if showtime.GetProviderId() != snapshot.GetProvider().GetId() || showtime.GetSourceKey() == "" || theaters[showtime.GetTheaterId()] == nil || movie == nil || auditorium == nil || auditorium.GetTheaterId() != showtime.GetTheaterId() || startsAt == nil || endsAt == nil || startsAt.CheckValid() != nil || endsAt.CheckValid() != nil || !endsAt.AsTime().After(startsAt.AsTime()) {
 			return errors.New("catalog showtime is incomplete")
 		}
-		showtime.Movie = movie
-		showtime.Auditorium = auditorium
-		if err := rememberID(seen, showtime.ID); err != nil {
+		showtime.SetMovie(movie)
+		showtime.SetAuditorium(auditorium)
+		if err := rememberID(seen, showtime.GetId()); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+//nolint:gocyclo,cyclop // Seat geometry validation keeps every contract invariant visible in one ordered pass.
+func normalizeLayout(layout *seatmappb.Layout, auditoriumID string) error {
+	seenIDs := make(map[string]struct{}, len(layout.GetSeats()))
+	seenLabels := make(map[string]struct{}, len(layout.GetSeats()))
+	for _, seat := range layout.GetSeats() {
+		if seat == nil {
+			return errors.New("seat map contains an empty seat")
+		}
+		seat.SetAuditoriumId(strings.TrimSpace(seat.GetAuditoriumId()))
+		seat.SetLabel(strings.TrimSpace(seat.GetLabel()))
+		seat.SetRow(strings.TrimSpace(seat.GetRow()))
+		seat.SetType(strings.TrimSpace(seat.GetType()))
+		seat.SetFeatures(normalizedStrings(seat.GetFeatures()))
+		seat.SetSourceClasses(normalizedStrings(seat.GetSourceClasses()))
+		canonicalLabel := seat.GetRow() + strconv.Itoa(int(seat.GetNumber()))
+		if seat.GetAuditoriumId() != auditoriumID || seat.GetRow() == "" || seat.GetRow() != strings.ToUpper(seat.GetRow()) || seat.GetNumber() < 1 || seat.GetLabel() != canonicalLabel || seat.GetType() == "" || seat.GetId() != SeatID(auditoriumID, seat.GetLabel()) {
+			return errors.New("seat map contains a noncanonical seat")
+		}
+		if !normalizedCoordinate(seat.GetX()) || !normalizedCoordinate(seat.GetY()) {
+			return fmt.Errorf("seat %s position must be finite and normalized to 0..1", seat.GetLabel())
+		}
+		if _, duplicate := seenIDs[seat.GetId()]; duplicate {
+			return errors.New("seat map contains a duplicate seat id")
+		}
+		if _, duplicate := seenLabels[seat.GetLabel()]; duplicate {
+			return errors.New("seat map contains a duplicate seat label")
+		}
+		seenIDs[seat.GetId()] = struct{}{}
+		seenLabels[seat.GetLabel()] = struct{}{}
+	}
+	for _, zone := range layout.GetZones() {
+		if zone == nil || zone.GetCapacity() < 0 || !normalizedBounds(zone.GetMinX(), zone.GetMaxX(), zone.GetMinY(), zone.GetMaxY()) {
+			return errors.New("seat map contains an invalid zone")
+		}
+	}
+	for _, block := range layout.GetBlocks() {
+		if block == nil || !normalizedBounds(block.GetMinX(), block.GetMaxX(), block.GetMinY(), block.GetMaxY()) {
+			return errors.New("seat map contains an invalid block")
+		}
+	}
+	sort.Slice(layout.GetSeats(), func(i, j int) bool { return layout.GetSeats()[i].GetLabel() < layout.GetSeats()[j].GetLabel() })
+	sort.Slice(layout.GetZones(), func(i, j int) bool { return layout.GetZones()[i].GetCode() < layout.GetZones()[j].GetCode() })
+	sort.Slice(layout.GetBlocks(), func(i, j int) bool { return layout.GetBlocks()[i].GetCode() < layout.GetBlocks()[j].GetCode() })
 	return nil
 }
 
@@ -199,113 +242,20 @@ func normalizedStrings(values []string) []string {
 	return result
 }
 
-func canonicalLayout(raw json.RawMessage, auditoriumID string, capacity int) (json.RawMessage, string, error) {
-	var layout contracts.SeatMapLayout
-	if err := json.Unmarshal(raw, &layout); err != nil {
-		return nil, "", errors.New("seat map layout must use the canonical schema")
-	}
-	if len(layout.Seats) != capacity {
-		return nil, "", fmt.Errorf("seat map contains %d seats, expected %d", len(layout.Seats), capacity)
-	}
-	if err := normalizeLayout(&layout, auditoriumID); err != nil {
-		return nil, "", err
-	}
-	// A successfully validated contract layout is always JSON encodable.
-	canonical, _ := json.Marshal(layout)
-	digest := sha256.Sum256(canonical)
-	return canonical, hex.EncodeToString(digest[:]), nil
-}
-
-func normalizeLayout(layout *contracts.SeatMapLayout, auditoriumID string) error {
-	seenIDs := make(map[string]struct{}, len(layout.Seats))
-	seenLabels := make(map[string]struct{}, len(layout.Seats))
-	for index := range layout.Seats {
-		if err := normalizeSeat(&layout.Seats[index], auditoriumID, seenIDs, seenLabels); err != nil {
-			return err
-		}
-	}
-	if err := validateLayoutGroups(layout); err != nil {
-		return err
-	}
-	sortLayout(layout)
-	return nil
-}
-
-func normalizeSeat(
-	seat *contracts.SeatMapSeat,
-	auditoriumID string,
-	seenIDs map[string]struct{},
-	seenLabels map[string]struct{},
-) error {
-	seat.AuditoriumID = strings.TrimSpace(seat.AuditoriumID)
-	seat.Label = strings.TrimSpace(seat.Label)
-	seat.Row = strings.TrimSpace(seat.Row)
-	seat.Type = strings.TrimSpace(seat.Type)
-	seat.Features = normalizedStrings(seat.Features)
-	seat.SourceClasses = normalizedStrings(seat.SourceClasses)
-	canonicalLabel := seat.Row + strconv.Itoa(seat.Number)
-	if seat.AuditoriumID != auditoriumID || seat.Row == "" || seat.Row != strings.ToUpper(seat.Row) ||
-		seat.Number < 1 || seat.Label != canonicalLabel || seat.Type == "" ||
-		seat.ID != contracts.SeatID(auditoriumID, seat.Label) {
-		return errors.New("seat map contains a noncanonical seat")
-	}
-	if !normalizedCoordinate(seat.X) || !normalizedCoordinate(seat.Y) {
-		return fmt.Errorf("seat %s position must be finite and normalized to 0..1", seat.Label)
-	}
-	if _, duplicate := seenIDs[seat.ID]; duplicate {
-		return errors.New("seat map contains a duplicate seat id")
-	}
-	if _, duplicate := seenLabels[seat.Label]; duplicate {
-		return errors.New("seat map contains a duplicate seat label")
-	}
-	seenIDs[seat.ID] = struct{}{}
-	seenLabels[seat.Label] = struct{}{}
-	return nil
-}
-
-func validateLayoutGroups(layout *contracts.SeatMapLayout) error {
-	for _, zone := range layout.Zones {
-		if zone.Capacity < 0 || !normalizedBounds(zone.MinX, zone.MaxX, zone.MinY, zone.MaxY) {
-			return errors.New("seat map contains an invalid zone")
-		}
-	}
-	for _, block := range layout.Blocks {
-		if !normalizedBounds(block.MinX, block.MaxX, block.MinY, block.MaxY) {
-			return errors.New("seat map contains an invalid block")
-		}
-	}
-	return nil
-}
-
-func sortLayout(layout *contracts.SeatMapLayout) {
-	sort.Slice(layout.Seats, func(i, j int) bool { return layout.Seats[i].Label < layout.Seats[j].Label })
-	sort.Slice(layout.Zones, func(i, j int) bool {
-		if layout.Zones[i].Code == layout.Zones[j].Code {
-			return layout.Zones[i].Name < layout.Zones[j].Name
-		}
-		return layout.Zones[i].Code < layout.Zones[j].Code
-	})
-	sort.Slice(layout.Blocks, func(i, j int) bool {
-		if layout.Blocks[i].Code == layout.Blocks[j].Code {
-			return layout.Blocks[i].Name < layout.Blocks[j].Name
-		}
-		return layout.Blocks[i].Code < layout.Blocks[j].Code
-	})
-}
-
 func normalizedCoordinate(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }
 
 func normalizedBounds(minX, maxX, minY, maxY float64) bool {
-	return normalizedCoordinate(minX) && normalizedCoordinate(maxX) &&
-		normalizedCoordinate(minY) && normalizedCoordinate(maxY) && minX <= maxX && minY <= maxY
+	return normalizedCoordinate(minX) && normalizedCoordinate(maxX) && normalizedCoordinate(minY) && normalizedCoordinate(maxY) && minX <= maxX && minY <= maxY
 }
 
-// ValidateObservationTime checks whether a non-zero observation timestamp is
-// within the catalog provider's accepted future tolerance.
+// ValidateObservationTime rejects missing and implausibly future observations.
 func ValidateObservationTime(observedAt, now time.Time) error {
-	if !observedAt.IsZero() && observedAt.After(now.Add(MaximumObservationClockSkew)) {
+	if observedAt.IsZero() {
+		return errors.New("catalog observation time is required")
+	}
+	if observedAt.After(now.Add(MaximumObservationClockSkew)) {
 		return errors.New("catalog observation is in the future")
 	}
 	return nil
