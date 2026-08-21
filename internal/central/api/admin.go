@@ -9,27 +9,11 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	"github.com/cineko-org/central/internal/central/reconcile"
+	"github.com/cineko-org/central/internal/support/numeric"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-type AdminConfiguration struct {
-	ListenAddress             string `json:"listenAddress"`
-	MinimumRuntimeVersion     string `json:"minimumRuntimeVersion,omitempty"`
-	MinimumBrowserRevision    string `json:"minimumBrowserRevision,omitempty"`
-	ClientSessionSeconds      int64  `json:"clientSessionSeconds"`
-	ClientRefreshSeconds      int64  `json:"clientRefreshSeconds"`
-	AdminSessionSeconds       int64  `json:"adminSessionSeconds"`
-	ReconcileIntervalSeconds  int64  `json:"reconcileIntervalSeconds"`
-	ProbeHeartbeatTTLSeconds  int64  `json:"probeHeartbeatTtlSeconds"`
-	ProbeOfflineRetentionDays int64  `json:"probeOfflineRetentionDays"`
-	AssignmentRetryMinSeconds int64  `json:"assignmentRetryMinSeconds"`
-	AssignmentRetryMaxSeconds int64  `json:"assignmentRetryMaxSeconds"`
-	ReconcileBatchSize        int    `json:"reconcileBatchSize"`
-}
-
-type adminLoginRequest struct {
-	UserID   string `json:"userId"`
-	Password string `json:"password"`
-}
 
 func (server *Server) adminLogin(writer http.ResponseWriter, request *http.Request) {
 	if !server.sameOriginAdminRequest(writer, request) {
@@ -39,12 +23,12 @@ func (server *Server) adminLogin(writer http.ResponseWriter, request *http.Reque
 		server.writeAPIError(writer, request, http.StatusServiceUnavailable, "admin_unavailable", "admin login is unavailable", true)
 		return
 	}
-	var input adminLoginRequest
-	if !server.decodeJSON(writer, request, &input) {
+	input := &adminpb.LoginRequest{}
+	if !server.decodeProtoJSON(writer, request, input) {
 		return
 	}
 	token, principal, err := server.admin.Login(
-		request.Context(), server.clientAddress(request), input.UserID, input.Password,
+		request.Context(), server.clientAddress(request), input.GetUserId(), input.GetPassword(),
 	)
 	if err != nil {
 		switch {
@@ -58,8 +42,10 @@ func (server *Server) adminLogin(writer http.ResponseWriter, request *http.Reque
 		}
 		return
 	}
-	server.setAdminCookie(writer, request, token, time.Unix(principal.ExpiresAt, 0))
-	server.writeJSON(writer, http.StatusOK, principal)
+	server.setAdminCookie(writer, request, token, principal.GetExpiresAt().AsTime())
+	response := &adminpb.LoginResponse{}
+	response.SetPrincipal(principal)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) adminLogout(writer http.ResponseWriter, request *http.Request) {
@@ -81,7 +67,9 @@ func (server *Server) adminLogout(writer http.ResponseWriter, request *http.Requ
 func (server *Server) adminSession(writer http.ResponseWriter, request *http.Request) {
 	principal, ok := server.authenticatedAdmin(writer, request)
 	if ok {
-		server.writeJSON(writer, http.StatusOK, principal)
+		response := &adminpb.GetSessionResponse{}
+		response.SetPrincipal(principal)
+		server.writeProtoJSON(writer, http.StatusOK, response)
 	}
 }
 
@@ -90,18 +78,23 @@ func (server *Server) adminStatus(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	ready := server.service.Ready(request.Context()) == nil
-	response := map[string]any{"ready": ready}
+	status := &adminpb.Status{}
+	status.SetReady(ready)
 	if server.reconciler != nil {
-		response["reconciler"] = server.reconciler.Snapshot()
+		status.SetReconciler(reconcileStatusProto(server.reconciler.Snapshot()))
 	}
-	server.writeJSON(writer, http.StatusOK, response)
+	response := &adminpb.GetStatusResponse{}
+	response.SetStatus(status)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) adminConfigurationView(writer http.ResponseWriter, request *http.Request) {
 	if _, ok := server.authenticatedAdmin(writer, request); !ok {
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, server.adminConfiguration)
+	response := &adminpb.GetConfigurationResponse{}
+	response.SetConfiguration(server.adminConfiguration)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) currentAdminProbeRelease(writer http.ResponseWriter, request *http.Request) {
@@ -113,21 +106,21 @@ func (server *Server) currentAdminProbeRelease(writer http.ResponseWriter, reque
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, release)
+	server.writeProtoJSON(writer, http.StatusOK, release)
 }
 
 func (server *Server) authenticatedAdmin(
 	writer http.ResponseWriter,
 	request *http.Request,
-) (adminPrincipal, bool) {
+) (*adminpb.Principal, bool) {
 	if server.admin == nil {
 		server.writeAPIError(writer, request, http.StatusServiceUnavailable, "admin_unavailable", "admin login is unavailable", true)
-		return adminPrincipal{}, false
+		return nil, false
 	}
 	cookie, err := request.Cookie(adminSessionCookie)
 	if err != nil {
 		server.writeAPIError(writer, request, http.StatusUnauthorized, "unauthorized", "authentication required", false)
-		return adminPrincipal{}, false
+		return nil, false
 	}
 	principal, err := server.admin.Verify(request.Context(), cookie.Value)
 	if err != nil {
@@ -136,7 +129,7 @@ func (server *Server) authenticatedAdmin(
 		} else {
 			server.writeAPIError(writer, request, http.StatusInternalServerError, "admin_session_failed", "session validation failed", true)
 		}
-		return adminPrincipal{}, false
+		return nil, false
 	}
 	return principal, true
 }
@@ -159,6 +152,53 @@ func cookieMaxAge(expiresAt time.Time) int {
 		return -1
 	}
 	return int(time.Until(expiresAt).Seconds())
+}
+
+func reconcileStatusProto(value reconcile.Status) *adminpb.ReconcileStatus {
+	status := &adminpb.ReconcileStatus{}
+	status.SetRunning(value.Running)
+	status.SetHealthy(value.Healthy)
+	status.SetLeader(value.Leader)
+	if !value.LastAttemptAt.IsZero() {
+		status.SetLastAttemptAt(timestamppb.New(value.LastAttemptAt))
+	}
+	if !value.LastSuccessAt.IsZero() {
+		status.SetLastSuccessAt(timestamppb.New(value.LastSuccessAt))
+	}
+	if !value.LastErrorAt.IsZero() {
+		status.SetLastErrorAt(timestamppb.New(value.LastErrorAt))
+	}
+	status.SetLastErrorCode(value.LastErrorCode)
+	status.SetLastReport(reconcileReportProto(value.LastReport))
+	return status
+}
+
+func reconcileReportProto(value reconcile.Report) *adminpb.ReconcileReport {
+	report := &adminpb.ReconcileReport{}
+	report.SetLeader(value.Leader)
+	if !value.StartedAt.IsZero() {
+		report.SetStartedAt(timestamppb.New(value.StartedAt))
+	}
+	if !value.FinishedAt.IsZero() {
+		report.SetFinishedAt(timestamppb.New(value.FinishedAt))
+	}
+	report.SetStaleProbes(numeric.ClampInt32(value.StaleProbes))
+	report.SetDeletedProbes(numeric.ClampInt32(value.DeletedProbes))
+	report.SetDeletedClientEvents(value.DeletedClientEvents)
+	report.SetExpiredLeases(numeric.ClampInt32(value.ExpiredLeases))
+	report.SetRequeuedAssignments(numeric.ClampInt32(value.RequeuedAssignments))
+	report.SetFailedAssignments(numeric.ClampInt32(value.FailedAssignments))
+	report.SetMissedAssignments(numeric.ClampInt32(value.MissedAssignments))
+	report.SetAdvancedPolicies(numeric.ClampInt32(value.AdvancedPolicies))
+	report.SetCreatedAssignments(numeric.ClampInt32(value.CreatedAssignments))
+	report.SetDeferredPolicies(numeric.ClampInt32(value.DeferredPolicies))
+	report.SetSuspendedPolicies(numeric.ClampInt32(value.SuspendedPolicies))
+	report.SetCatalogRefreshCreated(value.CatalogRefreshCreated)
+	report.SetCatalogRefreshWaiting(value.CatalogRefreshWaiting)
+	report.SetSeatMapBackfillCreated(value.SeatMapBackfillCreated)
+	report.SetSeatMapBackfillWaiting(value.SeatMapBackfillWaiting)
+	report.SetOldestDueAgeSeconds(value.OldestDueAgeSeconds)
+	return report
 }
 
 func (server *Server) secureRequest(request *http.Request) bool {

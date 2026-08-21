@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CentralAPIError, loadJSON } from './api';
-import type { AdminReleases, AdminStatus } from './types';
+import { GetStatusResponseSchema, type Status } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { RegistrySchema, type Registry } from '@cineko/contracts/gen/ts/cineko/release/release_pb';
+import { CentralAPIError, loadProto } from './api';
 import { StatusPageView } from './ui/StatusPageView';
 
 export function StatusView({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [status, setStatus] = useState<AdminStatus>();
-  const [releases, setReleases] = useState<AdminReleases>();
+  const [status, setStatus] = useState<Status>();
+  const [releases, setReleases] = useState<Registry>();
   const [updatedAt, setUpdatedAt] = useState<Date>();
   const [failed, setFailed] = useState(false);
   const refresh = useCallback(async () => {
     setFailed(false);
     try {
       const [nextStatus, nextReleases] = await Promise.all([
-        loadJSON<AdminStatus>('/v1/admin/status'),
-        loadJSON<AdminReleases>('/v1/admin/releases'),
+        loadProto(GetStatusResponseSchema, '/v1/admin/status'),
+        loadProto(RegistrySchema, '/v1/admin/releases'),
       ]);
-      setStatus(nextStatus);
+      setStatus(nextStatus.status);
       setReleases(nextReleases);
       setUpdatedAt(new Date());
     } catch (error) {

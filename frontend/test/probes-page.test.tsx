@@ -1,25 +1,17 @@
 import { MantineProvider } from '@mantine/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { AdminProbe } from '../src/central/types';
+import { create } from '@bufbuild/protobuf';
+import { ProbeSchema, type Probe } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
 import { ProbesPageView } from '../src/central/ui/ProbesPageView';
 
 const noOp = () => undefined;
-const probes: AdminProbe[] = [
-  {
-    id: 'probe_client_home_seoul_01', kind: 'client', ownerUserId: 'user_yongsan', networkId: 'home-seoul',
-    runtimeVersion: '2.0.0', browserRevision: '1228', platform: 'darwin', arch: 'arm64', status: 'online',
-    draining: false, availableSlots: 1, maxConcurrency: 1, health: 'healthy',
-    lastHeartbeatAt: '2026-08-18T08:20:00Z', updatedAt: '2026-08-18T08:20:00Z',
-  },
-  {
-    id: 'probe_container_example_02', kind: 'container', networkId: 'example-network', runtimeVersion: '1.2.1', browserRevision: '1228',
-    platform: 'linux', arch: 'amd64', status: 'offline', draining: false, availableSlots: 0, maxConcurrency: 3,
-    health: 'degraded', reasonCode: 'heartbeat_timeout', lastHeartbeatAt: '2026-08-18T07:00:00Z', updatedAt: '2026-08-18T07:00:00Z',
-  },
+const probes: Probe[] = [
+  create(ProbeSchema, { id: 'probe_client_home_seoul_01', kind: { kind: { case: 'client', value: {} } }, ownerUserId: 'user_yongsan', networkId: 'home-seoul', runtime: { componentVersion: '2.0.0', browserRevision: '1228', platform: 'darwin', architecture: 'arm64' }, state: { state: { case: 'online', value: {} } }, availableSlots: 1, maxConcurrency: 1, health: { health: { case: 'healthy', value: {} } } }),
+  create(ProbeSchema, { id: 'probe_container_example_02', kind: { kind: { case: 'container', value: {} } }, networkId: 'example-network', runtime: { componentVersion: '1.2.1', browserRevision: '1228', platform: 'linux', architecture: 'amd64' }, state: { state: { case: 'offline', value: {} } }, availableSlots: 0, maxConcurrency: 3, health: { health: { case: 'degraded', value: { reasonCode: 'heartbeat_timeout' } } } }),
 ];
 
-function render(items?: AdminProbe[], failed?: 'load' | 'remove'): string {
+function render(items?: Probe[], failed?: 'load' | 'remove'): string {
   return renderToStaticMarkup(
     <MantineProvider>
       <ProbesPageView
@@ -41,7 +33,7 @@ describe('Probe management presentation', () => {
     expect(markup).toContain('Probe 관리');
     expect(markup).toContain('사용자 Client');
     expect(markup).toContain('서버 Probe');
-    expect(markup).toContain('Heartbeat 미수신');
+    expect(markup).toContain('Heartbeat 기록 없음');
     expect(markup).toContain('가용 슬롯');
     expect(markup).not.toContain('>Container<');
     expect(markup).toContain('Probe, 네트워크 또는 사용자 검색');

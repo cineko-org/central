@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -12,7 +11,11 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	contracts "github.com/cineko-org/contracts/v3"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const releasePublisherToken = "0123456789abcdef0123456789abcdef"
@@ -24,9 +27,7 @@ func TestReleaseRegistryPublisherAndCurrentEndpoints(t *testing.T) {
 	}
 	repository := &apiClientRepository{
 		principal: central.ClientPrincipal{UserID: "user", SessionID: "session"},
-		device: central.ClientDevice{
-			InstallationID: "install", UserID: "user", DeviceID: "device", Platform: "darwin", Arch: "arm64",
-		},
+		device:    apiClientDevice(),
 	}
 	clients, err := central.NewClientService(repository, time.Hour)
 	if err != nil {
@@ -53,23 +54,20 @@ func TestReleaseRegistryPublisherAndCurrentEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	unavailable := request(t, withoutPublisher.Handler(), http.MethodPost, "/v1/release-registry/client", apiClientReleaseSet(), map[string]string{
-		"Authorization":          "Bearer " + releasePublisherToken,
-		contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
+		"Authorization": "Bearer " + releasePublisherToken,
 	})
 	assertAPIError(t, unavailable, http.StatusServiceUnavailable, "release_publisher_unavailable")
 
 	publishHeaders := map[string]string{
-		"Authorization":          "Bearer " + releasePublisherToken,
-		contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
+		"Authorization": "Bearer " + releasePublisherToken,
 	}
 	for name, headers := range map[string]map[string]string{
-		"missing": {contracts.ProtocolHeader: contracts.ProtocolHeaderValue()},
+		"missing": {},
 		"bare": {
-			"Authorization": releasePublisherToken, contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
+			"Authorization": releasePublisherToken,
 		},
 		"wrong": {
-			"Authorization":          "Bearer " + strings.Repeat("x", 32),
-			contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
+			"Authorization": "Bearer " + strings.Repeat("x", 32),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -83,30 +81,13 @@ func TestReleaseRegistryPublisherAndCurrentEndpoints(t *testing.T) {
 		"unknown": true,
 	}, publishHeaders)
 	assertAPIError(t, invalid, http.StatusBadRequest, "invalid_json")
-	clientWithUnknownField := releaseSetPayload(t, apiClientReleaseSet())
-	envelopePayload, payloadOK := clientWithUnknownField["payload"].(map[string]any)
-	if !payloadOK {
-		t.Fatal("encoded release envelope has an unexpected shape")
-	}
-	releaseValues, valuesOK := envelopePayload["releases"].([]any)
-	if !valuesOK || len(releaseValues) == 0 {
-		t.Fatal("encoded release set has an unexpected shape")
-	}
-	firstRelease, releaseOK := releaseValues[0].(map[string]any)
-	if !releaseOK {
-		t.Fatal("encoded release has an unexpected shape")
-	}
-	firstRelease["unknown"] = true
+	clientWithUnknownField := map[string]any{"releases": []any{map[string]any{"unknown": true}}}
 	invalidNested := request(
 		t, server.Handler(), http.MethodPost, "/v1/release-registry/client", clientWithUnknownField, publishHeaders,
 	)
 	assertAPIError(t, invalidNested, http.StatusBadRequest, "invalid_json")
-	partial := request(t, server.Handler(), http.MethodPost, "/v1/release-registry/client", contracts.ReleaseEnvelope[contracts.ReleaseSet[central.ClientRelease]]{
-		SchemaVersion: contracts.ReleasePayloadSchemaVersion,
-		Payload: contracts.ReleaseSet[central.ClientRelease]{
-			Releases: []central.ClientRelease{apiClientRelease()},
-		},
-	}, publishHeaders)
+	partial := request(t, server.Handler(), http.MethodPost, "/v1/release-registry/client",
+		releasepb.ClientReleaseSet_builder{Releases: []*releasepb.ClientRelease{apiClientRelease()}}.Build(), publishHeaders)
 	assertAPIError(t, partial, http.StatusBadRequest, "invalid_request")
 
 	publications := []struct {
@@ -126,39 +107,38 @@ func TestReleaseRegistryPublisherAndCurrentEndpoints(t *testing.T) {
 			publication.payload, publishHeaders,
 		)
 		if response.Code != http.StatusCreated ||
-			response.Header().Get(contracts.ReleaseGenerationHeader) != stringGeneration(publication.want) ||
-			!strings.Contains(response.Body.String(), `"generation":`+stringGeneration(publication.want)) {
+			response.Header().Get(releaseGenerationHeader) != stringGeneration(publication.want) {
 			t.Fatalf("publish %s = %d, headers %v, body %s", publication.component, response.Code, response.Header(), response.Body)
 		}
 	}
 	idempotent := request(
 		t, server.Handler(), http.MethodPost, "/v1/release-registry/probe", apiProbeReleaseSet(), publishHeaders,
 	)
-	if idempotent.Code != http.StatusOK || idempotent.Header().Get(contracts.ReleaseGenerationHeader) != "1" {
+	if idempotent.Code != http.StatusOK || idempotent.Header().Get(releaseGenerationHeader) != "1" {
 		t.Fatalf("idempotent Probe publish = %d, headers %v", idempotent.Code, idempotent.Header())
 	}
 	idempotentDesktop := request(
 		t, server.Handler(), http.MethodPost, "/v1/release-registry/client", apiClientReleaseSet(), publishHeaders,
 	)
 	if idempotentDesktop.Code != http.StatusOK ||
-		idempotentDesktop.Header().Get(contracts.ReleaseGenerationHeader) != "1" {
+		idempotentDesktop.Header().Get(releaseGenerationHeader) != "1" {
 		t.Fatalf("idempotent desktop publish = %d, headers %v", idempotentDesktop.Code, idempotentDesktop.Header())
 	}
 	conflictPayload := apiClientReleaseSet()
-	conflictPayload.Payload.Releases[0].Artifact.SHA256 = strings.Repeat("f", 64)
+	conflictPayload.GetReleases()[0].GetArtifact().SetSha256(strings.Repeat("f", 64))
 	conflict := request(
 		t, server.Handler(), http.MethodPost, "/v1/release-registry/client", conflictPayload, publishHeaders,
 	)
 	assertAPIError(t, conflict, http.StatusConflict, "conflict")
 
 	clientHeaders := map[string]string{
-		"Authorization": "Bearer session-token", contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
+		"Authorization": "Bearer session-token",
 	}
 	runtimeResponse := request(
 		t, server.Handler(), http.MethodGet, "/v1/releases/runtime/current?platform=darwin&arch=arm64", nil,
 		clientHeaders,
 	)
-	if runtimeResponse.Code != http.StatusOK || runtimeResponse.Header().Get(contracts.ReleaseGenerationHeader) != "1" ||
+	if runtimeResponse.Code != http.StatusOK || runtimeResponse.Header().Get(releaseGenerationHeader) != "1" ||
 		!strings.Contains(runtimeResponse.Body.String(), `"revision":"1234"`) {
 		t.Fatalf("current runtime = %d, headers %v, body %s", runtimeResponse.Code, runtimeResponse.Header(), runtimeResponse.Body)
 	}
@@ -171,22 +151,28 @@ func TestReleaseRegistryPublisherAndCurrentEndpoints(t *testing.T) {
 	}
 
 	nonce := strings.Repeat("n", 16)
-	staleTicket := request(t, server.Handler(), http.MethodPost, "/v1/launch-tickets", map[string]any{
-		"installationId": "install", "deviceId": "device", "releaseGeneration": 3,
-		"clientVersion": "1.0.0", "artifactSha256": apiClientRelease().Artifact.SHA256,
-		"protocol": central.ProtocolVersion, "browserRevision": "1234",
-		"browserArtifactSha256": apiBrowserRelease().Artifact.SHA256,
-		"playwrightVersion":     "1.61.1", "playwrightArtifactSha256": apiPlaywrightRelease().Artifact.SHA256,
-		"nonce": nonce,
-	}, map[string]string{
-		"Authorization": "Bearer session-token", contracts.ProtocolHeader: contracts.ProtocolHeaderValue(),
+	launchContext := &clientpb.LaunchContext{}
+	launchContext.SetInstallationId("install")
+	launchContext.SetDeviceId("device")
+	launchContext.SetReleaseGeneration(3)
+	launchContext.SetClientVersion("1.0.0")
+	launchContext.SetArtifactSha256(apiClientRelease().GetArtifact().GetSha256())
+	launchContext.SetBrowserRevision("1234")
+	launchContext.SetBrowserArtifactSha256(apiBrowserRelease().GetArtifact().GetSha256())
+	launchContext.SetPlaywrightVersion("1.61.1")
+	launchContext.SetPlaywrightArtifactSha256(apiPlaywrightRelease().GetArtifact().GetSha256())
+	staleTicketRequest := &clientpb.LaunchTicketRequest{}
+	staleTicketRequest.SetContext(launchContext)
+	staleTicketRequest.SetNonce(nonce)
+	staleTicket := request(t, server.Handler(), http.MethodPost, "/v1/launch-tickets", staleTicketRequest, map[string]string{
+		"Authorization":   "Bearer session-token",
 		"Idempotency-Key": nonce,
 	})
 	assertAPIError(t, staleTicket, http.StatusConflict, "stale_release")
 
 	health := request(t, server.Handler(), http.MethodGet, "/health", nil, nil)
-	if health.Header().Get(contracts.ReleaseGenerationHeader) != "1" {
-		t.Fatalf("health release generation = %q", health.Header().Get(contracts.ReleaseGenerationHeader))
+	if health.Header().Get(releaseGenerationHeader) != "1" {
+		t.Fatalf("health release generation = %q", health.Header().Get(releaseGenerationHeader))
 	}
 
 	login := request(t, server.Handler(), http.MethodPost, "/v1/admin/login", map[string]string{
@@ -219,13 +205,12 @@ func TestEventStreamHeartbeatCarriesReleaseGeneration(t *testing.T) {
 	}
 	server.eventHeartbeat = time.Millisecond
 	ctx, cancel := context.WithCancel(t.Context())
-	writer := newCancelResponseWriter(cancel, `"releaseGeneration":7`)
+	writer := newCancelResponseWriter(cancel, `"ready"`)
 	httpRequest := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/events/stream", nil)
 	httpRequest.Header.Set("Authorization", "Bearer session-token")
-	httpRequest.Header.Set(contracts.ProtocolHeader, contracts.ProtocolHeaderValue())
 	server.Handler().ServeHTTP(writer, httpRequest)
-	if writer.status != http.StatusOK || !strings.Contains(writer.body.String(), `"releaseGeneration":7`) ||
-		!strings.Contains(writer.body.String(), `"action":"ready"`) {
+	if writer.status != http.StatusOK || !strings.Contains(writer.body.String(), `"releaseGeneration":"7"`) ||
+		!strings.Contains(writer.body.String(), `"ready"`) {
 		t.Fatalf("event stream = %d, %q", writer.status, writer.body.String())
 	}
 }
@@ -234,132 +219,134 @@ func stringGeneration(generation int64) string {
 	return strconv.FormatInt(generation, 10)
 }
 
-func releaseSetPayload(t *testing.T, releaseSet any) map[string]any {
-	t.Helper()
-	encoded, err := json.Marshal(releaseSet)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := make(map[string]any)
-	if err := json.Unmarshal(encoded, &payload); err != nil {
-		t.Fatal(err)
-	}
-	return payload
-}
-
-func apiClientRelease() central.ClientRelease {
-	return central.ClientRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "1.0.0",
-		MinimumLauncherVersion: "1.0.0", MinimumBrowserRevision: "1234",
-		PlaywrightVersion: "1.61.1", Protocol: central.ProtocolVersion,
-		Artifact: apiArtifact("client", strings.Repeat("1", 64)),
+func apiClientRelease() *releasepb.ClientRelease {
+	channel, platform, architecture, version := "stable", "darwin", "arm64", "1.0.0"
+	launcherVersion, browserRevision, playwrightVersion := "1.0.0", "1234", "1.61.1"
+	return releasepb.ClientRelease_builder{
+		Channel: &channel, Platform: &platform, Architecture: &architecture, Version: &version,
+		MinimumLauncherVersion: &launcherVersion, MinimumBrowserRevision: &browserRevision,
+		PlaywrightVersion: &playwrightVersion,
+		Artifact:          apiArtifact("client", strings.Repeat("1", 64)),
 		ProbeBootstrapPublicKeys: map[string]string{
 			"primary": "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n",
 		},
-		PublishedAt: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC),
-	}
+		PublishedAt: timestamppb.New(apiPublishedAt()),
+	}.Build()
 }
 
-func apiClientReleaseSet() contracts.ReleaseEnvelope[contracts.ReleaseSet[central.ClientRelease]] {
+func apiClientReleaseSet() *releasepb.ClientReleaseSet {
 	base := apiClientRelease()
-	return contracts.ReleaseEnvelope[contracts.ReleaseSet[central.ClientRelease]]{
-		SchemaVersion: contracts.ReleasePayloadSchemaVersion,
-		Payload: contracts.ReleaseSet[central.ClientRelease]{Releases: []central.ClientRelease{
-			base,
-			apiClientReleaseForTarget(base, "linux", "amd64", "client"),
-			apiClientReleaseForTarget(base, "windows", "amd64", "client.exe"),
-		}},
-	}
+	return releasepb.ClientReleaseSet_builder{Releases: []*releasepb.ClientRelease{
+		base,
+		apiClientReleaseForTarget(base, "linux", "amd64", "client"),
+		apiClientReleaseForTarget(base, "windows", "amd64", "client.exe"),
+	}}.Build()
 }
 
 func apiClientReleaseForTarget(
-	base central.ClientRelease,
+	base *releasepb.ClientRelease,
 	platform string,
 	architecture string,
 	executable string,
-) central.ClientRelease {
-	base.Platform, base.Arch = platform, architecture
-	base.Artifact.URL = "https://downloads.example.com/cineko/releases/client/" + platform + "/artifact.zip"
-	base.Artifact.Executable = executable
-	return base
+) *releasepb.ClientRelease {
+	result := proto.CloneOf(base)
+	result.SetPlatform(platform)
+	result.SetArchitecture(architecture)
+	result.GetArtifact().SetUrl("https://downloads.example.com/cineko/releases/client/" + platform + "/artifact.zip")
+	result.GetArtifact().SetExecutable(executable)
+	return result
 }
 
-func apiBrowserRelease() central.BrowserRelease {
-	return central.BrowserRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Revision: "1234",
-		CompatiblePlaywrightVersions: []string{"1.61.1"},
-		Artifact:                     apiArtifact("browser", strings.Repeat("2", 64)), PublishedAt: apiClientRelease().PublishedAt,
-	}
+func apiBrowserRelease() *releasepb.BrowserRelease {
+	channel, platform, architecture, revision := "stable", "darwin", "arm64", "1234"
+	return releasepb.BrowserRelease_builder{Channel: &channel, Platform: &platform, Architecture: &architecture,
+		Revision: &revision, CompatiblePlaywrightVersions: []string{"1.61.1"},
+		Artifact: apiArtifact("browser", strings.Repeat("2", 64)), PublishedAt: timestamppb.New(apiPublishedAt())}.Build()
 }
 
-func apiBrowserReleaseSet() contracts.ReleaseEnvelope[contracts.ReleaseSet[central.BrowserRelease]] {
+func apiBrowserReleaseSet() *releasepb.BrowserReleaseSet {
 	base := apiBrowserRelease()
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Artifact.URL, linux.Artifact.Executable = "https://downloads.example.com/cineko/releases/browser/linux/artifact.zip", "chrome"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Artifact.URL, windows.Artifact.Executable = "https://downloads.example.com/cineko/releases/browser/windows/artifact.zip", "chrome.exe"
-	return releaseEnvelope([]central.BrowserRelease{base, linux, windows})
+	linux := proto.CloneOf(base)
+	linux.SetPlatform("linux")
+	linux.SetArchitecture("amd64")
+	linux.GetArtifact().SetUrl("https://downloads.example.com/cineko/releases/browser/linux/artifact.zip")
+	linux.GetArtifact().SetExecutable("chrome")
+	windows := proto.CloneOf(base)
+	windows.SetPlatform("windows")
+	windows.SetArchitecture("amd64")
+	windows.GetArtifact().SetUrl("https://downloads.example.com/cineko/releases/browser/windows/artifact.zip")
+	windows.GetArtifact().SetExecutable("chrome.exe")
+	return releasepb.BrowserReleaseSet_builder{Releases: []*releasepb.BrowserRelease{base, linux, windows}}.Build()
 }
 
-func apiPlaywrightRelease() central.PlaywrightRelease {
-	return central.PlaywrightRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "1.61.1",
-		Artifact: apiArtifact("playwright", strings.Repeat("3", 64)), PublishedAt: apiClientRelease().PublishedAt,
-	}
+func apiPlaywrightRelease() *releasepb.PlaywrightRelease {
+	channel, platform, architecture, version := "stable", "darwin", "arm64", "1.61.1"
+	return releasepb.PlaywrightRelease_builder{Channel: &channel, Platform: &platform, Architecture: &architecture,
+		Version: &version, Artifact: apiArtifact("playwright", strings.Repeat("3", 64)), PublishedAt: timestamppb.New(apiPublishedAt())}.Build()
 }
 
-func apiPlaywrightReleaseSet() contracts.ReleaseEnvelope[contracts.ReleaseSet[central.PlaywrightRelease]] {
+func apiPlaywrightReleaseSet() *releasepb.PlaywrightReleaseSet {
 	base := apiPlaywrightRelease()
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Artifact.URL, linux.Artifact.Executable = "https://downloads.example.com/cineko/releases/playwright/linux/artifact.zip", "playwright"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Artifact.URL, windows.Artifact.Executable = "https://downloads.example.com/cineko/releases/playwright/windows/artifact.zip", "playwright.exe"
-	return releaseEnvelope([]central.PlaywrightRelease{base, linux, windows})
+	linux := proto.CloneOf(base)
+	linux.SetPlatform("linux")
+	linux.SetArchitecture("amd64")
+	linux.GetArtifact().SetUrl("https://downloads.example.com/cineko/releases/playwright/linux/artifact.zip")
+	linux.GetArtifact().SetExecutable("playwright")
+	windows := proto.CloneOf(base)
+	windows.SetPlatform("windows")
+	windows.SetArchitecture("amd64")
+	windows.GetArtifact().SetUrl("https://downloads.example.com/cineko/releases/playwright/windows/artifact.zip")
+	windows.GetArtifact().SetExecutable("playwright.exe")
+	return releasepb.PlaywrightReleaseSet_builder{Releases: []*releasepb.PlaywrightRelease{base, linux, windows}}.Build()
 }
 
-func apiLauncherRelease() central.LauncherRelease {
-	return central.LauncherRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "1.0.0", Protocol: central.ProtocolVersion,
-		Launcher: apiArtifact("launcher", strings.Repeat("4", 64)), PublishedAt: apiClientRelease().PublishedAt,
-	}
+func apiLauncherRelease() *releasepb.LauncherRelease {
+	channel, platform, architecture, version := "stable", "darwin", "arm64", "1.0.0"
+	return releasepb.LauncherRelease_builder{Channel: &channel, Platform: &platform, Architecture: &architecture,
+		Version: &version, Launcher: apiArtifact("launcher", strings.Repeat("4", 64)), PublishedAt: timestamppb.New(apiPublishedAt())}.Build()
 }
 
-func apiLauncherReleaseSet() contracts.ReleaseEnvelope[contracts.ReleaseSet[central.LauncherRelease]] {
+func apiLauncherReleaseSet() *releasepb.LauncherReleaseSet {
 	base := apiLauncherRelease()
-	linux, windows := base, base
-	linux.Platform, linux.Arch = "linux", "amd64"
-	linux.Launcher.URL, linux.Launcher.Executable = "https://downloads.example.com/cineko/releases/launcher/linux/artifact.zip", "cineko-launcher"
-	windows.Platform, windows.Arch = "windows", "amd64"
-	windows.Launcher.URL, windows.Launcher.Executable = "https://downloads.example.com/cineko/releases/launcher/windows/artifact.zip", "cineko-launcher.exe"
-	return releaseEnvelope([]central.LauncherRelease{base, linux, windows})
+	linux := proto.CloneOf(base)
+	linux.SetPlatform("linux")
+	linux.SetArchitecture("amd64")
+	linux.GetLauncher().SetUrl("https://downloads.example.com/cineko/releases/launcher/linux/artifact.zip")
+	linux.GetLauncher().SetExecutable("cineko-launcher")
+	windows := proto.CloneOf(base)
+	windows.SetPlatform("windows")
+	windows.SetArchitecture("amd64")
+	windows.GetLauncher().SetUrl("https://downloads.example.com/cineko/releases/launcher/windows/artifact.zip")
+	windows.GetLauncher().SetExecutable("cineko-launcher.exe")
+	return releasepb.LauncherReleaseSet_builder{Releases: []*releasepb.LauncherRelease{base, linux, windows}}.Build()
 }
 
-func apiProbeRelease() central.ProbeRelease {
-	return central.ProbeRelease{
-		Channel: "stable", Version: "1.0.0", Protocol: central.ProtocolVersion, BrowserRevision: "1234",
-		Image: "registry.example.com/example/cineko-probe", ImageDigest: "sha256:" + strings.Repeat("5", 64),
-		PublishedAt: apiClientRelease().PublishedAt,
-	}
+func apiProbeRelease() *releasepb.ProbeRelease {
+	channel, version, browserRevision := "stable", "1.0.0", "1234"
+	image, digest := "registry.example.com/example/cineko-probe", "sha256:"+strings.Repeat("5", 64)
+	return releasepb.ProbeRelease_builder{Channel: &channel, Version: &version, BrowserRevision: &browserRevision,
+		Image: &image, ImageDigest: &digest, PublishedAt: timestamppb.New(apiPublishedAt())}.Build()
 }
 
-func apiProbeReleaseSet() contracts.ReleaseEnvelope[contracts.ReleaseSet[central.ProbeRelease]] {
-	return releaseEnvelope([]central.ProbeRelease{apiProbeRelease()})
+func apiProbeReleaseSet() *releasepb.ProbeReleaseSet {
+	return releasepb.ProbeReleaseSet_builder{Releases: []*releasepb.ProbeRelease{apiProbeRelease()}}.Build()
 }
 
-func releaseEnvelope[Release any](releases []Release) contracts.ReleaseEnvelope[contracts.ReleaseSet[Release]] {
-	return contracts.ReleaseEnvelope[contracts.ReleaseSet[Release]]{
-		SchemaVersion: contracts.ReleasePayloadSchemaVersion,
-		Payload:       contracts.ReleaseSet[Release]{Releases: releases},
-	}
+func apiArtifact(component, digest string) *releasepb.Artifact {
+	url, executable, size := "https://downloads.example.com/cineko/releases/"+component+"/artifact.zip", component, int64(1)
+	return releasepb.Artifact_builder{Url: &url, Size: &size, Sha256: &digest, Executable: &executable}.Build()
 }
 
-func apiArtifact(component, digest string) central.ReleaseArtifact {
-	return central.ReleaseArtifact{
-		URL:  "https://downloads.example.com/cineko/releases/" + component + "/artifact.zip",
-		Size: 1, SHA256: digest, Executable: component,
-	}
+func apiPublishedAt() time.Time { return time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC) }
+
+func apiClientDevice() *clientpb.Device {
+	device := &clientpb.Device{}
+	device.SetInstallationId("install")
+	device.SetUserId("user")
+	device.SetDeviceId("device")
+	device.SetPlatform("darwin")
+	device.SetArchitecture("arm64")
+	return device
 }
 
 type cancelResponseWriter struct {
@@ -392,7 +379,7 @@ type apiClientRepository struct {
 	records      []central.ReleaseRecord
 	generation   int64
 	principal    central.ClientPrincipal
-	device       central.ClientDevice
+	device       *clientpb.Device
 	ticket       central.LaunchTicket
 	authenticate func([32]byte) (central.ClientPrincipal, error)
 }
@@ -448,20 +435,20 @@ func (repository *apiClientRepository) InsertReleaseSet(
 	return repository.generation, true, nil
 }
 
-func (*apiClientRepository) ProvisionClientCredential(context.Context, central.ClientUser, [32]byte) error {
+func (*apiClientRepository) ProvisionClientCredential(context.Context, *clientpb.User, [32]byte) error {
 	return nil
 }
 
-func (*apiClientRepository) ExchangeClientCredential(context.Context, string, [32]byte, time.Time) (central.ClientUser, error) {
-	return central.ClientUser{}, nil
+func (*apiClientRepository) ExchangeClientCredential(context.Context, string, [32]byte, time.Time) (*clientpb.User, error) {
+	return &clientpb.User{}, nil
 }
 
 func (*apiClientRepository) CreateClientSession(context.Context, central.ClientSession) error {
 	return nil
 }
 
-func (*apiClientRepository) RotateClientSession(context.Context, [32]byte, central.ClientSession, time.Time) (central.ClientUser, error) {
-	return central.ClientUser{}, nil
+func (*apiClientRepository) RotateClientSession(context.Context, [32]byte, central.ClientSession, time.Time) (*clientpb.User, error) {
+	return &clientpb.User{}, nil
 }
 
 func (*apiClientRepository) RevokeClientSession(context.Context, string, time.Time) error { return nil }
@@ -484,45 +471,45 @@ func (repository *apiClientRepository) AuthenticateClientSession(_ context.Conte
 	return repository.principal, nil
 }
 
-func (repository *apiClientRepository) UpsertClientDevice(_ context.Context, device central.ClientDevice) (central.ClientDevice, error) {
+func (repository *apiClientRepository) UpsertClientDevice(_ context.Context, device *clientpb.Device) (*clientpb.Device, error) {
 	repository.device = device
 	return device, nil
 }
 
-func (repository *apiClientRepository) GetClientDevice(context.Context, string, string) (central.ClientDevice, error) {
+func (repository *apiClientRepository) GetClientDevice(context.Context, string, string) (*clientpb.Device, error) {
 	return repository.device, nil
 }
 
-func (*apiClientRepository) GetClientUser(context.Context, string) (central.ClientUser, error) {
-	return central.ClientUser{}, nil
+func (*apiClientRepository) GetClientUser(context.Context, string) (*clientpb.User, error) {
+	return &clientpb.User{}, nil
 }
 
 func (*apiClientRepository) ClientResourceRevisions(context.Context, string) (map[string]int64, error) {
 	return map[string]int64{}, nil
 }
 
-func (*apiClientRepository) ListClientResources(context.Context, string, string) ([]central.ClientResource, error) {
+func (*apiClientRepository) ListClientResources(context.Context, string, string) ([]*clientpb.Resource, error) {
 	return nil, nil
 }
 
-func (*apiClientRepository) GetClientResource(context.Context, string, string, string) (central.ClientResource, error) {
-	return central.ClientResource{}, nil
+func (*apiClientRepository) GetClientResource(context.Context, string, string, string) (*clientpb.Resource, error) {
+	return nil, central.ErrNotFound
 }
 
-func (*apiClientRepository) PutClientResource(context.Context, central.ResourceMutation) (central.ClientResource, error) {
-	return central.ClientResource{}, nil
+func (*apiClientRepository) PutClientResource(context.Context, central.ResourceMutation) (*clientpb.Resource, error) {
+	return nil, central.ErrNotFound
 }
 
-func (*apiClientRepository) DeleteClientResource(context.Context, central.ResourceMutation) (central.ClientResource, error) {
-	return central.ClientResource{}, nil
+func (*apiClientRepository) DeleteClientResource(context.Context, central.ResourceMutation) (*clientpb.Resource, error) {
+	return nil, central.ErrNotFound
 }
 
-func (*apiClientRepository) ListClientEvents(context.Context, string, int64, int) ([]central.ClientEvent, error) {
+func (*apiClientRepository) ListClientEvents(context.Context, string, int64, int) ([]*clientpb.ClientEvent, error) {
 	return nil, nil
 }
 
-func (*apiClientRepository) ClaimClientExecution(context.Context, central.ExecutionClaim) (central.ExecutionCommand, error) {
-	return central.ExecutionCommand{}, central.ErrNotFound
+func (*apiClientRepository) ClaimClientExecution(context.Context, central.ExecutionClaim) (*executionpb.Command, error) {
+	return nil, central.ErrNotFound
 }
 
 func (*apiClientRepository) HeartbeatClientExecution(context.Context, string, string, [32]byte, time.Time, time.Time) error {

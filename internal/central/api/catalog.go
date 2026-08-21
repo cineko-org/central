@@ -5,10 +5,15 @@ import (
 	"net/http"
 	"strconv"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	"google.golang.org/protobuf/proto"
 )
 
 const clientInstallationHeader = "X-Cineko-Installation-Id"
+const catalogGenerationHeader = "X-Cineko-Catalog-Generation"
 
 func (server *Server) getClientCatalog(writer http.ResponseWriter, request *http.Request) {
 	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
@@ -28,12 +33,14 @@ func (server *Server) getAdminCatalogRefresh(writer http.ResponseWriter, request
 	if _, ok := server.authenticatedAdmin(writer, request); !ok || !server.requireCatalog(writer, request) {
 		return
 	}
-	status, err := server.catalog.RefreshStatus(request.Context())
-	if err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	server.writeJSON(writer, http.StatusOK, status)
+	writeProtoCall(server, writer, request, http.StatusOK, server.loadAdminCatalogRefresh)
+}
+
+func (server *Server) loadAdminCatalogRefresh(ctx context.Context) (*adminpb.GetCatalogRefreshStatusResponse, error) {
+	status, err := server.catalog.RefreshStatus(ctx)
+	response := &adminpb.GetCatalogRefreshStatusResponse{}
+	response.SetStatus(status)
+	return response, err
 }
 
 func (server *Server) requestAdminCatalogRefresh(writer http.ResponseWriter, request *http.Request) {
@@ -52,7 +59,9 @@ func (server *Server) requestAdminCatalogRefresh(writer http.ResponseWriter, req
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusAccepted, status)
+	response := &adminpb.RequestCatalogRefreshResponse{}
+	response.SetStatus(status)
+	server.writeProtoJSON(writer, http.StatusAccepted, response)
 }
 
 func (server *Server) writeCatalog(writer http.ResponseWriter, request *http.Request) {
@@ -61,8 +70,8 @@ func (server *Server) writeCatalog(writer http.ResponseWriter, request *http.Req
 		server.writeError(writer, request, err)
 		return
 	}
-	writer.Header().Set(contracts.CatalogGenerationHeader, strconv.FormatInt(catalog.Generation, 10))
-	server.writeJSON(writer, http.StatusOK, catalog)
+	writer.Header().Set(catalogGenerationHeader, strconv.FormatInt(catalog.GetGeneration(), 10))
+	server.writeProtoJSON(writer, http.StatusOK, catalog)
 }
 
 func (server *Server) putClientCatalogSnapshot(writer http.ResponseWriter, request *http.Request) {
@@ -75,13 +84,13 @@ func (server *Server) putClientCatalogSnapshot(writer http.ResponseWriter, reque
 	}
 	if err := server.catalog.AuthorizeClientWrite(
 		request.Context(), principal, request.Header.Get(clientInstallationHeader),
-		contracts.CapabilityCGVCatalogCapture,
+		probedomain.CapabilityCGVCatalogCapture,
 	); err != nil {
 		server.writeError(writer, request, err)
 		return
 	}
-	var snapshot contracts.CatalogSnapshot
-	if !server.decodeJSON(writer, request, &snapshot) {
+	snapshot := &catalogpb.CatalogSnapshot{}
+	if !server.decodeProtoJSON(writer, request, snapshot) {
 		return
 	}
 	generation, err := server.catalog.PutSnapshot(request.Context(), snapshot)
@@ -89,18 +98,20 @@ func (server *Server) putClientCatalogSnapshot(writer http.ResponseWriter, reque
 		server.writeError(writer, request, err)
 		return
 	}
-	writer.Header().Set(contracts.CatalogGenerationHeader, strconv.FormatInt(generation, 10))
-	server.writeJSON(writer, http.StatusOK, map[string]int64{"generation": generation})
+	writer.Header().Set(catalogGenerationHeader, strconv.FormatInt(generation, 10))
+	response := &servicepb.SubmitCatalogSnapshotResponse{}
+	response.SetGeneration(generation)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) getClientSeatMapVersion(writer http.ResponseWriter, request *http.Request) {
-	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (any, error) {
-		return server.catalog.SeatMapVersion(ctx, auditoriumID)
+	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (proto.Message, error) {
+		return server.catalog.SeatMap(ctx, auditoriumID)
 	})
 }
 
 func (server *Server) resolveClientSeatMap(writer http.ResponseWriter, request *http.Request) {
-	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (any, error) {
+	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (proto.Message, error) {
 		return server.catalog.ResolveSeatMap(ctx, auditoriumID)
 	})
 }
@@ -108,7 +119,7 @@ func (server *Server) resolveClientSeatMap(writer http.ResponseWriter, request *
 func (server *Server) writeClientSeatMap(
 	writer http.ResponseWriter,
 	request *http.Request,
-	load func(context.Context, string) (any, error),
+	load func(context.Context, string) (proto.Message, error),
 ) {
 	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
 		return
@@ -118,7 +129,7 @@ func (server *Server) writeClientSeatMap(
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, value)
+	server.writeProtoJSON(writer, http.StatusOK, value)
 }
 
 func (server *Server) requireCatalog(writer http.ResponseWriter, request *http.Request) bool {

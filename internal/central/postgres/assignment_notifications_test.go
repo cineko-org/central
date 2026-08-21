@@ -5,9 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
 	"github.com/cineko-org/central/internal/observation/planning"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestAssignmentNotificationContractCoversClaimEligibility(t *testing.T) {
@@ -34,37 +37,51 @@ func TestAssignmentNotificationContractCoversClaimEligibility(t *testing.T) {
 }
 
 func TestMarshalAssignmentTaskPersistsLaneWithoutChangingTaskShape(t *testing.T) {
+	theater := &catalogpb.Theater{}
+	theater.SetId("theater")
+	theater.SetProviderId("cgv")
+	theater.SetSourceKey("source")
+	theater.SetRegion("서울")
+	theater.SetName("용산아이파크몰")
+	schedule := &observationpb.ScheduleTask{}
+	schedule.SetTheater(theater)
+	schedule.SetTargetDates([]*commonpb.LocalDate{{}})
+	schedule.GetTargetDates()[0].SetYear(2026)
+	schedule.GetTargetDates()[0].SetMonth(8)
+	schedule.GetTargetDates()[0].SetDay(22)
+	schedule.SetLocale("ko-KR")
+	schedule.SetTimeZone("Asia/Seoul")
+	task := &observationpb.AssignmentTask{}
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	task.SetEgress(egress)
+	task.SetSchedule(schedule)
 	raw, err := marshalAssignmentTask(reconcile.NewAssignment{
 		Lane:                 planning.LaneHot,
 		HotTargetFingerprint: "fingerprint",
-		Task:                 central.AssignmentTask{Kind: "cgv.schedule.capture.v2"},
+		Task:                 task,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	var persisted observationpb.AssignmentTask
+	if err := protojson.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	var lane planning.Lane
-	if err := json.Unmarshal(fields[planning.TaskDataLaneKey], &lane); err != nil {
+	if persisted.GetSchedule() == nil || persisted.GetSchedule().GetTheater().GetId() != "theater" {
+		t.Fatalf("persisted task = %s", raw)
+	}
+	if persisted.GetEgress().GetManagedScan() == nil {
+		t.Fatalf("persisted egress = %s", raw)
+	}
+	var taskShape map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &taskShape); err != nil {
 		t.Fatal(err)
 	}
-	if lane != planning.LaneHot {
-		t.Fatalf("persisted lane = %q", lane)
+	if _, exists := taskShape[string(planning.TaskDataLaneKey)]; exists {
+		t.Fatalf("persisted task unexpectedly contains lane metadata: %s", raw)
 	}
-	var fingerprint string
-	if err := json.Unmarshal(fields[planning.TaskDataHotFingerprintKey], &fingerprint); err != nil {
-		t.Fatal(err)
-	}
-	if fingerprint != "fingerprint" {
-		t.Fatalf("persisted hot fingerprint = %q", fingerprint)
-	}
-	var task central.AssignmentTask
-	if err := json.Unmarshal(raw, &task); err != nil {
-		t.Fatal(err)
-	}
-	if task.Kind != "cgv.schedule.capture.v2" {
-		t.Fatalf("task kind = %q", task.Kind)
+	if _, exists := taskShape[string(planning.TaskDataHotFingerprintKey)]; exists {
+		t.Fatalf("persisted task unexpectedly contains fingerprint metadata: %s", raw)
 	}
 }

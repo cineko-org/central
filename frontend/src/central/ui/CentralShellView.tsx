@@ -12,13 +12,13 @@ import {
   IconServer,
   IconUsers,
 } from '@tabler/icons-react';
-import type { AdminSession } from '../types';
+import type { Principal } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
 
 export type CentralPage = 'overview' | 'observations' | 'probes' | 'data' | 'releases' | 'users' | 'settings';
 
 export interface CentralShellViewProps {
   page: CentralPage;
-  session: AdminSession;
+  session: Principal;
   navigationOpen: boolean;
   children: ReactNode;
   onNavigate: (page: CentralPage) => void;

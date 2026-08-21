@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 func TestClientServiceBootstrapUsesEventStreamCursor(t *testing.T) {
@@ -18,13 +20,13 @@ func TestClientServiceBootstrapUsesEventStreamCursor(t *testing.T) {
 	}
 
 	repository.pageErr = nil
-	repository.page = ClientEventPage{Latest: 42}
+	repository.page = ClientEventBatch{Latest: 42}
 	bootstrap, err := service.Bootstrap(t.Context(), principal, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bootstrap.EventCursor != 42 {
-		t.Fatalf("Bootstrap().EventCursor = %d, want 42", bootstrap.EventCursor)
+	if bootstrap.GetEventCursor() != 42 {
+		t.Fatalf("Bootstrap().EventCursor = %d, want 42", bootstrap.GetEventCursor())
 	}
 	if repository.pageUserID != "user" || repository.after != 0 || repository.limit != 1 {
 		t.Fatalf(
@@ -41,8 +43,11 @@ func TestClientServiceEventPageStreamAndFallbackBoundaries(t *testing.T) {
 	streamRepository := newClientStreamCoverageRepository(t)
 	streamService := newClientStreamCoverageService(t, streamRepository)
 	principal := ClientPrincipal{UserID: "user"}
-	wantPage := ClientEventPage{
-		Events:            []ClientEvent{{Sequence: 9, ID: "event"}},
+	event := &clientpb.ClientEvent{}
+	event.SetSequence(9)
+	event.SetId("event")
+	wantPage := ClientEventBatch{
+		Events:            []*clientpb.ClientEvent{event},
 		PrunedThrough:     3,
 		Latest:            12,
 		ReleaseGeneration: 4,
@@ -53,7 +58,7 @@ func TestClientServiceEventPageStreamAndFallbackBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Events) != 1 || page.Events[0].Sequence != 9 || page.PrunedThrough != 3 ||
+	if len(page.Events) != 1 || page.Events[0].GetSequence() != 9 || page.PrunedThrough != 3 ||
 		page.Latest != 12 || page.ReleaseGeneration != 4 {
 		t.Fatalf("EventPage() = %+v, want %+v", page, wantPage)
 	}
@@ -138,7 +143,7 @@ func TestClientServiceWaitEventsBoundaries(t *testing.T) {
 
 type clientStreamCoverageRepository struct {
 	*clientRepositoryFake
-	page           ClientEventPage
+	page           ClientEventBatch
 	pageErr        error
 	pageUserID     string
 	waitErr        error
@@ -170,7 +175,7 @@ func (repository *clientStreamCoverageRepository) ClientEventPage(
 	userID string,
 	after int64,
 	limit int,
-) (ClientEventPage, error) {
+) (ClientEventBatch, error) {
 	repository.pageUserID = userID
 	repository.after = after
 	repository.limit = limit
@@ -199,7 +204,7 @@ func (repository *clientEventListCoverageRepository) ListClientEvents(
 	_ string,
 	after int64,
 	limit int,
-) ([]ClientEvent, error) {
+) ([]*clientpb.ClientEvent, error) {
 	repository.after = after
 	repository.limit = limit
 	return nil, repository.err

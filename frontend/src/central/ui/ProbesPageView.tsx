@@ -22,25 +22,31 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { IconCheck, IconChevronRight, IconCopy, IconSearch } from '@tabler/icons-react';
-import type { AdminProbe } from '../types';
+import type { Probe } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import type { Timestamp } from '@bufbuild/protobuf/wkt';
 import { PageHeader } from './PageHeader';
+import { timestampDate } from './protoPresentation';
 
 export interface ProbesPageViewProps {
-  probes?: AdminProbe[];
-  removing?: AdminProbe;
+  probes?: Probe[];
+  removing?: Probe;
   busy: boolean;
   failure?: 'load' | 'remove';
   onRefresh: () => void;
-  onRemoveRequest: (probe: AdminProbe) => void;
+  onRemoveRequest: (probe: Probe) => void;
   onRemoveCancel: () => void;
   onRemove: () => void;
 }
 
 type StatusFilter = 'all' | 'online' | 'offline';
-type KindFilter = 'all' | AdminProbe['kind'];
+type KindFilter = 'all' | 'container' | 'client';
 
-function probeLabel(probe: AdminProbe): string {
-  return probe.kind === 'client' ? '사용자 Client' : '서버 Probe';
+function probeKind(probe: Probe): 'container' | 'client' | undefined {
+  return probe.kind?.kind.case;
+}
+
+function probeLabel(probe: Probe): string {
+  return probeKind(probe) === 'client' ? '사용자 Client' : '서버 Probe';
 }
 
 function shortID(id: string): string {
@@ -58,15 +64,14 @@ function reasonLabel(reasonCode?: string): string | undefined {
     heartbeat_timeout: 'Heartbeat 미수신',
     registration_expired: '등록 만료',
     runtime_error: '런타임 오류',
-    unsupported_protocol: '프로토콜 불일치',
   };
   return reasonCode ? labels[reasonCode] ?? reasonCode.replaceAll('_', ' ') : undefined;
 }
 
-function heartbeatTime(value?: string): string {
+function heartbeatTime(value?: Timestamp): string {
   if (!value) return 'Heartbeat 기록 없음';
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return '시간 정보 없음';
+  const timestamp = timestampDate(value)?.getTime();
+  if (timestamp === undefined || !Number.isFinite(timestamp)) return '시간 정보 없음';
   const elapsed = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
   if (elapsed < 60) return '방금 전';
   if (elapsed < 3_600) return `${Math.floor(elapsed / 60)}분 전`;
@@ -74,24 +79,33 @@ function heartbeatTime(value?: string): string {
   return `${Math.floor(elapsed / 86_400)}일 전`;
 }
 
-function absoluteTime(value?: string): string {
+function absoluteTime(value?: Timestamp): string {
   if (!value) return '기록 없음';
-  const date = new Date(value);
+  const date = timestampDate(value);
+  if (!date) return '기록 없음';
   return Number.isNaN(date.getTime()) ? '시간 정보 없음' : date.toLocaleString('ko-KR');
 }
 
-function statusInfo(probe: AdminProbe): { label: string; color: string; detail: string } {
-  if (probe.status === 'offline') {
-    return { label: '오프라인', color: 'gray', detail: reasonLabel(probe.reasonCode) ?? '연결되지 않음' };
+function healthReason(probe: Probe): string | undefined {
+  const health = probe.health?.health;
+  return health?.case === 'degraded' || health?.case === 'unhealthy' ? health.value.reasonCode : undefined;
+}
+
+function statusInfo(probe: Probe): { label: string; color: string; detail: string } {
+  if (probe.state?.state.case === 'offline') {
+    return { label: '오프라인', color: 'gray', detail: '연결되지 않음' };
   }
   if (probe.draining) return { label: '정리 중', color: 'orange', detail: '새 작업을 받지 않음' };
-  if (probe.health === 'degraded') {
-    return { label: '저하됨', color: 'yellow', detail: reasonLabel(probe.reasonCode) ?? '상태 확인 필요' };
+  if (probe.health?.health.case === 'degraded') {
+    return { label: '저하됨', color: 'yellow', detail: reasonLabel(healthReason(probe)) ?? '상태 확인 필요' };
+  }
+  if (probe.health?.health.case === 'unhealthy') {
+    return { label: '비정상', color: 'red', detail: reasonLabel(healthReason(probe)) ?? '상태 확인 필요' };
   }
   return { label: '온라인', color: 'green', detail: '작업 수신 가능' };
 }
 
-function availability(probe: AdminProbe): string {
+function availability(probe: Probe): string {
   if (probe.maxConcurrency <= 0) return '용량 정보 없음';
   return `${Math.round((probe.availableSlots / probe.maxConcurrency) * 100)}% 가용`;
 }
@@ -118,7 +132,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ProbeDetails({ probe, onClose }: { probe?: AdminProbe; onClose: () => void }) {
+function ProbeDetails({ probe, onClose }: { probe?: Probe; onClose: () => void }) {
   if (!probe) return null;
   const status = statusInfo(probe);
   return (
@@ -145,9 +159,9 @@ function ProbeDetails({ probe, onClose }: { probe?: AdminProbe; onClose: () => v
         <Divider />
         <Stack gap="md">
           <Text component="h2" fz="md" fw={700}>실행 환경</Text>
-          <DetailRow label="런타임" value={probe.runtimeVersion || '미지정'} />
-          <DetailRow label="브라우저" value={`Chromium ${probe.browserRevision || '미지정'}`} />
-          <DetailRow label="플랫폼" value={platformLabel(probe.platform, probe.arch)} />
+          <DetailRow label="런타임" value={probe.runtime?.componentVersion || '미지정'} />
+          <DetailRow label="브라우저" value={`Chromium ${probe.runtime?.browserRevision || '미지정'}`} />
+          <DetailRow label="플랫폼" value={platformLabel(probe.runtime?.platform || '미지정', probe.runtime?.architecture || '미지정')} />
           <DetailRow label="동시 작업" value={`${probe.availableSlots}/${probe.maxConcurrency} 슬롯 · ${availability(probe)}`} />
         </Stack>
         <Divider />
@@ -177,16 +191,16 @@ export function ProbesPageView({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<AdminProbe>();
+  const [selected, setSelected] = useState<Probe>();
 
   const filtered = useMemo(() => {
     if (!probes) return [];
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return probes.filter((probe) => {
-      if (statusFilter !== 'all' && probe.status !== statusFilter) return false;
-      if (kindFilter !== 'all' && probe.kind !== kindFilter) return false;
+      if (statusFilter !== 'all' && probe.state?.state.case !== statusFilter) return false;
+      if (kindFilter !== 'all' && probeKind(probe) !== kindFilter) return false;
       if (!normalizedQuery) return true;
-      return [probe.id, probe.networkId, probe.ownerUserId, probe.runtimeVersion, probe.platform, probe.arch]
+      return [probe.id, probe.networkId, probe.ownerUserId, probe.runtime?.componentVersion, probe.runtime?.platform, probe.runtime?.architecture]
         .filter(Boolean)
         .some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
     });
@@ -195,9 +209,9 @@ export function ProbesPageView({
   if (!probes && !failure) return <Stack gap="md"><PageHeader title="Probe 관리" /><Skeleton h={72} /><Skeleton h={48} /><Skeleton h={320} /></Stack>;
   if (!probes) return <Stack gap="xl"><PageHeader title="Probe 관리" /><Alert color="red" title="Probe를 불러오지 못했습니다"><Button variant="subtle" color="red" p={0} mt="xs" onClick={onRefresh}>다시 시도</Button></Alert></Stack>;
 
-  const online = probes.filter((probe) => probe.status === 'online').length;
+  const online = probes.filter((probe) => probe.state?.state.case === 'online').length;
   const offline = probes.length - online;
-  const healthy = probes.filter((probe) => probe.status === 'online' && probe.health === 'healthy' && !probe.draining).length;
+  const healthy = probes.filter((probe) => probe.state?.state.case === 'online' && probe.health?.health.case === 'healthy' && !probe.draining).length;
   const draining = probes.filter((probe) => probe.draining).length;
   const availableSlots = probes.reduce((total, probe) => total + Math.max(0, probe.availableSlots), 0);
   const totalSlots = probes.reduce((total, probe) => total + Math.max(0, probe.maxConcurrency), 0);
@@ -212,7 +226,7 @@ export function ProbesPageView({
         <SummaryItem label="전체" value={probes.length} detail={`${online}개 온라인 · ${offline}개 오프라인`} color="gray" />
         <SummaryItem label="정상" value={healthy} detail={`${draining}개 정리 중`} color="green" />
         <SummaryItem label="가용 슬롯" value={`${availableSlots}/${totalSlots}`} detail="현재 작업을 받을 수 있는 용량" color={availableSlots > 0 ? 'green' : 'yellow'} />
-        <SummaryItem label="확인 필요" value={probes.filter((probe) => probe.status === 'online' && probe.health !== 'healthy').length} detail="저하 또는 연결 상태 확인" color="yellow" />
+        <SummaryItem label="확인 필요" value={probes.filter((probe) => probe.state?.state.case === 'online' && probe.health?.health.case !== 'healthy').length} detail="저하 또는 연결 상태 확인" color="yellow" />
       </SimpleGrid>
       <Divider />
 
@@ -263,13 +277,13 @@ export function ProbesPageView({
                     </Stack>
                   </Table.Td>
                   <Table.Td><Text size="sm">{probe.networkId || '네트워크 미지정'}</Text></Table.Td>
-                  <Table.Td><Text size="sm">{probe.runtimeVersion || '버전 미지정'}</Text><Text size="xs" c="dimmed">Chromium {probe.browserRevision || '미지정'} · {platformLabel(probe.platform, probe.arch)}</Text></Table.Td>
+                  <Table.Td><Text size="sm">{probe.runtime?.componentVersion || '버전 미지정'}</Text><Text size="xs" c="dimmed">Chromium {probe.runtime?.browserRevision || '미지정'} · {platformLabel(probe.runtime?.platform || '미지정', probe.runtime?.architecture || '미지정')}</Text></Table.Td>
                   <Table.Td><Text size="sm" fw={600}>{probe.availableSlots}/{probe.maxConcurrency}</Text><Text size="xs" c="dimmed">{availability(probe)}</Text></Table.Td>
                   <Table.Td><Text size="sm">{heartbeatTime(probe.lastHeartbeatAt)}</Text><Text size="xs" c="dimmed">{absoluteTime(probe.lastHeartbeatAt)}</Text></Table.Td>
                   <Table.Td ta="right">
                     <Group justify="flex-end" gap="xs" wrap="nowrap">
                       <Button variant="subtle" color="gray" size="compact-sm" rightSection={<IconChevronRight size={14} />} onClick={() => setSelected(probe)}>상세</Button>
-                      {probe.status === 'offline' ? <Button variant="subtle" color="red" size="compact-sm" disabled={busy} onClick={() => onRemoveRequest(probe)}>제거</Button> : null}
+                      {probe.state?.state.case === 'offline' ? <Button variant="subtle" color="red" size="compact-sm" disabled={busy} onClick={() => onRemoveRequest(probe)}>제거</Button> : null}
                     </Group>
                   </Table.Td>
                 </Table.Tr>

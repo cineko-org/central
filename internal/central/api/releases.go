@@ -7,56 +7,51 @@ import (
 	"strconv"
 
 	"github.com/cineko-org/central/internal/central"
-	contracts "github.com/cineko-org/contracts/v3"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/proto"
 )
 
 func (server *Server) publishRelease(writer http.ResponseWriter, request *http.Request) {
-	if !server.requireClientService(writer, request) || !server.requireReleasePublisher(writer, request) ||
-		!server.requireProtocol(writer, request) {
+	if !server.requireClientService(writer, request) || !server.requireReleasePublisher(writer, request) {
 		return
 	}
 	component := request.PathValue("component")
-	switch component {
-	case "client":
-		publishTypedReleaseSet[central.ClientRelease](server, writer, request, component)
-	case "browser":
-		publishTypedReleaseSet[central.BrowserRelease](server, writer, request, component)
-	case "playwright":
-		publishTypedReleaseSet[central.PlaywrightRelease](server, writer, request, component)
-	case "launcher":
-		publishTypedReleaseSet[central.LauncherRelease](server, writer, request, component)
-	case "probe":
-		publishTypedReleaseSet[central.ProbeRelease](server, writer, request, component)
-	default:
+	set, ok := releaseSet(component)
+	if !ok {
 		server.writeError(writer, request, central.ErrNotFound)
-	}
-}
-
-func publishTypedReleaseSet[Release any](
-	server *Server,
-	writer http.ResponseWriter,
-	request *http.Request,
-	component string,
-) {
-	input := contracts.ReleaseEnvelope[contracts.ReleaseSet[Release]]{}
-	if !server.decodeJSON(writer, request, &input) {
 		return
 	}
-	if input.SchemaVersion != contracts.ReleasePayloadSchemaVersion {
-		server.writeError(writer, request, central.ErrInvalid)
+	if !server.decodeProtoJSON(writer, request, set) {
 		return
 	}
-	generation, inserted, err := server.clients.PublishReleaseSet(request.Context(), component, input.Payload.Releases)
+	generation, inserted, err := server.clients.PublishReleaseSet(request.Context(), component, set)
 	if err != nil {
 		server.writeError(writer, request, err)
 		return
 	}
-	writer.Header().Set(contracts.ReleaseGenerationHeader, strconv.FormatInt(generation, 10))
+	writer.Header().Set(releaseGenerationHeader, strconv.FormatInt(generation, 10))
 	status := http.StatusOK
 	if inserted {
 		status = http.StatusCreated
 	}
-	server.writeJSON(writer, status, map[string]int64{"generation": generation})
+	writer.WriteHeader(status)
+}
+
+func releaseSet(component string) (proto.Message, bool) {
+	switch component {
+	case "client":
+		return &releasepb.ClientReleaseSet{}, true
+	case "browser":
+		return &releasepb.BrowserReleaseSet{}, true
+	case "playwright":
+		return &releasepb.PlaywrightReleaseSet{}, true
+	case "launcher":
+		return &releasepb.LauncherReleaseSet{}, true
+	case "probe":
+		return &releasepb.ProbeReleaseSet{}, true
+	default:
+		return nil, false
+	}
 }
 
 func (server *Server) requireReleasePublisher(writer http.ResponseWriter, request *http.Request) bool {

@@ -1,91 +1,96 @@
 package clientresources
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/cineko-org/central/internal/domain"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-func TestValidatePayloads(t *testing.T) {
+func TestValidatePayloadsUseCanonicalProto(t *testing.T) {
 	t.Parallel()
-	preset := domain.Preset{
-		ID: "preset", UserID: "user", Name: "Preset", TheaterID: "theater",
-		AuditoriumID: "auditorium", SeatCount: 1,
-	}
-	if err := ValidatePayload("user", "presets", "preset", marshalResource(t, preset)); err != nil {
+	preset := validPresetPayload()
+	if err := ValidatePayload("user", "presets", "preset", marshalProto(t, preset)); err != nil {
 		t.Fatalf("preset validation = %v", err)
 	}
-	monitor := domain.MonitorJob{
-		ID: "monitor", UserID: "user", PresetID: "preset", MovieID: "movie_1", Movie: "Movie",
-		TargetDates: []string{"2026-08-12"}, PollInterval: 2 * time.Second,
-		PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
-	}
-	if err := ValidatePayload("user", "monitors", "monitor", marshalResource(t, monitor)); err != nil {
+	monitor := validMonitorPayload()
+	if err := ValidatePayload("user", "monitors", "monitor", marshalProto(t, monitor)); err != nil {
 		t.Fatalf("monitor validation = %v", err)
 	}
-	monitor.Movie = ""
-	if err := ValidatePayload("user", "monitors", "monitor", marshalResource(t, monitor)); err != nil {
-		t.Fatalf("monitor validation rejected a missing display title snapshot = %v", err)
+	monitor.SetMovieId("")
+	if err := ValidatePayload("user", "monitors", "monitor", marshalProto(t, monitor)); err == nil {
+		t.Fatal("monitor validation accepted a missing movie identity")
 	}
-	monitor.MovieID = ""
-	if err := ValidatePayload("user", "monitors", "monitor", marshalResource(t, monitor)); err == nil {
-		t.Fatal("monitor validation accepted a missing canonical movie id")
-	}
-	if err := ValidatePayload("user", "settings", "settings", json.RawMessage(`{"ok":true}`)); err != nil {
-		t.Fatalf("untyped validation = %v", err)
+	if err := ValidatePayload("user", "settings", "settings", marshalProto(t, &clientpb.Settings{})); err != nil {
+		t.Fatalf("settings validation = %v", err)
 	}
 }
 
-func TestValidatePayloadsRejectsCorruption(t *testing.T) {
+func TestValidatePayloadsRejectCorruption(t *testing.T) {
 	t.Parallel()
-	validPreset := json.RawMessage(`{"id":"preset","userId":"user","name":"Preset","theaterId":"theater","auditoriumId":"auditorium","seatCount":1,"seatPreference":{}}`)
-	tests := []struct {
-		kind    string
-		id      string
-		payload json.RawMessage
-	}{
-		{kind: "presets", id: "other", payload: validPreset},
-		{kind: "presets", id: "preset", payload: json.RawMessage(`{"id":"preset","userId":"other"}`)},
-		{kind: "monitors", id: "monitor", payload: json.RawMessage(`{"id":"monitor","userId":"other"}`)},
-		{kind: "monitors", id: "monitor", payload: json.RawMessage(`{"unknown":true}`)},
-		{kind: "monitors", id: "monitor", payload: json.RawMessage(`{"id":"monitor","userId":"user"}`)},
-		{kind: "settings", id: "settings", payload: json.RawMessage(`{`)},
-		{kind: "settings", id: "settings", payload: json.RawMessage(`z`)},
-		{kind: "settings", id: "other", payload: json.RawMessage(`{}`)},
-		{kind: "settings", id: "settings", payload: json.RawMessage(`null`)},
-		{kind: "settings", id: "settings", payload: json.RawMessage(`[]`)},
+	preset := validPresetPayload()
+	if err := ValidatePayload("user", "presets", "other", marshalProto(t, preset)); err == nil {
+		t.Fatal("mismatched preset identity was accepted")
 	}
-	for _, test := range tests {
-		if err := ValidatePayload("user", test.kind, test.id, test.payload); err == nil {
-			t.Fatalf("corrupt %s payload was accepted: %s", test.kind, test.payload)
-		}
+	preset.SetUserId("other")
+	if err := ValidatePayload("user", "presets", "preset", marshalProto(t, preset)); err == nil {
+		t.Fatal("mismatched preset owner was accepted")
 	}
-	if err := ValidatePayload(
-		"user", "presets", "preset", append(validPreset, []byte(` {}`)...),
-	); err == nil {
-		t.Fatal("multiple JSON values were accepted")
+	if err := ValidatePayload("user", "monitors", "monitor", []byte(`{"unknown":true}`)); err == nil {
+		t.Fatal("unknown ProtoJSON field was accepted")
+	}
+	if err := ValidatePayload("user", "settings", "settings", []byte(`{`)); err == nil {
+		t.Fatal("malformed ProtoJSON was accepted")
+	}
+	if err := ValidatePayload("user", "settings", "other", marshalProto(t, &clientpb.Settings{})); err == nil {
+		t.Fatal("mismatched settings identity was accepted")
+	}
+	if err := ValidatePayload("user", "unknown-kind", "resource", []byte(`{}`)); err == nil {
+		t.Fatal("unsupported resource kind was accepted")
 	}
 }
 
-func TestValidateUntypedPayloads(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []string{"theaters", "booking-catalogs", "auditoriums", "reservations", "unknown-kind"} {
-		t.Run(kind, func(t *testing.T) {
-			if err := ValidatePayload("user", kind, "resource", json.RawMessage(`{"ok":true}`)); err != nil {
-				t.Fatalf("ValidatePayload(%q) = %v", kind, err)
-			}
-			if err := ValidatePayload("user", kind, "resource", json.RawMessage(`{`)); err == nil {
-				t.Fatalf("ValidatePayload(%q) accepted invalid JSON", kind)
-			}
-		})
-	}
+func validPresetPayload() *clientpb.Preset {
+	preset := &clientpb.Preset{}
+	preset.SetId("preset")
+	preset.SetUserId("user")
+	preset.SetName("Preset")
+	preset.SetTheaterId("theater")
+	preset.SetAuditoriumId("auditorium")
+	preset.SetSeatCount(1)
+	preset.SetSeatPreference(&clientpb.SeatPreference{})
+	return preset
 }
 
-func marshalResource(t *testing.T, value any) json.RawMessage {
+func validMonitorPayload() *clientpb.Monitor {
+	mode := &clientpb.MonitorMode{}
+	mode.SetOpening(&clientpb.OpeningMonitor{})
+	state := &clientpb.MonitorState{}
+	state.SetPending(&clientpb.MonitorPending{})
+	date := &commonpb.LocalDate{}
+	date.SetYear(2026)
+	date.SetMonth(8)
+	date.SetDay(12)
+	monitor := &clientpb.Monitor{}
+	monitor.SetId("monitor")
+	monitor.SetUserId("user")
+	monitor.SetPresetId("preset")
+	monitor.SetMode(mode)
+	monitor.SetMovieId("movie_1")
+	monitor.SetTargetDates([]*commonpb.LocalDate{date})
+	monitor.SetPollInterval(durationpb.New(2 * time.Second))
+	monitor.SetMaximumPollInterval(durationpb.New(3 * time.Second))
+	monitor.SetState(state)
+	return monitor
+}
+
+func marshalProto(t *testing.T, value proto.Message) []byte {
 	t.Helper()
-	payload, err := json.Marshal(value)
+	payload, err := protojson.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}

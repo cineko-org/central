@@ -4,16 +4,20 @@ This document is the service-point inventory for the current API. It describes p
 wire behavior only; deployment addresses, secret material, and network topology are
 intentionally outside this contract.
 
-The router has 58 literal service points and five resource-family declarations. The
-five declarations expand over five resource kinds, producing 83 concrete method/path
+The router has 56 literal service points and five resource-family declarations. The
+five declarations expand over five resource kinds, producing 81 concrete method/path
 service points in total.
 
 ## Shared rules
 
-- `client` and `probe` routes require a Bearer credential and the current
-  `X-Cineko-Protocol` value. `admin` routes require the strict admin session cookie.
-- `publisher` routes require the release-publisher Bearer credential and the current
-  protocol value. Authentication exchanges have distinct credentials: the client
+- Every request, response, event, and persisted service payload uses the current
+  generated Cineko protobuf message directly. Handwritten DTOs, aliases that rename
+  generated messages, schema/protocol version fields, and compatibility envelopes are
+  prohibited; ProtoJSON is only the HTTP and JSONB encoding of that message.
+- `client` and `probe` routes require a Bearer credential. `admin` routes require the
+  strict admin session cookie.
+- `publisher` routes require the release-publisher Bearer credential. Authentication
+  exchanges have distinct credentials: the client
   credential and six-digit PIN remain reusable until revoked/rotated; a refresh token
   is single-use because successful exchange rotates it; launch and Probe bootstrap
   tickets are one-time and expire shortly after issue.
@@ -21,8 +25,8 @@ service points in total.
   `X-Cineko-Release-Generation`. Catalog reads and writes also return
   `X-Cineko-Catalog-Generation`.
 - JSON errors use `{"error":{"code","message","retryable","requestId"}}`.
-  Stable shared codes are `unsupported_protocol`, `idempotency_key_required`,
-  `invalid_request`, `unauthorized`, `rate_limited`, `not_found`, `lease_expired`,
+  Stable shared codes are `idempotency_key_required`, `invalid_request`,
+  `unauthorized`, `rate_limited`, `not_found`, `lease_expired`,
   `idempotency_conflict`, `revision_conflict`, `conflict`, `stale_release`,
   `corrupt_resource`, and `internal_error`. A disabled optional plane returns its
   plane-specific `*_unavailable` code with `503`.
@@ -45,9 +49,9 @@ service points in total.
 | `GET /readyz` | public | readiness read | `200`, otherwise API error |
 | `GET /health/reconciler` | public | reconciler snapshot read | `200` healthy, `503` unavailable or unhealthy |
 | `GET /` | public | embedded admin web asset read | HTML/static asset or `404` |
-| `POST /v1/auth/exchange` | client credential, protocol | exchanges a reusable credential until it is revoked | `200` session pair |
-| `POST /v1/auth/pin` | PIN, protocol | exchanges a reusable six-digit PIN until rotation/deletion; rate limited by source and device | `200` session pair |
-| `POST /v1/auth/refresh` | refresh token, protocol | consumes and rotates the refresh token atomically | `200` replacement session pair |
+| `POST /v1/auth/exchange` | client credential | exchanges a reusable credential until it is revoked | `200` session pair |
+| `POST /v1/auth/pin` | PIN | exchanges a reusable six-digit PIN until rotation/deletion; rate limited by source and device | `200` session pair |
+| `POST /v1/auth/refresh` | refresh token | consumes and rotates the refresh token atomically | `200` replacement session pair |
 | `POST /v1/auth/logout` | client | revokes the current client session | `204` |
 
 ## Admin plane
@@ -86,9 +90,9 @@ shown; this distinction is deliberate documentation of the implemented boundary.
 | --- | --- | --- | --- |
 | `GET /v1/releases/runtime/current` | client | requires channel/platform/arch resolution | `200` immutable runtime manifest |
 | `GET /v1/releases/launcher/current` | client | requires channel/platform/arch resolution | `200` immutable launcher manifest |
-| `POST /v1/release-registry/{component}` | publisher, protocol | immutable typed set; identical retry is accepted, divergent same version conflicts | `201` new, `200` replay, `409` conflict |
+| `POST /v1/release-registry/{component}` | publisher | immutable typed set; identical retry is accepted, divergent same version conflicts | `201` new, `200` replay, `409` conflict |
 | `POST /v1/launch-tickets` | client | `Idempotency-Key` must equal request nonce | `201` one-time ticket |
-| `POST /v1/client-sessions` | one-time launch ticket, protocol | consumes the ticket and binds the runtime | `200` client session |
+| `POST /v1/client-sessions` | one-time launch ticket | consumes the ticket and binds the runtime | `200` client session |
 
 ## Client plane
 
@@ -104,8 +108,6 @@ shown; this distinction is deliberate documentation of the implemented boundary.
 | `GET /v1/events/stream` | durable cursor from query/`Last-Event-ID`; session is revalidated | SSE stream or reset control event |
 | `GET /v1/settings` | reads the singleton settings resource | `200` |
 | `PUT /v1/settings` | `Idempotency-Key`, revision precondition | `200` |
-| `GET /v1/configuration` | reads user configuration | `200` |
-| `PUT /v1/configuration` | `Idempotency-Key`, revision precondition | `200` |
 | `GET /v1/catalog` | reads active shared catalog | `200` |
 | `POST /v1/catalog/snapshots` | non-empty `Idempotency-Key`; `X-Cineko-Installation-Id` must identify this user's online Client Probe with catalog capability; additive canonical upsert | `200` generation |
 | `GET /v1/catalog/auditoriums/{auditoriumId}/seat-map` | reads current stored layout | `200` or `404` |
@@ -126,7 +128,7 @@ The resource family is `presets`, `monitors`, `reservations`,
 
 | Endpoint | Mutation and precondition | Result |
 | --- | --- | --- |
-| `POST /v1/probes/register` | protocol, `Idempotency-Key`, valid enrollment/bootstrap credential | `200` probe token and runtime |
+| `POST /v1/probes/register` | `Idempotency-Key`, valid enrollment/bootstrap credential | `200` probe token and runtime |
 | `PUT /v1/probes/{probeId}/heartbeat` | probe Bearer identity must match path | `200` renewed runtime state |
 | `POST /v1/probes/{probeId}/disconnect` | probe Bearer identity must match path | `204` offline |
 | `POST /v1/probes/{probeId}/assignments:claim` | probe Bearer identity; atomically leases eligible work | `200` lease or `204` |

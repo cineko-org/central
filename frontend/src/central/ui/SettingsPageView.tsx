@@ -1,19 +1,20 @@
 import type { ReactNode } from 'react';
 import { Alert, Button, Divider, Group, Skeleton, Stack, Text } from '@mantine/core';
-import type { AdminConfiguration, AdminReleases } from '../types';
+import type { Configuration } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import type { Registry } from '@cineko/contracts/gen/ts/cineko/release/release_pb';
 import { PageHeader } from './PageHeader';
 
 export interface SettingsPageViewProps {
-  configuration?: AdminConfiguration;
-  releases?: AdminReleases;
+  configuration?: Configuration;
+  releases?: Registry;
   failed: boolean;
   onRefresh: () => void;
 }
 
-function duration(seconds: number): string {
-  if (seconds % 86_400 === 0) return `${seconds / 86_400}일`;
-  if (seconds % 3_600 === 0) return `${seconds / 3_600}시간`;
-  if (seconds % 60 === 0) return `${seconds / 60}분`;
+function duration(seconds: bigint): string {
+  if (seconds % 86_400n === 0n) return `${seconds / 86_400n}일`;
+  if (seconds % 3_600n === 0n) return `${seconds / 3_600n}시간`;
+  if (seconds % 60n === 0n) return `${seconds / 60n}분`;
   return `${seconds}초`;
 }
 
@@ -28,7 +29,11 @@ function SettingSection({ title, children }: { title: string; children: ReactNod
 export function SettingsPageView({ configuration, releases, failed, onRefresh }: SettingsPageViewProps) {
   if ((!configuration || !releases) && !failed) return <Stack gap="md"><PageHeader title="배포 설정" /><Skeleton h={48} /><Skeleton h={240} /></Stack>;
   if (!configuration || !releases) return <Stack gap="xl"><PageHeader title="배포 설정" /><Alert color="red" title="설정을 불러오지 못했습니다"><Button variant="subtle" color="red" p={0} mt="xs" onClick={onRefresh}>다시 시도</Button></Alert></Stack>;
-  const releaseRecords = Object.values(releases.components).reduce((total, items) => total + items.length, 0);
+  const releaseRecords = (releases.clients?.releases.length ?? 0)
+    + (releases.browsers?.releases.length ?? 0)
+    + (releases.playwright?.releases.length ?? 0)
+    + (releases.launchers?.releases.length ?? 0)
+    + (releases.probes?.releases.length ?? 0);
   return (
     <Stack gap={40}>
       <PageHeader title="배포 설정" actions={<Button variant="default" onClick={onRefresh}>새로고침</Button>} />

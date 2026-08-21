@@ -21,7 +21,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	contracts "github.com/cineko-org/contracts/v3"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 )
 
 const (
@@ -31,7 +32,24 @@ const (
 
 var rawEncoding = base64.RawURLEncoding
 
-type Claims = contracts.ProbeBootstrapClaims
+type Claims struct {
+	Issuer          string   `json:"iss"`
+	Audience        string   `json:"aud"`
+	UserID          string   `json:"sub"`
+	TicketID        string   `json:"jti"`
+	IssuedAt        int64    `json:"iat"`
+	NotBefore       int64    `json:"nbf"`
+	ExpiresAt       int64    `json:"exp"`
+	InstallationID  string   `json:"installationId"`
+	DeviceID        string   `json:"deviceId"`
+	Kind            string   `json:"kind"`
+	Capabilities    []string `json:"capabilities"`
+	MaxConcurrency  int      `json:"maxConcurrency"`
+	RuntimeVersion  string   `json:"runtimeVersion"`
+	BrowserRevision string   `json:"browserRevision"`
+	Platform        string   `json:"platform"`
+	Architecture    string   `json:"architecture"`
+}
 
 type header struct {
 	Algorithm string `json:"alg"`
@@ -193,15 +211,18 @@ func decodeTokenClaims(payload string) (Claims, error) {
 
 func (verifier *Verifier) Authorize(
 	_ context.Context,
-	request central.RegisterProbeRequest,
+	request *probepb.RegisterRequest,
 	token string,
 	now time.Time,
 ) (central.RegistrationAuthorization, error) {
 	claims, err := verifier.Verify(token, now)
-	capabilities, validCapabilities := normalizeCapabilities(request.Capabilities)
-	if err != nil || claims.Kind != "client" || request.Kind != "client" ||
-		claims.InstallationID != request.InstallationID || claims.MaxConcurrency != request.MaxConcurrency ||
-		claims.Runtime != request.Runtime || !validCapabilities || !slices.Equal(claims.Capabilities, capabilities) {
+	capabilities, capabilityErr := probedomain.CapabilityKeys(request.GetCapabilities())
+	runtime := request.GetRuntime()
+	if err != nil || capabilityErr != nil || claims.Kind != "client" || request.GetKind().GetClient() == nil ||
+		claims.InstallationID != request.GetInstallationId() || claims.MaxConcurrency != int(request.GetMaxConcurrency()) ||
+		runtime == nil || claims.RuntimeVersion != runtime.GetComponentVersion() ||
+		claims.BrowserRevision != runtime.GetBrowserRevision() || claims.Platform != runtime.GetPlatform() ||
+		claims.Architecture != runtime.GetArchitecture() || !slices.Equal(claims.Capabilities, capabilities) {
 		return central.RegistrationAuthorization{}, central.ErrUnauthorized
 	}
 	return central.RegistrationAuthorization{
@@ -299,11 +320,14 @@ func decodeStrict(contents []byte, output any) error {
 	return nil
 }
 
+//nolint:gocyclo,cyclop // Explicit claim checks keep each signed-ticket invariant independently reviewable.
 func validateClaims(claims Claims, now time.Time, issuer, audience string) error {
 	capabilities, validCapabilities := normalizeCapabilities(claims.Capabilities)
 	if claims.Issuer != issuer || claims.Audience != audience || strings.TrimSpace(claims.UserID) == "" ||
 		strings.TrimSpace(claims.TicketID) == "" || strings.TrimSpace(claims.InstallationID) == "" ||
 		strings.TrimSpace(claims.DeviceID) == "" || claims.Kind != "client" || claims.MaxConcurrency != 1 ||
+		strings.TrimSpace(claims.RuntimeVersion) == "" || strings.TrimSpace(claims.BrowserRevision) == "" ||
+		strings.TrimSpace(claims.Platform) == "" || strings.TrimSpace(claims.Architecture) == "" ||
 		!validCapabilities || !slices.Equal(claims.Capabilities, capabilities) ||
 		claims.IssuedAt <= 0 || claims.NotBefore < claims.IssuedAt || claims.ExpiresAt <= claims.NotBefore ||
 		time.Unix(claims.IssuedAt, 0).After(now.Add(time.Minute)) {
@@ -320,7 +344,7 @@ func normalizeCapabilities(values []string) ([]string, bool) {
 	seen := make(map[string]struct{}, len(values))
 	for index, value := range values {
 		value = strings.TrimSpace(value)
-		if value == "" || !contracts.IsSupportedCapability(value) {
+		if value == "" || !probedomain.IsSupportedCapability(value) {
 			return nil, false
 		}
 		if _, duplicate := seen[value]; duplicate {

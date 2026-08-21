@@ -4,21 +4,17 @@ import (
 	"slices"
 	"strings"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
 )
 
-// Catalog is the validated in-memory release inventory used for resolution.
+// Catalog is Central's validated in-memory index of generated release messages.
 type Catalog struct {
-	Clients    map[string]contracts.ClientRelease
-	Browsers   map[string]contracts.BrowserRelease
-	Playwright map[string]contracts.PlaywrightRelease
-	Launchers  map[string]contracts.LauncherRelease
-	Probes     map[string]contracts.ProbeRelease
+	Clients    map[string]*releasepb.ClientRelease
+	Browsers   map[string]*releasepb.BrowserRelease
+	Playwright map[string]*releasepb.PlaywrightRelease
+	Launchers  map[string]*releasepb.LauncherRelease
+	Probes     map[string]*releasepb.ProbeRelease
 }
-
-// ActiveDesktopResolverVersion identifies the deterministic desktop selection
-// policy persisted with the active desktop manifest fingerprint.
-const ActiveDesktopResolverVersion = 1
 
 // DesktopTarget identifies one supported desktop release target.
 type DesktopTarget struct {
@@ -32,18 +28,20 @@ var supportedDesktopTargets = [...]DesktopTarget{
 	{Platform: "windows", Arch: "amd64"},
 }
 
-// SupportedDesktopTargets returns the targets in the canonical manifest order.
-func SupportedDesktopTargets() []DesktopTarget {
-	return slices.Clone(supportedDesktopTargets[:])
-}
+func SupportedDesktopTargets() []DesktopTarget { return slices.Clone(supportedDesktopTargets[:]) }
 
-// TargetKey returns the canonical platform/architecture key.
 func TargetKey(platform, arch string) string {
 	return strings.TrimSpace(platform) + "/" + strings.TrimSpace(arch)
 }
 
-// IsSupportedDesktopTarget reports whether a platform/architecture pair is
-// part of the complete desktop release set.
+func ReleaseKey(channel, platform, arch string) string {
+	return strings.TrimSpace(channel) + "/" + TargetKey(platform, arch)
+}
+
+func ComponentKey(channel, platform, arch, version string) string {
+	return ReleaseKey(channel, platform, arch) + "/" + strings.TrimSpace(version)
+}
+
 func IsSupportedDesktopTarget(platform, arch string) bool {
 	target := TargetKey(platform, arch)
 	for _, supported := range supportedDesktopTargets {
@@ -54,8 +52,6 @@ func IsSupportedDesktopTarget(platform, arch string) bool {
 	return false
 }
 
-// CompleteDesktopTargetSet reports whether targets contain exactly every
-// supported desktop target and no unsupported target.
 func CompleteDesktopTargetSet(targets map[string]struct{}) bool {
 	if len(targets) != len(supportedDesktopTargets) {
 		return false
@@ -66,14 +62,4 @@ func CompleteDesktopTargetSet(targets map[string]struct{}) bool {
 		}
 	}
 	return true
-}
-
-// ReleaseKey returns the channel and target portion of a release identity.
-func ReleaseKey(channel, platform, arch string) string {
-	return strings.TrimSpace(channel) + "/" + TargetKey(platform, arch)
-}
-
-// ComponentKey returns the complete versioned release identity.
-func ComponentKey(channel, platform, arch, version string) string {
-	return ReleaseKey(channel, platform, arch) + "/" + strings.TrimSpace(version)
 }

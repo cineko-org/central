@@ -15,5 +15,5 @@ func (server *Server) adminReleases(writer http.ResponseWriter, request *http.Re
 		)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, registry)
+	server.writeProtoJSON(writer, http.StatusOK, registry)
 }

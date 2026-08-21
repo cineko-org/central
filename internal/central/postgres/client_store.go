@@ -5,20 +5,72 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	"github.com/cineko-org/central/internal/domain/clientresources"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func scanClientUser(row rowScanner) (*clientpb.User, error) {
+	return scanClientUserWithHash(row, nil)
+}
+
+func clientUser(id, displayName string, createdAt, updatedAt time.Time) *clientpb.User {
+	user := &clientpb.User{}
+	user.SetId(id)
+	user.SetDisplayName(displayName)
+	user.SetCreatedAt(timestamppb.New(createdAt))
+	user.SetUpdatedAt(timestamppb.New(updatedAt))
+	return user
+}
+
+func scanClientUserWithHash(row rowScanner, tokenHash *[]byte) (*clientpb.User, error) {
+	var id, displayName string
+	var createdAt, updatedAt time.Time
+	targets := []any{&id, &displayName, &createdAt, &updatedAt}
+	if tokenHash != nil {
+		targets = append(targets, tokenHash)
+	}
+	if err := row.Scan(targets...); err != nil {
+		return nil, err
+	}
+	return clientUser(id, displayName, createdAt, updatedAt), nil
+}
+
+func scanClientDevice(row rowScanner) (*clientpb.Device, error) {
+	var installationID, userID, deviceID, platform, architecture, appVersion string
+	var lastSeenAt, createdAt, updatedAt time.Time
+	if err := row.Scan(
+		&installationID, &userID, &deviceID, &platform, &architecture, &appVersion,
+		&lastSeenAt, &createdAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	device := &clientpb.Device{}
+	device.SetInstallationId(installationID)
+	device.SetUserId(userID)
+	device.SetDeviceId(deviceID)
+	device.SetPlatform(platform)
+	device.SetArchitecture(architecture)
+	device.SetAppVersion(appVersion)
+	device.SetLastSeenAt(timestamppb.New(lastSeenAt))
+	device.SetCreatedAt(timestamppb.New(createdAt))
+	device.SetUpdatedAt(timestamppb.New(updatedAt))
+	return device, nil
+}
 
 func (store *Store) ProvisionClientCredential(
 	ctx context.Context,
-	user central.ClientUser,
+	user *clientpb.User,
 	tokenHash [32]byte,
 ) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -30,7 +82,7 @@ func (store *Store) ProvisionClientCredential(
 		INSERT INTO client_users (id, display_name, created_at, updated_at)
 		VALUES ($1, $2, $3, $3)
 		ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name, updated_at = EXCLUDED.updated_at
-	`, user.ID, user.DisplayName, user.UpdatedAt); err != nil {
+	`, user.GetId(), user.GetDisplayName(), user.GetUpdatedAt().AsTime()); err != nil {
 		return fmt.Errorf("provision client user: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -38,7 +90,7 @@ func (store *Store) ProvisionClientCredential(
 		VALUES ($1, $2, $3, $3)
 		ON CONFLICT (user_id) DO UPDATE SET
 			token_hash = EXCLUDED.token_hash, revoked_at = NULL, updated_at = EXCLUDED.updated_at
-	`, user.ID, tokenHash[:], user.UpdatedAt); err != nil {
+	`, user.GetId(), tokenHash[:], user.GetUpdatedAt().AsTime()); err != nil {
 		return fmt.Errorf("provision client access token: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -52,23 +104,23 @@ func (store *Store) ExchangeClientCredential(
 	userID string,
 	tokenHash [32]byte,
 	_ time.Time,
-) (central.ClientUser, error) {
-	var user central.ClientUser
+) (*clientpb.User, error) {
 	var storedHash []byte
-	err := store.pool.QueryRow(ctx, `
+	row := store.pool.QueryRow(ctx, `
 		SELECT users.id, users.display_name, users.created_at, users.updated_at, credentials.token_hash
 		FROM client_users AS users
 		JOIN client_credentials AS credentials ON credentials.user_id = users.id
 		WHERE users.id = $1 AND credentials.revoked_at IS NULL
-	`, userID).Scan(&user.ID, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt, &storedHash)
+	`, userID)
+	user, err := scanClientUserWithHash(row, &storedHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientUser{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("exchange client credential: %w", err)
+		return nil, fmt.Errorf("exchange client credential: %w", err)
 	}
 	if len(storedHash) != len(tokenHash) || subtle.ConstantTimeCompare(storedHash, tokenHash[:]) != 1 {
-		return central.ClientUser{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	return user, nil
 }
@@ -93,15 +145,14 @@ func (store *Store) RotateClientSession(
 	refreshTokenHash [32]byte,
 	session central.ClientSession,
 	now time.Time,
-) (central.ClientUser, error) {
+) (*clientpb.User, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("begin client session rotation: %w", err)
+		return nil, fmt.Errorf("begin client session rotation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var user central.ClientUser
 	var storedHash []byte
-	err = tx.QueryRow(ctx, `
+	row := tx.QueryRow(ctx, `
 		SELECT users.id, users.display_name, users.created_at, users.updated_at, sessions.refresh_token_hash
 		FROM client_sessions AS sessions
 		JOIN client_users AS users ON users.id = sessions.user_id
@@ -109,34 +160,33 @@ func (store *Store) RotateClientSession(
 			AND sessions.refresh_expires_at > $2
 			AND sessions.revoked_at IS NULL
 		FOR UPDATE OF sessions
-	`, refreshTokenHash[:], now).Scan(
-		&user.ID, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt, &storedHash,
-	)
+	`, refreshTokenHash[:], now)
+	user, err := scanClientUserWithHash(row, &storedHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientUser{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("lock client refresh session: %w", err)
+		return nil, fmt.Errorf("lock client refresh session: %w", err)
 	}
 	if len(storedHash) != len(refreshTokenHash) ||
 		subtle.ConstantTimeCompare(storedHash, refreshTokenHash[:]) != 1 {
-		return central.ClientUser{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE client_sessions SET revoked_at = $2 WHERE refresh_token_hash = $1
 	`, refreshTokenHash[:], now); err != nil {
-		return central.ClientUser{}, fmt.Errorf("revoke client refresh session: %w", err)
+		return nil, fmt.Errorf("revoke client refresh session: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_sessions (
 			id, user_id, token_hash, expires_at, refresh_token_hash, refresh_expires_at, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, session.ID, user.ID, session.TokenHash[:], session.ExpiresAt,
+	`, session.ID, user.GetId(), session.TokenHash[:], session.ExpiresAt,
 		session.RefreshTokenHash[:], session.RefreshExpiresAt, session.CreatedAt); err != nil {
-		return central.ClientUser{}, fmt.Errorf("create rotated client session: %w", err)
+		return nil, fmt.Errorf("create rotated client session: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return central.ClientUser{}, fmt.Errorf("commit client session rotation: %w", err)
+		return nil, fmt.Errorf("commit client session rotation: %w", err)
 	}
 	return user, nil
 }
@@ -158,19 +208,19 @@ func (store *Store) RevokeClientSession(ctx context.Context, sessionID string, n
 func (store *Store) CreateLaunchTicket(ctx context.Context, ticket central.LaunchTicket) error {
 	tag, err := store.pool.Exec(ctx, `
 		WITH expired AS (
-			DELETE FROM client_launch_tickets WHERE expires_at <= $16 OR consumed_at IS NOT NULL
+			DELETE FROM client_launch_tickets WHERE expires_at <= $15 OR consumed_at IS NOT NULL
 		)
 		INSERT INTO client_launch_tickets (
 			id, user_id, installation_id, device_id, release_generation, client_version, artifact_sha256,
-			protocol, browser_revision, browser_artifact_sha256, playwright_version, playwright_artifact_sha256,
+			browser_revision, browser_artifact_sha256, playwright_version, playwright_artifact_sha256,
 			launcher_nonce, token_hash, expires_at, created_at
 		)
-		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		FROM desktop_release_registry_state
 		WHERE singleton = true AND generation = $5
 		FOR SHARE
 	`, ticket.ID, ticket.UserID, ticket.InstallationID, ticket.DeviceID, ticket.ReleaseGeneration,
-		ticket.ClientVersion, ticket.ArtifactSHA256, ticket.Protocol, ticket.BrowserRevision,
+		ticket.ClientVersion, ticket.ArtifactSHA256, ticket.BrowserRevision,
 		ticket.BrowserArtifactSHA256, ticket.PlaywrightVersion, ticket.PlaywrightArtifactSHA256,
 		ticket.LauncherNonce, ticket.TokenHash[:], ticket.ExpiresAt, ticket.CreatedAt)
 	if err != nil {
@@ -205,23 +255,27 @@ func (store *Store) ExchangeLaunchTicket(
 		return central.LaunchedClient{}, central.ErrStaleRelease
 	}
 	var launched central.LaunchedClient
+	launched.Context = &clientpb.LaunchContext{}
+	var userID, displayName string
+	var userCreatedAt, userUpdatedAt time.Time
+	var installationID, deviceID, clientVersion, artifactSHA256 string
+	var browserRevision, browserArtifactSHA256, playwrightVersion, playwrightArtifactSHA256 string
+	var launchGeneration int64
 	var storedHash []byte
 	err = tx.QueryRow(ctx, `
 		SELECT users.id, users.display_name, users.created_at, users.updated_at,
 			tickets.installation_id, tickets.device_id, tickets.release_generation, tickets.client_version,
-			tickets.artifact_sha256, tickets.protocol, tickets.browser_revision, tickets.browser_artifact_sha256,
+			tickets.artifact_sha256, tickets.browser_revision, tickets.browser_artifact_sha256,
 			tickets.playwright_version, tickets.playwright_artifact_sha256, tickets.token_hash
 		FROM client_launch_tickets AS tickets
 		JOIN client_users AS users ON users.id = tickets.user_id
 		WHERE tickets.token_hash = $1 AND tickets.expires_at > $2 AND tickets.consumed_at IS NULL
 		FOR UPDATE OF tickets
 	`, tokenHash[:], now).Scan(
-		&launched.User.ID, &launched.User.DisplayName, &launched.User.CreatedAt, &launched.User.UpdatedAt,
-		&launched.Context.InstallationID, &launched.Context.DeviceID, &launched.Context.ReleaseGeneration,
-		&launched.Context.ClientVersion,
-		&launched.Context.ArtifactSHA256, &launched.Context.Protocol, &launched.Context.BrowserRevision,
-		&launched.Context.BrowserArtifactSHA256, &launched.Context.PlaywrightVersion,
-		&launched.Context.PlaywrightArtifactSHA256, &storedHash,
+		&userID, &displayName, &userCreatedAt, &userUpdatedAt,
+		&installationID, &deviceID, &launchGeneration, &clientVersion,
+		&artifactSHA256, &browserRevision, &browserArtifactSHA256, &playwrightVersion,
+		&playwrightArtifactSHA256, &storedHash,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return central.LaunchedClient{}, central.ErrUnauthorized
@@ -232,7 +286,17 @@ func (store *Store) ExchangeLaunchTicket(
 	if len(storedHash) != len(tokenHash) || subtle.ConstantTimeCompare(storedHash, tokenHash[:]) != 1 {
 		return central.LaunchedClient{}, central.ErrUnauthorized
 	}
-	if launched.Context.ReleaseGeneration != releaseGeneration {
+	launched.User = clientUser(userID, displayName, userCreatedAt, userUpdatedAt)
+	launched.Context.SetInstallationId(installationID)
+	launched.Context.SetDeviceId(deviceID)
+	launched.Context.SetReleaseGeneration(launchGeneration)
+	launched.Context.SetClientVersion(clientVersion)
+	launched.Context.SetArtifactSha256(artifactSHA256)
+	launched.Context.SetBrowserRevision(browserRevision)
+	launched.Context.SetBrowserArtifactSha256(browserArtifactSHA256)
+	launched.Context.SetPlaywrightVersion(playwrightVersion)
+	launched.Context.SetPlaywrightArtifactSha256(playwrightArtifactSHA256)
+	if launched.Context.GetReleaseGeneration() != releaseGeneration {
 		return central.LaunchedClient{}, central.ErrStaleRelease
 	}
 	if _, err := tx.Exec(ctx, `
@@ -244,7 +308,7 @@ func (store *Store) ExchangeLaunchTicket(
 		INSERT INTO client_sessions (
 			id, user_id, token_hash, expires_at, refresh_token_hash, refresh_expires_at, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, session.ID, launched.User.ID, session.TokenHash[:], session.ExpiresAt,
+	`, session.ID, launched.User.GetId(), session.TokenHash[:], session.ExpiresAt,
 		session.RefreshTokenHash[:], session.RefreshExpiresAt, session.CreatedAt); err != nil {
 		return central.LaunchedClient{}, fmt.Errorf("create launched client session: %w", err)
 	}
@@ -279,9 +343,9 @@ func (store *Store) AuthenticateClientSession(
 
 func (store *Store) UpsertClientDevice(
 	ctx context.Context,
-	device central.ClientDevice,
-) (central.ClientDevice, error) {
-	err := store.pool.QueryRow(ctx, `
+	device *clientpb.Device,
+) (*clientpb.Device, error) {
+	row := store.pool.QueryRow(ctx, `
 		INSERT INTO client_devices (
 			installation_id, user_id, device_id, platform, architecture, app_version,
 			last_seen_at, created_at, updated_at
@@ -296,53 +360,47 @@ func (store *Store) UpsertClientDevice(
 		WHERE client_devices.user_id = EXCLUDED.user_id
 		RETURNING installation_id, user_id, device_id, platform, architecture, app_version,
 			last_seen_at, created_at, updated_at
-	`, device.InstallationID, device.UserID, device.DeviceID, device.Platform, device.Arch,
-		device.AppVersion, device.LastSeenAt, device.CreatedAt, device.UpdatedAt).Scan(
-		&device.InstallationID, &device.UserID, &device.DeviceID, &device.Platform, &device.Arch,
-		&device.AppVersion, &device.LastSeenAt, &device.CreatedAt, &device.UpdatedAt,
-	)
+	`, device.GetInstallationId(), device.GetUserId(), device.GetDeviceId(), device.GetPlatform(), device.GetArchitecture(),
+		device.GetAppVersion(), device.GetLastSeenAt().AsTime(), device.GetCreatedAt().AsTime(), device.GetUpdatedAt().AsTime())
+	stored, err := scanClientDevice(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientDevice{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	if err != nil {
-		return central.ClientDevice{}, fmt.Errorf("upsert client device: %w", err)
+		return nil, fmt.Errorf("upsert client device: %w", err)
 	}
-	return device, nil
+	return stored, nil
 }
 
 func (store *Store) GetClientDevice(
 	ctx context.Context,
 	userID string,
 	installationID string,
-) (central.ClientDevice, error) {
-	var device central.ClientDevice
-	err := store.pool.QueryRow(ctx, `
+) (*clientpb.Device, error) {
+	row := store.pool.QueryRow(ctx, `
 		SELECT installation_id, user_id, device_id, platform, architecture, app_version,
 			last_seen_at, created_at, updated_at
 		FROM client_devices WHERE user_id = $1 AND installation_id = $2
-	`, userID, installationID).Scan(
-		&device.InstallationID, &device.UserID, &device.DeviceID, &device.Platform, &device.Arch,
-		&device.AppVersion, &device.LastSeenAt, &device.CreatedAt, &device.UpdatedAt,
-	)
+	`, userID, installationID)
+	device, err := scanClientDevice(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientDevice{}, central.ErrNotFound
+		return nil, central.ErrNotFound
 	}
 	if err != nil {
-		return central.ClientDevice{}, fmt.Errorf("get client device: %w", err)
+		return nil, fmt.Errorf("get client device: %w", err)
 	}
 	return device, nil
 }
 
-func (store *Store) GetClientUser(ctx context.Context, userID string) (central.ClientUser, error) {
-	var user central.ClientUser
-	err := store.pool.QueryRow(ctx, `
+func (store *Store) GetClientUser(ctx context.Context, userID string) (*clientpb.User, error) {
+	user, err := scanClientUser(store.pool.QueryRow(ctx, `
 		SELECT id, display_name, created_at, updated_at FROM client_users WHERE id = $1
-	`, userID).Scan(&user.ID, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	`, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientUser{}, central.ErrNotFound
+		return nil, central.ErrNotFound
 	}
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("get client user: %w", err)
+		return nil, fmt.Errorf("get client user: %w", err)
 	}
 	return user, nil
 }
@@ -375,7 +433,7 @@ func (store *Store) ListClientResources(
 	ctx context.Context,
 	userID string,
 	kind string,
-) ([]central.ClientResource, error) {
+) ([]*clientpb.Resource, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT kind, id, user_id, revision, payload, created_at, updated_at
 		FROM client_resources
@@ -389,12 +447,16 @@ func (store *Store) ListClientResources(
 	return collectClientResources(rows)
 }
 
-func collectClientResources(rows pgx.Rows) ([]central.ClientResource, error) {
-	resources := make([]central.ClientResource, 0)
+func collectClientResources(rows pgx.Rows) ([]*clientpb.Resource, error) {
+	resources := make([]*clientpb.Resource, 0)
 	for rows.Next() {
-		resource, err := scanClientResource(rows)
+		stored, err := scanStoredClientResource(rows)
 		if err != nil {
 			return nil, err
+		}
+		resource, err := stored.proto()
+		if err != nil {
+			return nil, fmt.Errorf("decode client resource: %w", err)
 		}
 		resources = append(resources, resource)
 	}
@@ -409,17 +471,21 @@ func (store *Store) GetClientResource(
 	userID string,
 	kind string,
 	id string,
-) (central.ClientResource, error) {
-	resource, err := scanClientResource(store.pool.QueryRow(ctx, `
+) (*clientpb.Resource, error) {
+	stored, err := scanStoredClientResource(store.pool.QueryRow(ctx, `
 		SELECT kind, id, user_id, revision, payload, created_at, updated_at
 		FROM client_resources
 		WHERE user_id = $1 AND kind = $2 AND id = $3 AND deleted_at IS NULL
 	`, userID, kind, id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientResource{}, central.ErrNotFound
+		return nil, central.ErrNotFound
 	}
 	if err != nil {
-		return central.ClientResource{}, fmt.Errorf("get client resource: %w", err)
+		return nil, fmt.Errorf("get client resource: %w", err)
+	}
+	resource, err := stored.proto()
+	if err != nil {
+		return nil, fmt.Errorf("decode client resource: %w", err)
 	}
 	return resource, nil
 }
@@ -427,14 +493,14 @@ func (store *Store) GetClientResource(
 func (store *Store) PutClientResource(
 	ctx context.Context,
 	mutation central.ResourceMutation,
-) (central.ClientResource, error) {
+) (*clientpb.Resource, error) {
 	return store.mutateClientResource(ctx, mutation, false)
 }
 
 func (store *Store) DeleteClientResource(
 	ctx context.Context,
 	mutation central.ResourceMutation,
-) (central.ClientResource, error) {
+) (*clientpb.Resource, error) {
 	return store.mutateClientResource(ctx, mutation, true)
 }
 
@@ -442,30 +508,43 @@ func (store *Store) mutateClientResource(
 	ctx context.Context,
 	mutation central.ResourceMutation,
 	deleting bool,
-) (central.ClientResource, error) {
+) (*clientpb.Resource, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return central.ClientResource{}, fmt.Errorf("begin client resource mutation: %w", err)
+		return nil, fmt.Errorf("begin client resource mutation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockClientUser(ctx, tx, mutation.UserID); err != nil {
-		return central.ClientResource{}, err
+		return nil, err
 	}
 	operation := clientMutationOperation(deleting)
 	if resource, handled, err := replayClientCommand(ctx, tx, mutation, operation); handled || err != nil {
-		return resource, err
+		if err != nil {
+			return nil, err
+		}
+		return resource.proto()
 	}
 	resource, create, err := applyClientResourceMutation(ctx, tx, mutation, operation, deleting)
 	if err != nil {
-		return central.ClientResource{}, err
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		if create && isConcurrentClientResourceCreate(err) {
-			return central.ClientResource{}, central.ErrRevisionConflict
+			return nil, central.ErrRevisionConflict
 		}
-		return central.ClientResource{}, fmt.Errorf("commit client resource mutation: %w", err)
+		return nil, fmt.Errorf("commit client resource mutation: %w", err)
 	}
-	return resource, nil
+	return resource.proto()
+}
+
+func lockClientUser(ctx context.Context, tx pgx.Tx, userID string) error {
+	var locked string
+	if err := tx.QueryRow(ctx, `SELECT id FROM client_users WHERE id = $1 FOR UPDATE`, userID).Scan(&locked); errors.Is(err, pgx.ErrNoRows) {
+		return central.ErrUnauthorized
+	} else if err != nil {
+		return fmt.Errorf("lock client user: %w", err)
+	}
+	return nil
 }
 
 func applyClientResourceMutation(
@@ -474,23 +553,23 @@ func applyClientResourceMutation(
 	mutation central.ResourceMutation,
 	operation string,
 	deleting bool,
-) (central.ClientResource, bool, error) {
+) (storedClientResource, bool, error) {
 	resource, create, err := prepareClientMutation(ctx, tx, mutation, deleting)
 	if err != nil {
-		return central.ClientResource{}, false, err
+		return storedClientResource{}, false, err
 	}
 	if err := writeClientResource(ctx, tx, resource, create, deleting); err != nil {
 		if create && isConcurrentClientResourceCreate(err) {
-			return central.ClientResource{}, false, central.ErrRevisionConflict
+			return storedClientResource{}, false, central.ErrRevisionConflict
 		}
-		return central.ClientResource{}, false, err
+		return storedClientResource{}, false, err
 	}
-	eventType := mutation.Kind + ".updated.v1"
+	eventType := mutation.Kind + ".updated"
 	if deleting {
-		eventType = mutation.Kind + ".deleted.v1"
+		eventType = mutation.Kind + ".deleted"
 	}
 	if err := recordClientMutation(ctx, tx, mutation, operation, eventType, resource); err != nil {
-		return central.ClientResource{}, false, err
+		return storedClientResource{}, false, err
 	}
 	return resource, create, nil
 }
@@ -515,36 +594,44 @@ func prepareClientMutation(
 	tx pgx.Tx,
 	mutation central.ResourceMutation,
 	deleting bool,
-) (central.ClientResource, bool, error) {
+) (storedClientResource, bool, error) {
 	current, deleted, err := lockClientResource(ctx, tx, mutation.UserID, mutation.Kind, mutation.ID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return central.ClientResource{}, false, err
+			return storedClientResource{}, false, err
 		}
 		if deleting {
-			return central.ClientResource{}, false, central.ErrNotFound
+			return storedClientResource{}, false, central.ErrNotFound
 		}
 		if mutation.ExpectedRevision != nil {
-			return central.ClientResource{}, false, central.ErrRevisionConflict
+			return storedClientResource{}, false, central.ErrRevisionConflict
 		}
-		return central.ClientResource{
-			Kind: mutation.Kind, ID: mutation.ID, UserID: mutation.UserID,
-			Revision: 1, Data: mutation.Data, CreatedAt: mutation.Now, UpdatedAt: mutation.Now,
+		payload, payloadErr := clientresources.Payload(mutation.Resource)
+		if payloadErr != nil {
+			return storedClientResource{}, false, payloadErr
+		}
+		return storedClientResource{
+			kind: mutation.Kind, id: mutation.ID, userID: mutation.UserID,
+			revision: 1, payload: payload, createdAt: mutation.Now, updatedAt: mutation.Now,
 		}, true, nil
 	}
 	if deleted {
-		return central.ClientResource{}, false, central.ErrNotFound
+		return storedClientResource{}, false, central.ErrNotFound
 	}
 	if mutation.ExpectedRevision == nil {
-		return central.ClientResource{}, false, central.ErrRevisionConflict
+		return storedClientResource{}, false, central.ErrRevisionConflict
 	}
-	if *mutation.ExpectedRevision != current.Revision {
-		return central.ClientResource{}, false, central.ErrRevisionConflict
+	if *mutation.ExpectedRevision != current.revision {
+		return storedClientResource{}, false, central.ErrRevisionConflict
 	}
-	current.Revision++
-	current.UpdatedAt = mutation.Now
+	current.revision++
+	current.updatedAt = mutation.Now
 	if !deleting {
-		current.Data = mutation.Data
+		payload, payloadErr := clientresources.Payload(mutation.Resource)
+		if payloadErr != nil {
+			return storedClientResource{}, false, payloadErr
+		}
+		current.payload = payload
 	}
 	return current, false, nil
 }
@@ -552,7 +639,7 @@ func prepareClientMutation(
 func writeClientResource(
 	ctx context.Context,
 	tx pgx.Tx,
-	resource central.ClientResource,
+	resource storedClientResource,
 	create bool,
 	deleting bool,
 ) error {
@@ -560,7 +647,7 @@ func writeClientResource(
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
 			VALUES ($1, $2, $3, 1, $4, $5, $5)
-		`, resource.UserID, resource.Kind, resource.ID, resource.Data, resource.CreatedAt); err != nil {
+		`, resource.userID, resource.kind, resource.id, resource.payload, resource.createdAt); err != nil {
 			return fmt.Errorf("create client resource: %w", err)
 		}
 		return nil
@@ -568,8 +655,8 @@ func writeClientResource(
 	if _, err := tx.Exec(ctx, `
 		UPDATE client_resources SET revision = $4, payload = $5, updated_at = $6, deleted_at = $7
 		WHERE user_id = $1 AND kind = $2 AND id = $3
-	`, resource.UserID, resource.Kind, resource.ID, resource.Revision, resource.Data,
-		resource.UpdatedAt, nullableDeletion(deleting, resource.UpdatedAt)); err != nil {
+	`, resource.userID, resource.kind, resource.id, resource.revision, resource.payload,
+		resource.updatedAt, nullableDeletion(deleting, resource.updatedAt)); err != nil {
 		return fmt.Errorf("update client resource: %w", err)
 	}
 	return nil
@@ -580,7 +667,7 @@ func replayClientCommand(
 	tx pgx.Tx,
 	mutation central.ResourceMutation,
 	operation string,
-) (central.ClientResource, bool, error) {
+) (storedClientResource, bool, error) {
 	var storedOperation, kind, id string
 	var revision int64
 	err := tx.QueryRow(ctx, `
@@ -588,20 +675,20 @@ func replayClientCommand(
 		FROM client_commands WHERE user_id = $1 AND command_id = $2
 	`, mutation.UserID, mutation.CommandID).Scan(&storedOperation, &kind, &id, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientResource{}, false, nil
+		return storedClientResource{}, false, nil
 	}
 	if err != nil {
-		return central.ClientResource{}, true, fmt.Errorf("read client command: %w", err)
+		return storedClientResource{}, true, fmt.Errorf("read client command: %w", err)
 	}
 	if storedOperation != operation || kind != mutation.Kind || id != mutation.ID {
-		return central.ClientResource{}, true, central.ErrIdempotencyConflict
+		return storedClientResource{}, true, central.ErrIdempotencyConflict
 	}
 	resource, _, err := lockClientResource(ctx, tx, mutation.UserID, kind, id)
 	if err != nil {
-		return central.ClientResource{}, true, fmt.Errorf("replay client command: %w", err)
+		return storedClientResource{}, true, fmt.Errorf("replay client command: %w", err)
 	}
-	if resource.Revision != revision {
-		return central.ClientResource{}, true, central.ErrIdempotencyConflict
+	if resource.revision != revision {
+		return storedClientResource{}, true, central.ErrIdempotencyConflict
 	}
 	return resource, true, nil
 }
@@ -612,15 +699,15 @@ func lockClientResource(
 	userID string,
 	kind string,
 	id string,
-) (central.ClientResource, bool, error) {
-	var resource central.ClientResource
+) (storedClientResource, bool, error) {
+	var resource storedClientResource
 	var deletedAt *time.Time
 	err := tx.QueryRow(ctx, `
 		SELECT kind, id, user_id, revision, payload, created_at, updated_at, deleted_at
 		FROM client_resources WHERE user_id = $1 AND kind = $2 AND id = $3 FOR UPDATE
 	`, userID, kind, id).Scan(
-		&resource.Kind, &resource.ID, &resource.UserID, &resource.Revision,
-		&resource.Data, &resource.CreatedAt, &resource.UpdatedAt, &deletedAt,
+		&resource.kind, &resource.id, &resource.userID, &resource.revision,
+		&resource.payload, &resource.createdAt, &resource.updatedAt, &deletedAt,
 	)
 	return resource, deletedAt != nil, err
 }
@@ -631,27 +718,23 @@ func recordClientMutation(
 	mutation central.ResourceMutation,
 	operation string,
 	eventType string,
-	resource central.ClientResource,
+	resource storedClientResource,
 ) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_commands (
 			user_id, command_id, operation, resource_kind, resource_id, result_revision, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, mutation.UserID, mutation.CommandID, operation, mutation.Kind, mutation.ID,
-		resource.Revision, mutation.Now); err != nil {
+		resource.revision, mutation.Now); err != nil {
 		return fmt.Errorf("record client command: %w", err)
 	}
 	eventID := clientEventID(mutation.UserID, mutation.CommandID)
-	payload := resource.Data
-	if operation == "delete" {
-		payload = json.RawMessage(`{}`)
-	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_events (
 			id, user_id, event_type, resource_kind, resource_id, resource_revision, payload, occurred_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, eventID, mutation.UserID, eventType, mutation.Kind, mutation.ID,
-		resource.Revision, payload, mutation.Now); err != nil {
+		resource.revision, resource.payload, mutation.Now); err != nil {
 		return fmt.Errorf("record client event: %w", err)
 	}
 	return nil
@@ -662,13 +745,13 @@ func (store *Store) ClientEventPage(
 	userID string,
 	after int64,
 	limit int,
-) (central.ClientEventPage, error) {
+) (central.ClientEventBatch, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return central.ClientEventPage{}, fmt.Errorf("begin client event page: %w", err)
+		return central.ClientEventBatch{}, fmt.Errorf("begin client event page: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	page := central.ClientEventPage{}
+	page := central.ClientEventBatch{}
 	if err := tx.QueryRow(ctx, `
 		SELECT
 			COALESCE((SELECT pruned_through FROM client_event_cursors WHERE user_id = $1), 0),
@@ -678,7 +761,7 @@ func (store *Store) ClientEventPage(
 			),
 			(SELECT generation FROM desktop_release_registry_state WHERE singleton = true)
 	`, userID).Scan(&page.PrunedThrough, &page.Latest, &page.ReleaseGeneration); err != nil {
-		return central.ClientEventPage{}, fmt.Errorf("read client event stream state: %w", err)
+		return central.ClientEventBatch{}, fmt.Errorf("read client event stream state: %w", err)
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT sequence, id, event_type, occurred_at, resource_kind, resource_id,
@@ -688,25 +771,55 @@ func (store *Store) ClientEventPage(
 		ORDER BY sequence LIMIT $3
 	`, userID, after, limit)
 	if err != nil {
-		return central.ClientEventPage{}, fmt.Errorf("list client events: %w", err)
+		return central.ClientEventBatch{}, fmt.Errorf("list client events: %w", err)
 	}
 	defer rows.Close()
-	page.Events = make([]central.ClientEvent, 0)
+	page.Events = make([]*clientpb.ClientEvent, 0)
 	for rows.Next() {
-		var event central.ClientEvent
+		var sequence, revision int64
+		var id, eventType, kind, resourceID string
+		var occurredAt time.Time
+		var payload []byte
 		if err := rows.Scan(
-			&event.Sequence, &event.ID, &event.Type, &event.OccurredAt,
-			&event.Resource.Kind, &event.Resource.ID, &event.Resource.Revision, &event.Data,
+			&sequence, &id, &eventType, &occurredAt, &kind, &resourceID, &revision, &payload,
 		); err != nil {
-			return central.ClientEventPage{}, fmt.Errorf("scan client event: %w", err)
+			return central.ClientEventBatch{}, fmt.Errorf("scan client event: %w", err)
+		}
+		event := &clientpb.ClientEvent{}
+		event.SetSequence(sequence)
+		event.SetId(id)
+		event.SetOccurredAt(timestamppb.New(occurredAt))
+		switch {
+		case strings.HasSuffix(eventType, ".deleted"):
+			kindMessage, err := clientresources.KindMessage(kind)
+			if err != nil {
+				return central.ClientEventBatch{}, fmt.Errorf("decode deleted client event resource: %w", err)
+			}
+			deleted := &clientpb.DeletedResource{}
+			deleted.SetId(resourceID)
+			deleted.SetRevision(revision)
+			deleted.SetKind(kindMessage)
+			event.SetDeleted(deleted)
+		case eventType == "execution.ready" || eventType == "execution.ready.v1":
+			ready := &clientpb.ExecutionReady{}
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(payload, ready); err != nil {
+				return central.ClientEventBatch{}, fmt.Errorf("decode execution-ready client event: %w", err)
+			}
+			event.SetExecutionReady(ready)
+		default:
+			resource, err := clientresources.DecodeEventResource(kind, resourceID, revision, payload)
+			if err != nil {
+				return central.ClientEventBatch{}, fmt.Errorf("decode client event resource: %w", err)
+			}
+			event.SetUpserted(resource)
 		}
 		page.Events = append(page.Events, event)
 	}
 	if err := rows.Err(); err != nil {
-		return central.ClientEventPage{}, fmt.Errorf("iterate client events: %w", err)
+		return central.ClientEventBatch{}, fmt.Errorf("iterate client events: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return central.ClientEventPage{}, fmt.Errorf("commit client event page: %w", err)
+		return central.ClientEventBatch{}, fmt.Errorf("commit client event page: %w", err)
 	}
 	return page, nil
 }
@@ -716,7 +829,7 @@ func (store *Store) ListClientEvents(
 	userID string,
 	after int64,
 	limit int,
-) ([]central.ClientEvent, error) {
+) ([]*clientpb.ClientEvent, error) {
 	page, err := store.ClientEventPage(ctx, userID, after, limit)
 	return page.Events, err
 }
@@ -725,11 +838,27 @@ type resourceScanner interface {
 	Scan(...any) error
 }
 
-func scanClientResource(scanner resourceScanner) (central.ClientResource, error) {
-	var resource central.ClientResource
+type storedClientResource struct {
+	kind      string
+	id        string
+	userID    string
+	revision  int64
+	payload   []byte
+	createdAt time.Time
+	updatedAt time.Time
+}
+
+func (resource storedClientResource) proto() (*clientpb.Resource, error) {
+	return clientresources.Decode(
+		resource.kind, resource.id, resource.revision, resource.createdAt, resource.updatedAt, resource.payload,
+	)
+}
+
+func scanStoredClientResource(scanner resourceScanner) (storedClientResource, error) {
+	var resource storedClientResource
 	err := scanner.Scan(
-		&resource.Kind, &resource.ID, &resource.UserID, &resource.Revision,
-		&resource.Data, &resource.CreatedAt, &resource.UpdatedAt,
+		&resource.kind, &resource.id, &resource.userID, &resource.revision,
+		&resource.payload, &resource.createdAt, &resource.updatedAt,
 	)
 	return resource, err
 }

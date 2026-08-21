@@ -1,13 +1,16 @@
+import { create } from '@bufbuild/protobuf';
 import { Alert, Button, Checkbox, Divider, Group, NumberInput, ScrollArea, Select, Skeleton, Stack, Table, Text } from '@mantine/core';
-import type { AdminObservationPolicy, CatalogRefreshStatus, ObservationPolicyInput, Theater } from '../types';
+import { ObservationPolicyInputSchema, type CatalogRefreshStatus, type ObservationPolicy, type ObservationPolicyInput } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import type { Theater } from '@cineko/contracts/gen/ts/cineko/catalog/catalog_pb';
 import { PageHeader } from './PageHeader';
+import { timestampDate } from './protoPresentation';
 
 interface Props {
-  policies?: AdminObservationPolicy[];
+  policies?: ObservationPolicy[];
   theaters?: Theater[];
   catalogRefresh?: CatalogRefreshStatus;
   draft: ObservationPolicyInput;
-  editing?: AdminObservationPolicy;
+  editing?: ObservationPolicy;
   failed: boolean;
   saving: boolean;
   requestingCatalog?: boolean;
@@ -15,9 +18,9 @@ interface Props {
   onSave: () => void;
   onRefresh: () => void;
   onRequestCatalogRefresh?: () => void;
-  onEdit: (policy: AdminObservationPolicy) => void;
+  onEdit: (policy: ObservationPolicy) => void;
   onCancel: () => void;
-  onDelete: (policy: AdminObservationPolicy) => void;
+  onDelete: (policy: ObservationPolicy) => void;
 }
 
 function seconds(value: number): string {
@@ -26,18 +29,19 @@ function seconds(value: number): string {
   return `${value}초`;
 }
 
-function observationMode(policy: AdminObservationPolicy): string {
-  if (!policy.enabled) return '중지됨';
-  switch (policy.effectiveMode) {
+function observationMode(policy: ObservationPolicy): string {
+  if (!policy.input?.enabled) return '중지됨';
+  switch (policy.effectiveMode?.mode.case) {
     case 'demand': return '예매 요청 집중 관측';
     case 'burst': return '새 회차 집중 관측';
     case 'cancellation': return '취소표 관측';
     case 'baseline': return '평상시 관측';
+    default: return '상태 확인 중';
   }
 }
 
 function PolicyForm(props: Props) {
-  const update = <K extends keyof ObservationPolicyInput>(key: K, value: ObservationPolicyInput[K]) => props.onDraftChange({ ...props.draft, [key]: value });
+  const update = <K extends keyof ObservationPolicyInput>(key: K, value: ObservationPolicyInput[K]) => props.onDraftChange(create(ObservationPolicyInputSchema, { ...props.draft, [key]: value }));
   const theaterOptions = props.theaters?.map((theater) => ({
     value: theater.id,
     label: `${theater.region} · ${theater.name}`,
@@ -57,8 +61,8 @@ function PolicyForm(props: Props) {
 }
 
 function EmptyCatalogState(props: Pick<Props, 'catalogRefresh' | 'onRefresh' | 'onRequestCatalogRefresh' | 'requestingCatalog'>) {
-  const waiting = props.catalogRefresh?.state === 'waiting_for_probe';
-  const running = props.catalogRefresh?.state === 'running';
+  const waiting = props.catalogRefresh?.state.case === 'waitingForProbe';
+  const running = props.catalogRefresh?.state.case === 'running';
   return (
     <Alert title={running ? '전체 카탈로그를 수집하고 있습니다' : waiting ? '카탈로그 수집을 위해 Probe를 기다리고 있습니다' : '극장 데이터가 아직 없습니다'} variant="light">
       <Stack gap="md">
@@ -82,7 +86,7 @@ export function ObservationsPageView(props: Props) {
   if ((!props.policies || !props.theaters) && !props.failed) return <Stack gap="md"><PageHeader title="관측 정책" /><Skeleton h={280} /></Stack>;
   return (
     <Stack gap={48}>
-      <PageHeader title="예매 오픈 관측" description="극장별 일정을 반복 확인하고, 새 회차가 열리면 대기 중인 Client에 즉시 전달합니다." actions={<Group gap="xs"><Button variant="default" onClick={props.onRefresh}>새로고침</Button>{props.theaters && props.theaters.length > 0 ? <Button variant="default" loading={props.requestingCatalog} disabled={props.catalogRefresh?.state === 'running'} onClick={props.onRequestCatalogRefresh}>극장 목록 다시 수집</Button> : null}</Group>} />
+      <PageHeader title="예매 오픈 관측" description="극장별 일정을 반복 확인하고, 새 회차가 열리면 대기 중인 Client에 즉시 전달합니다." actions={<Group gap="xs"><Button variant="default" onClick={props.onRefresh}>새로고침</Button>{props.theaters && props.theaters.length > 0 ? <Button variant="default" loading={props.requestingCatalog} disabled={props.catalogRefresh?.state.case === 'running'} onClick={props.onRequestCatalogRefresh}>극장 목록 다시 수집</Button> : null}</Group>} />
       {props.failed ? <Alert color="red" title="관측 정책 요청을 처리하지 못했습니다">입력값과 Central 연결을 확인한 뒤 다시 시도하세요.</Alert> : null}
       {props.theaters?.length === 0 ? <EmptyCatalogState {...props} /> : null}
       {props.theaters && props.theaters.length > 0 ? <>
@@ -96,10 +100,10 @@ export function ObservationsPageView(props: Props) {
           <Table.Thead><Table.Tr><Table.Th>극장</Table.Th><Table.Th>현재 모드</Table.Th><Table.Th>현재 간격</Table.Th><Table.Th>다음 실행</Table.Th><Table.Th /></Table.Tr></Table.Thead>
           <Table.Tbody>
             {props.policies?.map((policy) => <Table.Tr key={policy.id}>
-              <Table.Td><Text fw={600}>{policy.theater.name}</Text><Text size="xs" c="dimmed">{policy.theater.region}</Text></Table.Td>
+              <Table.Td><Text fw={600}>{policy.theater?.name || '알 수 없는 극장'}</Text><Text size="xs" c="dimmed">{policy.theater?.region || '지역 미상'}</Text></Table.Td>
               <Table.Td>{observationMode(policy)}</Table.Td>
               <Table.Td>{seconds(policy.effectiveMinSeconds)}–{seconds(policy.effectiveMaxSeconds)}</Table.Td>
-              <Table.Td>{policy.nextRunAt ? new Date(policy.nextRunAt).toLocaleString('ko-KR') : '할당 처리 중'}</Table.Td>
+              <Table.Td>{policy.nextRunAt ? timestampDate(policy.nextRunAt)?.toLocaleString('ko-KR') : '할당 처리 중'}</Table.Td>
               <Table.Td><Group justify="flex-end" gap="xs"><Button variant="subtle" color="gray" onClick={() => props.onEdit(policy)}>편집</Button><Button variant="subtle" color="red" onClick={() => props.onDelete(policy)}>삭제</Button></Group></Table.Td>
             </Table.Tr>)}
             {props.policies?.length === 0 ? <Table.Tr><Table.Td colSpan={5}><Text c="dimmed" ta="center" py="xl">등록된 관측 정책이 없습니다.</Text></Table.Td></Table.Tr> : null}

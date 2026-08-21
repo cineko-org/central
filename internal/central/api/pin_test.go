@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/cineko-org/central/internal/central"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 func TestPINAuthenticationAndAdminManagementAPI(t *testing.T) {
@@ -23,12 +25,16 @@ func TestPINAuthenticationAndAdminManagementAPI(t *testing.T) {
 	}
 	unavailable := request(t, withoutPIN.Handler(), http.MethodPost, "/v1/auth/pin", map[string]string{
 		"pin": "123456",
-	}, map[string]string{"X-Cineko-Protocol": "3"})
+	}, nil)
 	assertAPIError(t, unavailable, http.StatusServiceUnavailable, "pin_auth_unavailable")
 
-	pins := &apiPINService{issue: central.ClientPINIssue{
-		User: central.ClientUser{ID: "user", DisplayName: "User"}, PIN: "123456",
-	}}
+	user := &clientpb.User{}
+	user.SetId("user")
+	user.SetDisplayName("User")
+	issue := &adminpb.ClientPinIssue{}
+	issue.SetUser(user)
+	issue.SetPin("123456")
+	pins := &apiPINService{issue: issue}
 	auth, err := NewAdminAuth([]AdminCredential{{
 		UserID: "admin", DisplayName: "관리자", Password: adminTestPassword,
 	}}, adminTestPepper, newAdminSessionRepository(), 0)
@@ -42,23 +48,20 @@ func TestPINAuthenticationAndAdminManagementAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingProtocol := request(t, server.Handler(), http.MethodPost, "/v1/auth/pin", map[string]string{
-		"pin": "123456",
-	}, nil)
-	assertAPIError(t, missingProtocol, http.StatusBadRequest, "unsupported_protocol")
 	pins.err = central.ErrRateLimited
 	limited := request(t, server.Handler(), http.MethodPost, "/v1/auth/pin", map[string]string{
 		"pin": "123456", "installationId": "install_1234567890", "deviceId": "device_123456789012",
-	}, map[string]string{"X-Cineko-Protocol": "3"})
+	}, nil)
 	assertAPIError(t, limited, http.StatusTooManyRequests, "rate_limited")
 	if limited.Header().Get("Retry-After") != "600" {
 		t.Fatalf("PIN Retry-After = %q", limited.Header().Get("Retry-After"))
 	}
 	pins.err = nil
-	pins.exchange = central.AuthExchangeResponse{User: central.ClientUser{ID: "user"}}
+	pins.exchange = &clientpb.AuthenticationResponse{}
+	pins.exchange.SetUser(user)
 	exchanged := request(t, server.Handler(), http.MethodPost, "/v1/auth/pin", map[string]string{
 		"pin": "123456", "installationId": "install_1234567890", "deviceId": "device_123456789012",
-	}, map[string]string{"X-Cineko-Protocol": "3", "X-Forwarded-For": "198.51.100.8"})
+	}, map[string]string{"X-Forwarded-For": "198.51.100.8"})
 	if exchanged.Code != http.StatusOK || pins.source != "192.0.2.1" {
 		t.Fatalf("PIN exchange = %d, source=%q, body=%s", exchanged.Code, pins.source, exchanged.Body.String())
 	}
@@ -161,9 +164,9 @@ func mustJSON(t *testing.T, value any) string {
 }
 
 type apiPINService struct {
-	users         []central.ClientPINUser
-	issue         central.ClientPINIssue
-	exchange      central.AuthExchangeResponse
+	users         []*adminpb.ClientPinUser
+	issue         *adminpb.ClientPinIssue
+	exchange      *clientpb.AuthenticationResponse
 	displayName   string
 	userID        string
 	deletedUserID string
@@ -171,16 +174,16 @@ type apiPINService struct {
 	err           error
 }
 
-func (service *apiPINService) ListUsers(context.Context) ([]central.ClientPINUser, error) {
+func (service *apiPINService) ListUsers(context.Context) ([]*adminpb.ClientPinUser, error) {
 	return service.users, service.err
 }
 
-func (service *apiPINService) CreateUser(_ context.Context, displayName string) (central.ClientPINIssue, error) {
+func (service *apiPINService) CreateUser(_ context.Context, displayName string) (*adminpb.ClientPinIssue, error) {
 	service.displayName = displayName
 	return service.issue, service.err
 }
 
-func (service *apiPINService) Rotate(_ context.Context, userID string) (central.ClientPINIssue, error) {
+func (service *apiPINService) Rotate(_ context.Context, userID string) (*adminpb.ClientPinIssue, error) {
 	service.userID = userID
 	return service.issue, service.err
 }
@@ -192,9 +195,9 @@ func (service *apiPINService) DeleteUser(_ context.Context, userID string) error
 
 func (service *apiPINService) Exchange(
 	_ context.Context,
-	_ central.ClientPINExchangeRequest,
+	_ *clientpb.PinExchangeRequest,
 	source string,
-) (central.AuthExchangeResponse, error) {
+) (*clientpb.AuthenticationResponse, error) {
 	service.source = source
 	return service.exchange, service.err
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,7 +13,10 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/domain/clientresources"
-	contracts "github.com/cineko-org/contracts/v3"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -32,8 +34,6 @@ type ClientCredentialSeed struct {
 	AccessToken string
 }
 
-type ClientUser = contracts.ClientUser
-
 type ClientPrincipal struct {
 	UserID    string
 	SessionID string
@@ -49,68 +49,42 @@ type ClientSession struct {
 	CreatedAt        time.Time
 }
 
-type AuthExchangeRequest = contracts.AuthExchangeRequest
-
-type AuthExchangeResponse = contracts.AuthExchangeResponse
-
-type AuthRefreshRequest = contracts.AuthRefreshRequest
-
-type ClientDevice = contracts.ClientDevice
-
-type ClientResource struct {
-	Kind      string          `json:"kind"`
-	ID        string          `json:"id"`
-	UserID    string          `json:"-"`
-	Revision  int64           `json:"revision"`
-	Data      json.RawMessage `json:"data"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
-}
-
-type ClientEvent = contracts.ClientEvent
-
-type EventResource = contracts.EventResource
-
-type EventStreamControl = contracts.EventStreamControl
-
-type ClientEventPage struct {
-	Events            []ClientEvent
+type ClientEventBatch struct {
+	Events            []*clientpb.ClientEvent
 	PrunedThrough     int64
 	Latest            int64
 	ReleaseGeneration int64
 }
 
-type ClientBootstrap = contracts.ClientBootstrap
-
 type ResourceMutation struct {
 	UserID           string
 	Kind             string
 	ID               string
-	Data             json.RawMessage
+	Resource         *clientpb.Resource
 	ExpectedRevision *int64
 	CommandID        string
 	Now              time.Time
 }
 
 type ClientRepository interface {
-	ProvisionClientCredential(context.Context, ClientUser, [32]byte) error
-	ExchangeClientCredential(context.Context, string, [32]byte, time.Time) (ClientUser, error)
+	ProvisionClientCredential(context.Context, *clientpb.User, [32]byte) error
+	ExchangeClientCredential(context.Context, string, [32]byte, time.Time) (*clientpb.User, error)
 	CreateClientSession(context.Context, ClientSession) error
-	RotateClientSession(context.Context, [32]byte, ClientSession, time.Time) (ClientUser, error)
+	RotateClientSession(context.Context, [32]byte, ClientSession, time.Time) (*clientpb.User, error)
 	RevokeClientSession(context.Context, string, time.Time) error
 	CreateLaunchTicket(context.Context, LaunchTicket) error
 	ExchangeLaunchTicket(context.Context, [32]byte, string, int64, ClientSession, time.Time) (LaunchedClient, error)
 	AuthenticateClientSession(context.Context, [32]byte, time.Time) (ClientPrincipal, error)
-	UpsertClientDevice(context.Context, ClientDevice) (ClientDevice, error)
-	GetClientDevice(context.Context, string, string) (ClientDevice, error)
-	GetClientUser(context.Context, string) (ClientUser, error)
+	UpsertClientDevice(context.Context, *clientpb.Device) (*clientpb.Device, error)
+	GetClientDevice(context.Context, string, string) (*clientpb.Device, error)
+	GetClientUser(context.Context, string) (*clientpb.User, error)
 	ClientResourceRevisions(context.Context, string) (map[string]int64, error)
-	ListClientResources(context.Context, string, string) ([]ClientResource, error)
-	GetClientResource(context.Context, string, string, string) (ClientResource, error)
-	PutClientResource(context.Context, ResourceMutation) (ClientResource, error)
-	DeleteClientResource(context.Context, ResourceMutation) (ClientResource, error)
-	ListClientEvents(context.Context, string, int64, int) ([]ClientEvent, error)
-	ClaimClientExecution(context.Context, ExecutionClaim) (ExecutionCommand, error)
+	ListClientResources(context.Context, string, string) ([]*clientpb.Resource, error)
+	GetClientResource(context.Context, string, string, string) (*clientpb.Resource, error)
+	PutClientResource(context.Context, ResourceMutation) (*clientpb.Resource, error)
+	DeleteClientResource(context.Context, ResourceMutation) (*clientpb.Resource, error)
+	ListClientEvents(context.Context, string, int64, int) ([]*clientpb.ClientEvent, error)
+	ClaimClientExecution(context.Context, ExecutionClaim) (*executionpb.Command, error)
 	HeartbeatClientExecution(context.Context, string, string, [32]byte, time.Time, time.Time) error
 	CompleteClientExecution(context.Context, ExecutionCompletion) error
 	RetryClientExecution(context.Context, string, string, time.Time) error
@@ -119,7 +93,7 @@ type ClientRepository interface {
 type ClientService struct {
 	repository      ClientRepository
 	eventRepository interface {
-		ClientEventPage(context.Context, string, int64, int) (ClientEventPage, error)
+		ClientEventPage(context.Context, string, int64, int) (ClientEventBatch, error)
 		WaitClientEvents(context.Context, string, int64, int64) error
 	}
 	releaseRepository ReleaseRepository
@@ -130,11 +104,11 @@ type ClientService struct {
 	releaseMu         sync.RWMutex
 	releasePublishMu  sync.Mutex
 	releaseGeneration atomic.Int64
-	clients           map[string]ClientRelease
-	browsers          map[string]BrowserRelease
-	playwright        map[string]PlaywrightRelease
-	launchers         map[string]LauncherRelease
-	probes            map[string]ProbeRelease
+	clients           map[string]*releasepb.ClientRelease
+	browsers          map[string]*releasepb.BrowserRelease
+	playwright        map[string]*releasepb.PlaywrightRelease
+	launchers         map[string]*releasepb.LauncherRelease
+	probes            map[string]*releasepb.ProbeRelease
 }
 
 func NewClientService(
@@ -161,12 +135,12 @@ func NewClientService(
 	service := &ClientService{
 		repository: repository, sessionTTL: sessionTTL, refreshTTL: selectedRefreshTTL,
 		clock: time.Now, random: rand.Read,
-		clients: make(map[string]ClientRelease), browsers: make(map[string]BrowserRelease),
-		playwright: make(map[string]PlaywrightRelease), launchers: make(map[string]LauncherRelease),
-		probes: make(map[string]ProbeRelease),
+		clients: make(map[string]*releasepb.ClientRelease), browsers: make(map[string]*releasepb.BrowserRelease),
+		playwright: make(map[string]*releasepb.PlaywrightRelease), launchers: make(map[string]*releasepb.LauncherRelease),
+		probes: make(map[string]*releasepb.ProbeRelease),
 	}
 	service.eventRepository, _ = repository.(interface {
-		ClientEventPage(context.Context, string, int64, int) (ClientEventPage, error)
+		ClientEventPage(context.Context, string, int64, int) (ClientEventBatch, error)
 		WaitClientEvents(context.Context, string, int64, int64) error
 	})
 	service.releaseRepository, _ = repository.(ReleaseRepository)
@@ -190,9 +164,12 @@ func (service *ClientService) Provision(ctx context.Context, seeds []ClientCrede
 			return fmt.Errorf("duplicate client credential user %q", seed.UserID)
 		}
 		seen[seed.UserID] = struct{}{}
-		if err := service.repository.ProvisionClientCredential(ctx, ClientUser{
-			ID: seed.UserID, DisplayName: seed.DisplayName, CreatedAt: now, UpdatedAt: now,
-		}, sha256.Sum256([]byte(seed.AccessToken))); err != nil {
+		user := &clientpb.User{}
+		user.SetId(seed.UserID)
+		user.SetDisplayName(seed.DisplayName)
+		user.SetCreatedAt(timestamppb.New(now))
+		user.SetUpdatedAt(timestamppb.New(now))
+		if err := service.repository.ProvisionClientCredential(ctx, user, sha256.Sum256([]byte(seed.AccessToken))); err != nil {
 			return fmt.Errorf("provision client credential for %s: %w", seed.UserID, err)
 		}
 	}
@@ -201,50 +178,50 @@ func (service *ClientService) Provision(ctx context.Context, seeds []ClientCrede
 
 func (service *ClientService) Exchange(
 	ctx context.Context,
-	request AuthExchangeRequest,
-) (AuthExchangeResponse, error) {
-	request.UserID = strings.TrimSpace(request.UserID)
-	request.AccessToken = strings.TrimSpace(request.AccessToken)
-	if request.UserID == "" || request.AccessToken == "" {
-		return AuthExchangeResponse{}, ErrUnauthorized
+	request *clientpb.TokenExchangeRequest,
+) (*clientpb.AuthenticationResponse, error) {
+	userID := strings.TrimSpace(request.GetUserId())
+	accessToken := strings.TrimSpace(request.GetAccessToken())
+	if userID == "" || accessToken == "" {
+		return nil, ErrUnauthorized
 	}
 	now := service.clock().UTC()
 	user, err := service.repository.ExchangeClientCredential(
-		ctx, request.UserID, sha256.Sum256([]byte(request.AccessToken)), now,
+		ctx, userID, sha256.Sum256([]byte(accessToken)), now,
 	)
 	if err != nil {
-		return AuthExchangeResponse{}, ErrUnauthorized
+		return nil, ErrUnauthorized
 	}
 	response, session, err := service.issueSession(user, now)
 	if err != nil {
-		return AuthExchangeResponse{}, err
+		return nil, err
 	}
 	if err := service.repository.CreateClientSession(ctx, session); err != nil {
-		return AuthExchangeResponse{}, err
+		return nil, err
 	}
 	return response, nil
 }
 
 func (service *ClientService) Refresh(
 	ctx context.Context,
-	request AuthRefreshRequest,
-) (AuthExchangeResponse, error) {
-	request.RefreshToken = strings.TrimSpace(request.RefreshToken)
-	if request.RefreshToken == "" {
-		return AuthExchangeResponse{}, ErrUnauthorized
+	request *clientpb.TokenRefreshRequest,
+) (*clientpb.AuthenticationResponse, error) {
+	refreshToken := strings.TrimSpace(request.GetRefreshToken())
+	if refreshToken == "" {
+		return nil, ErrUnauthorized
 	}
 	now := service.clock().UTC()
-	response, session, err := service.issueSession(ClientUser{}, now)
+	response, session, err := service.issueSession(&clientpb.User{}, now)
 	if err != nil {
-		return AuthExchangeResponse{}, err
+		return nil, err
 	}
 	user, err := service.repository.RotateClientSession(
-		ctx, sha256.Sum256([]byte(request.RefreshToken)), session, now,
+		ctx, sha256.Sum256([]byte(refreshToken)), session, now,
 	)
 	if err != nil {
-		return AuthExchangeResponse{}, ErrUnauthorized
+		return nil, ErrUnauthorized
 	}
-	response.User = user
+	response.SetUser(user)
 	return response, nil
 }
 
@@ -256,29 +233,32 @@ func (service *ClientService) Logout(ctx context.Context, principal ClientPrinci
 }
 
 func (service *ClientService) issueSession(
-	user ClientUser,
+	user *clientpb.User,
 	now time.Time,
-) (AuthExchangeResponse, ClientSession, error) {
+) (*clientpb.AuthenticationResponse, ClientSession, error) {
 	accessToken, accessHash, err := service.secret("ccs_")
 	if err != nil {
-		return AuthExchangeResponse{}, ClientSession{}, err
+		return nil, ClientSession{}, err
 	}
 	refreshToken, refreshHash, err := service.secret("ccr_")
 	if err != nil {
-		return AuthExchangeResponse{}, ClientSession{}, err
+		return nil, ClientSession{}, err
 	}
 	sessionID, _, err := service.secret("session_")
 	if err != nil {
-		return AuthExchangeResponse{}, ClientSession{}, err
+		return nil, ClientSession{}, err
 	}
 	session := ClientSession{
-		ID: sessionID, UserID: user.ID, TokenHash: accessHash, ExpiresAt: now.Add(service.sessionTTL),
+		ID: sessionID, UserID: user.GetId(), TokenHash: accessHash, ExpiresAt: now.Add(service.sessionTTL),
 		RefreshTokenHash: refreshHash, RefreshExpiresAt: now.Add(service.refreshTTL), CreatedAt: now,
 	}
-	return AuthExchangeResponse{
-		AccessToken: accessToken, ExpiresAt: session.ExpiresAt,
-		RefreshToken: refreshToken, RefreshExpiresAt: session.RefreshExpiresAt, User: user,
-	}, session, nil
+	response := &clientpb.AuthenticationResponse{}
+	response.SetAccessToken(accessToken)
+	response.SetExpiresAt(timestamppb.New(session.ExpiresAt))
+	response.SetRefreshToken(refreshToken)
+	response.SetRefreshExpiresAt(timestamppb.New(session.RefreshExpiresAt))
+	response.SetUser(user)
+	return response, session, nil
 }
 
 func (service *ClientService) Authenticate(
@@ -298,33 +278,34 @@ func (service *ClientService) Bootstrap(
 	ctx context.Context,
 	principal ClientPrincipal,
 	installationID string,
-) (ClientBootstrap, error) {
+) (*clientpb.Bootstrap, error) {
 	user, err := service.repository.GetClientUser(ctx, principal.UserID)
 	if err != nil {
-		return ClientBootstrap{}, err
+		return nil, err
 	}
 	revisions, err := service.repository.ClientResourceRevisions(ctx, principal.UserID)
 	if err != nil {
-		return ClientBootstrap{}, err
+		return nil, err
 	}
 	eventCursor := int64(0)
 	if service.eventRepository != nil {
 		eventPage, eventErr := service.eventRepository.ClientEventPage(ctx, principal.UserID, 0, 1)
 		if eventErr != nil {
-			return ClientBootstrap{}, eventErr
+			return nil, eventErr
 		}
 		eventCursor = eventPage.Latest
 	}
-	bootstrap := ClientBootstrap{
-		User: user, Protocol: ProtocolVersion, EventCursor: eventCursor, Revisions: revisions,
-		Features: map[string]bool{"embeddedProbe": true, "eventStream": true, "centralState": true},
-	}
+	bootstrap := &clientpb.Bootstrap{}
+	bootstrap.SetUser(user)
+	bootstrap.SetEventCursor(eventCursor)
+	bootstrap.SetRevisions(revisions)
+	bootstrap.SetFeatures(map[string]bool{"embeddedProbe": true, "eventStream": true, "centralState": true})
 	if installationID != "" {
 		device, deviceErr := service.repository.GetClientDevice(ctx, principal.UserID, installationID)
 		if deviceErr == nil {
-			bootstrap.Device = &device
+			bootstrap.SetDevice(device)
 		} else if !errors.Is(deviceErr, ErrNotFound) {
-			return ClientBootstrap{}, deviceErr
+			return nil, deviceErr
 		}
 	}
 	return bootstrap, nil
@@ -333,21 +314,23 @@ func (service *ClientService) Bootstrap(
 func (service *ClientService) UpsertDevice(
 	ctx context.Context,
 	principal ClientPrincipal,
-	device ClientDevice,
-) (ClientDevice, error) {
-	device.InstallationID = strings.TrimSpace(device.InstallationID)
-	device.DeviceID = strings.TrimSpace(device.DeviceID)
-	device.Platform = strings.TrimSpace(device.Platform)
-	device.Arch = strings.TrimSpace(device.Arch)
-	device.AppVersion = strings.TrimSpace(device.AppVersion)
-	if device.InstallationID == "" || device.DeviceID == "" || device.Platform == "" ||
-		device.Arch == "" || device.AppVersion == "" {
-		return ClientDevice{}, fmt.Errorf("%w: client device is incomplete", ErrInvalid)
+	device *clientpb.Device,
+) (*clientpb.Device, error) {
+	device.SetInstallationId(strings.TrimSpace(device.GetInstallationId()))
+	device.SetDeviceId(strings.TrimSpace(device.GetDeviceId()))
+	device.SetPlatform(strings.TrimSpace(device.GetPlatform()))
+	device.SetArchitecture(strings.TrimSpace(device.GetArchitecture()))
+	device.SetAppVersion(strings.TrimSpace(device.GetAppVersion()))
+	if device.GetInstallationId() == "" || device.GetDeviceId() == "" || device.GetPlatform() == "" ||
+		device.GetArchitecture() == "" || device.GetAppVersion() == "" {
+		return nil, fmt.Errorf("%w: client device is incomplete", ErrInvalid)
 	}
 	now := service.clock().UTC()
-	device.UserID, device.LastSeenAt, device.UpdatedAt = principal.UserID, now, now
-	if device.CreatedAt.IsZero() {
-		device.CreatedAt = now
+	device.SetUserId(principal.UserID)
+	device.SetLastSeenAt(timestamppb.New(now))
+	device.SetUpdatedAt(timestamppb.New(now))
+	if device.GetCreatedAt() == nil {
+		device.SetCreatedAt(timestamppb.New(now))
 	}
 	return service.repository.UpsertClientDevice(ctx, device)
 }
@@ -356,7 +339,7 @@ func (service *ClientService) ListResources(
 	ctx context.Context,
 	principal ClientPrincipal,
 	kind string,
-) ([]ClientResource, error) {
+) ([]*clientpb.Resource, error) {
 	if !validClientResourceKind(kind) {
 		return nil, fmt.Errorf("%w: unsupported client resource", ErrInvalid)
 	}
@@ -377,16 +360,16 @@ func (service *ClientService) GetResource(
 	principal ClientPrincipal,
 	kind string,
 	id string,
-) (ClientResource, error) {
+) (*clientpb.Resource, error) {
 	if !validClientResourceKind(kind) || strings.TrimSpace(id) == "" {
-		return ClientResource{}, fmt.Errorf("%w: invalid client resource identity", ErrInvalid)
+		return nil, fmt.Errorf("%w: invalid client resource identity", ErrInvalid)
 	}
 	resource, err := service.repository.GetClientResource(ctx, principal.UserID, kind, id)
 	if err != nil {
-		return ClientResource{}, err
+		return nil, err
 	}
 	if err := validateStoredClientResource(principal.UserID, kind, id, resource); err != nil {
-		return ClientResource{}, err
+		return nil, err
 	}
 	return resource, nil
 }
@@ -396,32 +379,44 @@ func (service *ClientService) PutResource(
 	principal ClientPrincipal,
 	kind string,
 	id string,
-	data json.RawMessage,
+	resource *clientpb.Resource,
 	expectedRevision *int64,
 	commandID string,
-) (ClientResource, error) {
+) (*clientpb.Resource, error) {
 	if !validClientResourceKind(kind) || strings.TrimSpace(id) == "" ||
-		strings.TrimSpace(commandID) == "" || !json.Valid(data) {
-		return ClientResource{}, fmt.Errorf("%w: invalid client resource mutation", ErrInvalid)
+		strings.TrimSpace(commandID) == "" || resource == nil || resource.GetIdentity() == nil {
+		return nil, fmt.Errorf("%w: invalid client resource mutation", ErrInvalid)
 	}
 	if expectedRevision != nil && *expectedRevision < 1 {
-		return ClientResource{}, fmt.Errorf("%w: revision must be positive", ErrInvalid)
+		return nil, fmt.Errorf("%w: revision must be positive", ErrInvalid)
 	}
-	if err := clientresources.ValidatePayload(principal.UserID, kind, id, data); err != nil {
-		return ClientResource{}, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, kind, err)
+	if clientresources.Kind(resource) != kind || resource.GetIdentity().GetId() != id {
+		return nil, fmt.Errorf("%w: resource identity does not match the request", ErrInvalid)
+	}
+	payload, err := clientresources.Payload(resource)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, kind, err)
+	}
+	if err := clientresources.ValidatePayload(principal.UserID, kind, id, payload); err != nil {
+		return nil, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, kind, err)
 	}
 	return service.repository.PutClientResource(ctx, ResourceMutation{
-		UserID: principal.UserID, Kind: kind, ID: id, Data: data,
+		UserID: principal.UserID, Kind: kind, ID: id, Resource: resource,
 		ExpectedRevision: expectedRevision, CommandID: commandID, Now: service.clock().UTC(),
 	})
 }
 
-func validateStoredClientResource(userID string, kind string, id string, resource ClientResource) error {
-	if resource.UserID != userID || resource.Kind != kind || (id != "" && resource.ID != id) {
+func validateStoredClientResource(userID string, kind string, id string, resource *clientpb.Resource) error {
+	if resource == nil || resource.GetIdentity() == nil || clientresources.Kind(resource) != kind ||
+		(id != "" && resource.GetIdentity().GetId() != id) {
 		return fmt.Errorf("%w: resource storage identity is inconsistent", ErrCorruptResource)
 	}
-	if err := clientresources.ValidatePayload(resource.UserID, resource.Kind, resource.ID, resource.Data); err != nil {
-		return fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, resource.Kind, resource.ID, err)
+	payload, err := clientresources.Payload(resource)
+	if err != nil {
+		return fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, kind, resource.GetIdentity().GetId(), err)
+	}
+	if err := clientresources.ValidatePayload(userID, kind, resource.GetIdentity().GetId(), payload); err != nil {
+		return fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, kind, resource.GetIdentity().GetId(), err)
 	}
 	return nil
 }
@@ -433,12 +428,12 @@ func (service *ClientService) DeleteResource(
 	id string,
 	expectedRevision *int64,
 	commandID string,
-) (ClientResource, error) {
+) (*clientpb.Resource, error) {
 	if !validClientResourceKind(kind) || strings.TrimSpace(id) == "" || strings.TrimSpace(commandID) == "" {
-		return ClientResource{}, fmt.Errorf("%w: invalid client resource deletion", ErrInvalid)
+		return nil, fmt.Errorf("%w: invalid client resource deletion", ErrInvalid)
 	}
 	if expectedRevision == nil || *expectedRevision < 1 {
-		return ClientResource{}, fmt.Errorf("%w: deletion requires a positive revision", ErrInvalid)
+		return nil, fmt.Errorf("%w: deletion requires a positive revision", ErrInvalid)
 	}
 	return service.repository.DeleteClientResource(ctx, ResourceMutation{
 		UserID: principal.UserID, Kind: kind, ID: id,
@@ -451,7 +446,7 @@ func (service *ClientService) Events(
 	principal ClientPrincipal,
 	after int64,
 	limit int,
-) ([]ClientEvent, error) {
+) ([]*clientpb.ClientEvent, error) {
 	page, err := service.EventPage(ctx, principal, after, limit)
 	return page.Events, err
 }
@@ -461,28 +456,28 @@ func (service *ClientService) EventPage(
 	principal ClientPrincipal,
 	after int64,
 	limit int,
-) (ClientEventPage, error) {
+) (ClientEventBatch, error) {
 	if after < 0 {
-		return ClientEventPage{}, fmt.Errorf("%w: event cursor must not be negative", ErrInvalid)
+		return ClientEventBatch{}, fmt.Errorf("%w: event cursor must not be negative", ErrInvalid)
 	}
 	if limit == 0 {
 		limit = DefaultEventPageSize
 	}
 	if limit < 1 || limit > MaximumEventPageSize {
-		return ClientEventPage{}, fmt.Errorf("%w: event page size is invalid", ErrInvalid)
+		return ClientEventBatch{}, fmt.Errorf("%w: event page size is invalid", ErrInvalid)
 	}
 	if service.eventRepository != nil {
 		return service.eventRepository.ClientEventPage(ctx, principal.UserID, after, limit)
 	}
 	events, err := service.repository.ListClientEvents(ctx, principal.UserID, after, limit)
 	if err != nil {
-		return ClientEventPage{}, err
+		return ClientEventBatch{}, err
 	}
 	latest := after
 	if len(events) > 0 {
-		latest = events[len(events)-1].Sequence
+		latest = events[len(events)-1].GetSequence()
 	}
-	return ClientEventPage{Events: events, Latest: latest, ReleaseGeneration: service.ReleaseGeneration()}, nil
+	return ClientEventBatch{Events: events, Latest: latest, ReleaseGeneration: service.ReleaseGeneration()}, nil
 }
 
 func (service *ClientService) WaitEvents(

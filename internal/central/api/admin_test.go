@@ -13,7 +13,12 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -27,16 +32,16 @@ type adminSessionRepository struct {
 }
 
 type adminOperationsFake struct {
-	probes         []AdminProbe
+	probes         []*adminpb.Probe
 	deletedProbes  []string
 	deleteProbeErr error
-	summary        AdminDataSummary
-	policies       []AdminObservationPolicy
+	summary        *adminpb.DataSummary
+	policies       []*adminpb.ObservationPolicy
 	intelligence   domain.ScheduleIntelligence
 	err            error
 }
 
-func (operations *adminOperationsFake) ListAdminProbes(context.Context) ([]AdminProbe, error) {
+func (operations *adminOperationsFake) ListAdminProbes(context.Context) ([]*adminpb.Probe, error) {
 	return operations.probes, operations.err
 }
 
@@ -48,28 +53,27 @@ func (operations *adminOperationsFake) DeleteAdminProbe(_ context.Context, probe
 	return nil
 }
 
-func (operations *adminOperationsFake) AdminDataSummary(context.Context) (AdminDataSummary, error) {
+func (operations *adminOperationsFake) AdminDataSummary(context.Context) (*adminpb.DataSummary, error) {
 	return operations.summary, operations.err
 }
 
-func (operations *adminOperationsFake) ListAdminObservationPolicies(context.Context) ([]AdminObservationPolicy, error) {
+func (operations *adminOperationsFake) ListAdminObservationPolicies(context.Context) ([]*adminpb.ObservationPolicy, error) {
 	return operations.policies, operations.err
 }
 
 func (operations *adminOperationsFake) CreateAdminObservationPolicy(
 	_ context.Context,
-	input AdminObservationPolicyInput,
-) (AdminObservationPolicy, error) {
+	input *adminpb.ObservationPolicyInput,
+) (*adminpb.ObservationPolicy, error) {
 	if operations.err != nil {
-		return AdminObservationPolicy{}, operations.err
+		return nil, operations.err
 	}
-	policy := AdminObservationPolicy{
-		ID: "policy", Revision: 1, AdminObservationPolicyInput: input,
-		Theater: central.Theater{
-			ID: input.TheaterID, ProviderID: contracts.ProviderCGV,
-			SourceKey: "서울/용산아이파크몰", Region: "서울", Name: "용산아이파크몰",
-		},
-	}
+	id, revision := "policy", int64(1)
+	providerID, sourceKey, region, name := catalogdomain.ProviderCGV, "서울/용산아이파크몰", "서울", "용산아이파크몰"
+	theater := catalogpb.Theater_builder{
+		Id: ptrString(input.GetTheaterId()), ProviderId: &providerID, SourceKey: &sourceKey, Region: &region, Name: &name,
+	}.Build()
+	policy := adminpb.ObservationPolicy_builder{Id: &id, Revision: &revision, Input: input, Theater: theater}.Build()
 	operations.policies = append(operations.policies, policy)
 	return policy, nil
 }
@@ -78,19 +82,20 @@ func (operations *adminOperationsFake) UpdateAdminObservationPolicy(
 	_ context.Context,
 	id string,
 	revision int64,
-	input AdminObservationPolicyInput,
-) (AdminObservationPolicy, error) {
+	input *adminpb.ObservationPolicyInput,
+) (*adminpb.ObservationPolicy, error) {
 	if operations.err != nil {
-		return AdminObservationPolicy{}, operations.err
+		return nil, operations.err
 	}
-	return AdminObservationPolicy{
-		ID: id, Revision: revision + 1, AdminObservationPolicyInput: input,
-		Theater: central.Theater{
-			ID: input.TheaterID, ProviderID: contracts.ProviderCGV,
-			SourceKey: "서울/용산아이파크몰", Region: "서울", Name: "용산아이파크몰",
-		},
-	}, nil
+	nextRevision := revision + 1
+	providerID, sourceKey, region, name := catalogdomain.ProviderCGV, "서울/용산아이파크몰", "서울", "용산아이파크몰"
+	theater := catalogpb.Theater_builder{
+		Id: ptrString(input.GetTheaterId()), ProviderId: &providerID, SourceKey: &sourceKey, Region: &region, Name: &name,
+	}.Build()
+	return adminpb.ObservationPolicy_builder{Id: &id, Revision: &nextRevision, Input: input, Theater: theater}.Build(), nil
 }
+
+func ptrString(value string) *string { return &value }
 
 func (operations *adminOperationsFake) DeleteAdminObservationPolicy(context.Context, string, int64) error {
 	return operations.err
@@ -207,11 +212,11 @@ func TestAdminAuthValidatesAndPersistsSessions(t *testing.T) {
 		t.Fatal("wrong admin token authenticated")
 	}
 	token, principal, err := auth.Login(context.Background(), "198.51.100.1", " admin ", adminTestPassword)
-	if err != nil || principal.DisplayName != "관리자" {
+	if err != nil || principal.GetDisplayName() != "관리자" {
 		t.Fatalf("Login() = %q, %+v, %v", token, principal, err)
 	}
 	verified, err := auth.Verify(context.Background(), token)
-	if err != nil || verified.UserID != "admin" {
+	if err != nil || verified.GetUserId() != "admin" {
 		t.Fatalf("Verify() = %+v, %v", verified, err)
 	}
 	for _, invalid := range []string{"", "bad.token", token + "x"} {
@@ -247,10 +252,16 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 	if err := auth.Bootstrap(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	configuration := AdminConfiguration{ListenAddress: ":8080", ReconcileBatchSize: 100}
+	configuration := &adminpb.Configuration{}
+	configuration.SetListenAddress(":8080")
+	configuration.SetReconcileBatchSize(100)
+	probe := &adminpb.Probe{}
+	probe.SetId("probe")
+	summary := &adminpb.DataSummary{}
+	summary.SetScheduleCaptures(42)
+	summary.SetShowtimeObservations(200)
 	operations := &adminOperationsFake{
-		probes:  []AdminProbe{{ID: "probe", Kind: "client", Status: "online"}},
-		summary: AdminDataSummary{ScheduleCaptures: 42, ShowtimeObservations: 200},
+		probes: []*adminpb.Probe{probe}, summary: summary,
 	}
 	server, err := New(
 		service, WithAdminAuth(auth), WithTrustedProxyCIDRs("192.0.2.0/24"),
@@ -310,13 +321,14 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 	assertAPIError(t, requestWithCookie(t, server, http.MethodDelete, "/v1/admin/probes/probe", cookie), http.StatusConflict, "conflict")
 	operations.deleteProbeErr = nil
 	dataRequest := requestWithCookie(t, server, http.MethodGet, "/v1/admin/data", cookie)
-	if dataRequest.Code != http.StatusOK || !strings.Contains(dataRequest.Body.String(), `"scheduleCaptures":42`) {
+	if dataRequest.Code != http.StatusOK || !strings.Contains(dataRequest.Body.String(), `"scheduleCaptures":"42"`) {
 		t.Fatalf("admin data = %d, %s", dataRequest.Code, dataRequest.Body.String())
 	}
-	theaterID := contracts.CatalogID(contracts.ProviderCGV, "theater", "서울/용산아이파크몰")
-	validPolicy := AdminObservationPolicyInput{
-		Enabled: true, TheaterID: " " + theaterID + " ", HorizonDays: 14,
-	}
+	theaterID := catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", "서울/용산아이파크몰")
+	validPolicy := &adminpb.ObservationPolicyInput{}
+	validPolicy.SetEnabled(true)
+	validPolicy.SetTheaterId(" " + theaterID + " ")
+	validPolicy.SetHorizonDays(14)
 	createPolicy := requestWithCookieAndHeaders(
 		t, server, http.MethodPost, "/v1/admin/observation-policies", validPolicy, cookie,
 		map[string]string{"If-None-Match": "*"},
@@ -327,20 +339,21 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 		t.Fatalf("create policy = %d, %s", createPolicy.Code, createPolicy.Body.String())
 	}
 	createdPolicy := operations.policies[len(operations.policies)-1]
-	if createdPolicy.Priority != observationPolicyPriority ||
-		createdPolicy.BaselineMinSeconds != observationBaselineMinSeconds ||
-		createdPolicy.BaselineMaxSeconds != observationBaselineMaxSeconds ||
-		createdPolicy.DemandMinSeconds != observationDemandStoredMinSeconds ||
-		createdPolicy.DemandMaxSeconds != observationDemandStoredMaxSeconds ||
-		createdPolicy.BurstMinSeconds != observationBurstStoredMinSeconds ||
-		createdPolicy.BurstMaxSeconds != observationBurstStoredMaxSeconds ||
-		createdPolicy.BurstDurationSeconds != observationBurstDurationSeconds ||
-		createdPolicy.Locale != "ko-KR" || createdPolicy.TimeZone != "Asia/Seoul" ||
-		createdPolicy.EgressPolicyID != "scan_default" {
-		t.Fatalf("Central did not own observation scheduling defaults: %#v", createdPolicy.AdminObservationPolicyInput)
+	createdInput := createdPolicy.GetInput()
+	if createdInput.GetPriority() != observationPolicyPriority ||
+		createdInput.GetBaselineMinSeconds() != observationBaselineMinSeconds ||
+		createdInput.GetBaselineMaxSeconds() != observationBaselineMaxSeconds ||
+		createdInput.GetDemandMinSeconds() != observationDemandStoredMinSeconds ||
+		createdInput.GetDemandMaxSeconds() != observationDemandStoredMaxSeconds ||
+		createdInput.GetBurstMinSeconds() != observationBurstStoredMinSeconds ||
+		createdInput.GetBurstMaxSeconds() != observationBurstStoredMaxSeconds ||
+		createdInput.GetBurstDurationSeconds() != observationBurstDurationSeconds ||
+		createdInput.GetLocale() != "ko-KR" || createdInput.GetTimeZone() != "Asia/Seoul" ||
+		createdInput.GetEgressPolicyId() != "scan_default" {
+		t.Fatalf("Central did not own observation scheduling defaults: %v", createdInput)
 	}
-	invalidHorizon := validPolicy
-	invalidHorizon.HorizonDays = 15
+	invalidHorizon := proto.CloneOf(validPolicy)
+	invalidHorizon.SetHorizonDays(15)
 	assertAPIError(t, requestWithCookieAndHeaders(
 		t, server, http.MethodPost, "/v1/admin/observation-policies", invalidHorizon, cookie,
 		map[string]string{"If-None-Match": "*"},
@@ -353,7 +366,7 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 		t, server, http.MethodPut, "/v1/admin/observation-policies/policy", validPolicy, cookie,
 		map[string]string{"If-Match": `"1"`},
 	)
-	if updatePolicy.Code != http.StatusOK || !strings.Contains(updatePolicy.Body.String(), `"revision":2`) {
+	if updatePolicy.Code != http.StatusOK || !strings.Contains(updatePolicy.Body.String(), `"revision":"2"`) {
 		t.Fatalf("update policy = %d, %s", updatePolicy.Code, updatePolicy.Body.String())
 	}
 	intelligence := requestWithCookie(t, server, http.MethodGet, "/v1/admin/observation-intelligence", cookie)
@@ -402,7 +415,13 @@ func requestWithCookieAndHeaders(
 	if body == nil {
 		reader = strings.NewReader("")
 	} else {
-		payload, err := json.Marshal(body)
+		var payload []byte
+		var err error
+		if message, ok := body.(proto.Message); ok {
+			payload, err = protojson.Marshal(message)
+		} else {
+			payload, err = json.Marshal(body)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -526,7 +545,7 @@ func TestAdminCookieAndClientBearerCannotCrossAuthenticationPlanes(t *testing.T)
 	}
 	clientRepository := &apiResourceRepository{
 		principal: central.ClientPrincipal{UserID: "client-user", SessionID: "client-session"},
-		resources: make(map[string]central.ClientResource),
+		resources: make(map[string]*clientpb.Resource),
 	}
 	clients, err := central.NewClientService(clientRepository, time.Hour)
 	if err != nil {
@@ -551,12 +570,11 @@ func TestAdminCookieAndClientBearerCannotCrossAuthenticationPlanes(t *testing.T)
 	adminCookie := login.Result().Cookies()[0]
 
 	adminWithBearer := request(t, server.Handler(), http.MethodGet, "/v1/admin/session", nil, map[string]string{
-		"Authorization": "Bearer client-session", "X-Cineko-Protocol": "3",
+		"Authorization": "Bearer client-session",
 	})
 	assertAPIError(t, adminWithBearer, http.StatusUnauthorized, "unauthorized")
 
 	clientRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/settings", nil)
-	clientRequest.Header.Set("X-Cineko-Protocol", "3")
 	clientRequest.AddCookie(adminCookie)
 	clientResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(clientResponse, clientRequest)

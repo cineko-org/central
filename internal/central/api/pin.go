@@ -6,15 +6,15 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cineko-org/central/internal/central"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 )
 
 func (server *Server) exchangeClientPIN(writer http.ResponseWriter, request *http.Request) {
-	if !server.requirePINService(writer, request) || !server.requireProtocol(writer, request) {
+	if !server.requirePINService(writer, request) {
 		return
 	}
-	var input central.ClientPINExchangeRequest
-	if !server.decodeJSON(writer, request, &input) {
+	input := &clientpb.PinExchangeRequest{}
+	if !server.decodeProtoJSON(writer, request, input) {
 		return
 	}
 	response, err := server.pins.Exchange(request.Context(), input, server.clientAddress(request))
@@ -22,7 +22,7 @@ func (server *Server) exchangeClientPIN(writer http.ResponseWriter, request *htt
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, response)
+	server.writeProtoJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) requirePINService(writer http.ResponseWriter, request *http.Request) bool {

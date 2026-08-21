@@ -9,12 +9,15 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func (store *Store) ListClientPINUsers(ctx context.Context) ([]central.ClientPINUser, error) {
+func (store *Store) ListClientPINUsers(ctx context.Context) ([]*adminpb.ClientPinUser, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT users.id, users.display_name, users.created_at, users.updated_at,
 			(pins.user_id IS NOT NULL AND pins.revoked_at IS NULL) AS pin_active,
@@ -29,15 +32,19 @@ func (store *Store) ListClientPINUsers(ctx context.Context) ([]central.ClientPIN
 		return nil, fmt.Errorf("list Client PIN users: %w", err)
 	}
 	defer rows.Close()
-	users := make([]central.ClientPINUser, 0)
+	users := make([]*adminpb.ClientPinUser, 0)
 	for rows.Next() {
-		var item central.ClientPINUser
-		if err := rows.Scan(
-			&item.User.ID, &item.User.DisplayName, &item.User.CreatedAt, &item.User.UpdatedAt,
-			&item.PINActive, &item.DeviceCount,
-		); err != nil {
+		item := &adminpb.ClientPinUser{}
+		var id, displayName string
+		var pinActive bool
+		var deviceCount int32
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&id, &displayName, &createdAt, &updatedAt, &pinActive, &deviceCount); err != nil {
 			return nil, fmt.Errorf("scan Client PIN user: %w", err)
 		}
+		item.SetUser(clientUser(id, displayName, createdAt, updatedAt))
+		item.SetPinActive(pinActive)
+		item.SetDeviceCount(deviceCount)
 		users = append(users, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -48,7 +55,7 @@ func (store *Store) ListClientPINUsers(ctx context.Context) ([]central.ClientPIN
 
 func (store *Store) CreateClientPINUser(
 	ctx context.Context,
-	user central.ClientUser,
+	user *clientpb.User,
 	digest [32]byte,
 ) error {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -59,13 +66,13 @@ func (store *Store) CreateClientPINUser(
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_users (id, display_name, created_at, updated_at)
 		VALUES ($1, $2, $3, $3)
-	`, user.ID, user.DisplayName, user.CreatedAt); err != nil {
+	`, user.GetId(), user.GetDisplayName(), user.GetCreatedAt().AsTime()); err != nil {
 		return pinWriteError("create Client PIN user", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_pins (user_id, pin_digest, created_at, updated_at)
 		VALUES ($1, $2, $3, $3)
-	`, user.ID, digest[:], user.CreatedAt); err != nil {
+	`, user.GetId(), digest[:], user.GetCreatedAt().AsTime()); err != nil {
 		return pinWriteError("create Client PIN", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -79,19 +86,19 @@ func (store *Store) RotateClientPIN(
 	userID string,
 	digest [32]byte,
 	now time.Time,
-) (central.ClientUser, error) {
+) (*clientpb.User, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("begin Client PIN rotation: %w", err)
+		return nil, fmt.Errorf("begin Client PIN rotation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var user central.ClientUser
-	if err := tx.QueryRow(ctx, `
+	user, err := scanClientUser(tx.QueryRow(ctx, `
 		SELECT id, display_name, created_at, updated_at FROM client_users WHERE id = $1 FOR UPDATE
-	`, userID).Scan(&user.ID, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientUser{}, central.ErrNotFound
+	`, userID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, central.ErrNotFound
 	} else if err != nil {
-		return central.ClientUser{}, fmt.Errorf("lock Client PIN user: %w", err)
+		return nil, fmt.Errorf("lock Client PIN user: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_pins (user_id, pin_digest, created_at, updated_at)
@@ -99,15 +106,15 @@ func (store *Store) RotateClientPIN(
 		ON CONFLICT (user_id) DO UPDATE SET
 			pin_digest = EXCLUDED.pin_digest, revoked_at = NULL, updated_at = EXCLUDED.updated_at
 	`, userID, digest[:], now); err != nil {
-		return central.ClientUser{}, pinWriteError("rotate Client PIN", err)
+		return nil, pinWriteError("rotate Client PIN", err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE client_users SET updated_at = $2 WHERE id = $1`, userID, now); err != nil {
-		return central.ClientUser{}, fmt.Errorf("update Client PIN user: %w", err)
+		return nil, fmt.Errorf("update Client PIN user: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return central.ClientUser{}, pinWriteError("commit Client PIN rotation", err)
+		return nil, pinWriteError("commit Client PIN rotation", err)
 	}
-	user.UpdatedAt = now
+	user.SetUpdatedAt(timestamppb.New(now))
 	return user, nil
 }
 
@@ -191,32 +198,32 @@ func (store *Store) ExchangeClientPIN(
 	digest [32]byte,
 	scopes []central.PINAttemptScope,
 	now time.Time,
-) (central.ClientUser, error) {
+) (*clientpb.User, error) {
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("begin Client PIN exchange: %w", err)
+		return nil, fmt.Errorf("begin Client PIN exchange: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM client_pin_attempts
 		WHERE updated_at < $1 AND (blocked_until IS NULL OR blocked_until < $2)
 	`, now.Add(-24*time.Hour), now); err != nil {
-		return central.ClientUser{}, fmt.Errorf("clean Client PIN attempts: %w", err)
+		return nil, fmt.Errorf("clean Client PIN attempts: %w", err)
 	}
 	sort.Slice(scopes, func(left, right int) bool {
 		return bytes.Compare(scopes[left].Hash[:], scopes[right].Hash[:]) < 0
 	})
 	if err := requireAvailablePINScopes(ctx, tx, scopes, now); err != nil {
-		return central.ClientUser{}, err
+		return nil, err
 	}
 	user, err := clientUserByPIN(ctx, tx, digest)
 	if err == nil {
 		return commitSuccessfulPINExchange(ctx, tx, scopes, user)
 	}
 	if !errors.Is(err, central.ErrUnauthorized) {
-		return central.ClientUser{}, err
+		return nil, err
 	}
-	return central.ClientUser{}, commitFailedPINExchange(ctx, tx, scopes, now)
+	return nil, commitFailedPINExchange(ctx, tx, scopes, now)
 }
 
 func requireAvailablePINScopes(
@@ -241,18 +248,18 @@ func commitSuccessfulPINExchange(
 	ctx context.Context,
 	tx pgx.Tx,
 	scopes []central.PINAttemptScope,
-	user central.ClientUser,
-) (central.ClientUser, error) {
+	user *clientpb.User,
+) (*clientpb.User, error) {
 	for _, scope := range scopes {
 		if !scope.ResetOnSuccess {
 			continue
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM client_pin_attempts WHERE scope_hash = $1`, scope.Hash[:]); err != nil {
-			return central.ClientUser{}, fmt.Errorf("reset Client PIN attempts: %w", err)
+			return nil, fmt.Errorf("reset Client PIN attempts: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return central.ClientUser{}, fmt.Errorf("commit Client PIN exchange: %w", err)
+		return nil, fmt.Errorf("commit Client PIN exchange: %w", err)
 	}
 	return user, nil
 }
@@ -322,19 +329,18 @@ func failPINAttempt(
 	return blockedUntil != nil && blockedUntil.After(now), nil
 }
 
-func clientUserByPIN(ctx context.Context, tx pgx.Tx, digest [32]byte) (central.ClientUser, error) {
-	var user central.ClientUser
-	err := tx.QueryRow(ctx, `
+func clientUserByPIN(ctx context.Context, tx pgx.Tx, digest [32]byte) (*clientpb.User, error) {
+	user, err := scanClientUser(tx.QueryRow(ctx, `
 		SELECT users.id, users.display_name, users.created_at, users.updated_at
 		FROM client_pins AS pins
 		JOIN client_users AS users ON users.id = pins.user_id
 		WHERE pins.pin_digest = $1 AND pins.revoked_at IS NULL
-	`, digest[:]).Scan(&user.ID, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	`, digest[:]))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ClientUser{}, central.ErrUnauthorized
+		return nil, central.ErrUnauthorized
 	}
 	if err != nil {
-		return central.ClientUser{}, fmt.Errorf("exchange Client PIN: %w", err)
+		return nil, fmt.Errorf("exchange Client PIN: %w", err)
 	}
 	return user, nil
 }

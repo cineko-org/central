@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -10,14 +9,19 @@ import (
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain"
 	"github.com/cineko-org/central/internal/domain/clientresources"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
 
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type executionTarget struct {
 	userID  string
-	monitor domain.MonitorJob
-	preset  domain.Preset
+	monitor *clientpb.Monitor
+	preset  *clientpb.Preset
 }
 
 const executionAvailabilityRearmCooldown = 30 * time.Second
@@ -37,16 +41,16 @@ func enqueueClientExecutions(
 	if err != nil {
 		return err
 	}
-	for _, capture := range commit.Result.Captures {
-		for _, showtime := range capture.Showtimes {
-			if showtime.SoldOut || showtime.AvailableSeats <= 0 {
+	for _, capture := range commit.Result.GetCompleted().GetCaptures() {
+		for _, showtime := range capture.GetShowtimes() {
+			if showtime.GetSoldOut() || showtime.GetAvailableSeats() <= 0 {
 				continue
 			}
 			for _, target := range targets {
-				if !executionTargetMatches(target, capture.TargetDate, showtime, commit.CommittedAt, location) {
+				if !executionTargetMatches(target, localDateString(capture.GetTargetDate()), showtime, commit.CommittedAt, location) {
 					continue
 				}
-				if err := insertExecutionCommand(ctx, tx, target, showtime, capture.ObservedAt, commit.CommittedAt); err != nil {
+				if err := insertExecutionCommand(ctx, tx, target, showtime, capture.GetObservedAt().AsTime(), commit.CommittedAt); err != nil {
 					return err
 				}
 			}
@@ -63,8 +67,6 @@ func loadExecutionTargets(ctx context.Context, tx pgx.Tx, theaterID string) ([]e
 			ON presets.user_id = monitors.user_id AND presets.kind = 'presets'
 			AND presets.id = monitors.payload->>'presetId' AND presets.deleted_at IS NULL
 		WHERE monitors.kind = 'monitors' AND monitors.deleted_at IS NULL
-			AND monitors.payload->>'status' IN ('pending', 'running')
-			AND COALESCE(monitors.payload->>'mode', 'opening') IN ('', 'opening', 'cancellation')
 			AND presets.payload->>'theaterId' = $1
 	`, theaterID)
 	if err != nil {
@@ -89,10 +91,15 @@ func loadExecutionTargets(ctx context.Context, tx pgx.Tx, theaterID string) ([]e
 		); err != nil {
 			continue
 		}
-		if err := json.Unmarshal(monitorPayload, &target.monitor); err != nil {
+		target.monitor = &clientpb.Monitor{}
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(monitorPayload, target.monitor); err != nil {
 			continue
 		}
-		if err := json.Unmarshal(presetPayload, &target.preset); err != nil {
+		target.preset = &clientpb.Preset{}
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(presetPayload, target.preset); err != nil {
+			continue
+		}
+		if !target.monitor.GetState().HasPending() && !target.monitor.GetState().HasRunning() {
 			continue
 		}
 		result = append(result, target)
@@ -106,31 +113,34 @@ func loadExecutionTargets(ctx context.Context, tx pgx.Tx, theaterID string) ([]e
 func executionTargetMatches(
 	target executionTarget,
 	targetDate string,
-	showtime central.Showtime,
+	showtime *catalogpb.Showtime,
 	now time.Time,
 	location *time.Location,
 ) bool {
-	if target.preset.AuditoriumID != showtime.Auditorium.ID ||
-		target.monitor.MovieID == "" || showtime.Movie.ID == "" || target.monitor.MovieID != showtime.Movie.ID {
+	if target.preset.GetAuditoriumId() != showtime.GetAuditorium().GetId() ||
+		target.monitor.GetMovieId() == "" || showtime.GetMovie().GetId() == "" || target.monitor.GetMovieId() != showtime.GetMovie().GetId() {
 		return false
 	}
-	return target.monitor.MatchesSchedule(targetDate, showtime.StartsAt, now, location)
+	return domain.MonitorMatchesSchedule(target.monitor, targetDate, showtime.GetStartsAt().AsTime(), now, location)
 }
 
 func insertExecutionCommand(
 	ctx context.Context,
 	tx pgx.Tx,
 	target executionTarget,
-	showtime central.Showtime,
+	showtime *catalogpb.Showtime,
 	observedAt time.Time,
 	now time.Time,
 ) error {
-	payload, err := json.Marshal(central.ExecutionPayload{Showtime: showtime, ObservedAt: observedAt})
+	payloadMessage := &executionpb.Payload{}
+	payloadMessage.SetShowtime(showtime)
+	payloadMessage.SetObservedAt(timestamppb.New(observedAt))
+	payload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(payloadMessage)
 	if err != nil {
 		return fmt.Errorf("encode Client execution payload: %w", err)
 	}
 	id := "execution_" + contentHash([]byte(strings.Join([]string{
-		target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt.UTC().Format(time.RFC3339Nano),
+		target.userID, target.monitor.GetId(), showtime.GetId(), showtime.GetStartsAt().AsTime().UTC().Format(time.RFC3339Nano),
 	}, "\x00")))
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO client_execution_commands AS command (
@@ -151,7 +161,7 @@ func insertExecutionCommand(
 			AND command.reason_code IN ($9, $10)
 			AND command.starts_at > EXCLUDED.updated_at
 			AND command.updated_at <= $8
-	`, id, target.userID, target.monitor.ID, showtime.ID, showtime.StartsAt, payload, now,
+	`, id, target.userID, target.monitor.GetId(), showtime.GetId(), showtime.GetStartsAt().AsTime(), payload, now,
 		now.Add(-executionAvailabilityRearmCooldown), executionReasonPreferredSeatsUnavailable,
 		executionReasonShowtimeUnavailable)
 	if err != nil {
@@ -164,7 +174,7 @@ func insertExecutionCommand(
 		"availability", observedAt.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano),
 	}, ":")
 	return recordExecutionReadyEvent(
-		ctx, tx, target.userID, id, target.monitor.ID, "availability_observed", identity, now,
+		ctx, tx, target.userID, id, target.monitor.GetId(), "availability_observed", identity, now,
 	)
 }
 
@@ -180,19 +190,19 @@ func recordExecutionReadyEvent(
 	identity string,
 	now time.Time,
 ) error {
-	eventPayload, err := json.Marshal(map[string]string{
-		"commandId": commandID,
-		"monitorId": monitorID,
-		"reason":    reason,
-	})
+	event := &clientpb.ExecutionReady{}
+	event.SetCommandId(commandID)
+	event.SetMonitorId(monitorID)
+	event.SetReason(reason)
+	eventPayload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("encode Client execution-ready event: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_events (
 			id, user_id, event_type, resource_kind, resource_id, resource_revision, payload, occurred_at
-		) VALUES ($1, $2, 'execution.ready.v1', 'executions', $3, 1, $4, $5)
-	`, clientEventID(userID, "execution.ready.v1\x00"+commandID+"\x00"+identity),
+		) VALUES ($1, $2, 'execution.ready', 'executions', $3, 1, $4, $5)
+	`, clientEventID(userID, "execution.ready\x00"+commandID+"\x00"+identity),
 		userID, commandID, eventPayload, now); err != nil {
 		return fmt.Errorf("record Client execution-ready event: %w", err)
 	}

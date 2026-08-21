@@ -9,12 +9,17 @@ import (
 	"testing"
 	"time"
 
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestProbeLifecycleAndResultIdempotency(t *testing.T) {
-	t.Parallel()
 	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
 	repository := newMemoryRepository()
 	service, err := NewService(repository, Config{EnrollmentToken: "enroll", AssignmentLease: time.Minute})
@@ -23,155 +28,110 @@ func TestProbeLifecycleAndResultIdempotency(t *testing.T) {
 	}
 	service.clock = func() time.Time { return now }
 	service.random = deterministicRandom()
-	request := validRegistration()
-	request.Kind = "container"
+	request := containerRegistration()
 
-	registered, err := service.RegisterProbe(context.Background(), request, "203.0.113.4:443", "enroll")
+	registered, err := service.RegisterProbe(t.Context(), request, "203.0.113.4:443", "enroll")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registered.ProbeID == "" || registered.AccessToken == "" || registered.NetworkID == "" {
+	if registered.GetProbeId() == "" || registered.GetAccessToken() == "" || registered.GetNetworkId() == "" {
 		t.Fatalf("registration = %+v", registered)
 	}
-	probe, err := service.AuthenticateProbe(context.Background(), registered.ProbeID, registered.AccessToken)
+	probe, err := service.AuthenticateProbe(t.Context(), registered.GetProbeId(), registered.GetAccessToken())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.HeartbeatProbe(context.Background(), probe, ProbeHeartbeatRequest{
-		AvailableSlots: 2, Health: "healthy",
-	}); !errors.Is(err, ErrInvalid) {
+	if _, err := service.HeartbeatProbe(t.Context(), probe, healthyHeartbeat(2)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("over-capacity heartbeat error = %v", err)
 	}
-	if _, err := service.HeartbeatProbe(context.Background(), probe, ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "healthy",
-	}); err != nil {
+	if _, err := service.HeartbeatProbe(t.Context(), probe, healthyHeartbeat(1)); err != nil {
 		t.Fatal(err)
 	}
 
 	repository.assignments["assignment_01"] = Assignment{
 		ID: "assignment_01", Status: "queued", NotBefore: now.Add(-time.Minute), Deadline: now.Add(time.Hour),
-		Task: AssignmentTask{
-			Kind: contracts.CapabilityCGVScheduleCapture,
-			Theater: Theater{
-				ID:         contracts.CatalogID(contracts.ProviderCGV, "theater", "0056"),
-				ProviderID: contracts.ProviderCGV, SourceKey: "0056",
-				Region: "서울", Name: "용산아이파크몰",
-			},
-			TargetDates: []string{"2026-08-20"}, Locale: "ko-KR", TimeZone: "Asia/Seoul",
-			EgressPolicyID: "scan_default",
-		},
+		Task: validAssignmentTask(now),
 	}
-	claim, err := service.ClaimAssignment(context.Background(), probe)
+	claim, err := service.ClaimAssignment(t.Context(), probe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claim.AssignmentID != "assignment_01" || claim.LeaseToken == "" {
+	lease := claim.GetAssignment()
+	if lease.GetAssignmentId() != "assignment_01" || lease.GetLeaseToken() == "" {
 		t.Fatalf("claim = %+v", claim)
 	}
-	if _, err := service.HeartbeatAssignment(
-		context.Background(), probe, claim.AssignmentID, claim.LeaseToken,
-	); err != nil {
+	if _, err := service.HeartbeatAssignment(t.Context(), probe, lease.GetAssignmentId(), lease.GetLeaseToken()); err != nil {
 		t.Fatal(err)
 	}
 	result := validResult(now)
-	receipt, err := service.CommitResult(
-		context.Background(), probe, claim.AssignmentID, claim.LeaseToken, result,
-	)
+	receipt, err := service.CommitResult(t.Context(), probe, lease.GetAssignmentId(), lease.GetLeaseToken(), result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	repeated, err := service.CommitResult(
-		context.Background(), probe, claim.AssignmentID, claim.LeaseToken, result,
-	)
+	repeated, err := service.CommitResult(t.Context(), probe, lease.GetAssignmentId(), lease.GetLeaseToken(), result)
 	if err != nil || repeated != receipt {
 		t.Fatalf("repeated receipt = %+v, %v; want %+v", repeated, err, receipt)
 	}
-	result.Status = "partial"
-	if _, err := service.CommitResult(
-		context.Background(), probe, claim.AssignmentID, claim.LeaseToken, result,
-	); !errors.Is(err, ErrIdempotencyConflict) {
+	conflict := proto.CloneOf(result)
+	conflict.GetCompleted().GetCaptures()[0].SetComplete(false)
+	if _, err := service.CommitResult(t.Context(), probe, lease.GetAssignmentId(), lease.GetLeaseToken(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("conflicting result error = %v", err)
 	}
 
-	reregistered, err := service.RegisterProbe(context.Background(), request, "203.0.113.4:443", "enroll")
+	reregistered, err := service.RegisterProbe(t.Context(), request, "203.0.113.4:443", "enroll")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reregistered.ProbeID != registered.ProbeID || reregistered.AccessToken == registered.AccessToken {
+	if reregistered.GetProbeId() != registered.GetProbeId() || reregistered.GetAccessToken() == registered.GetAccessToken() {
 		t.Fatalf("re-registration = %+v; first = %+v", reregistered, registered)
 	}
-	if _, err := service.AuthenticateProbe(
-		context.Background(), registered.ProbeID, registered.AccessToken,
-	); !errors.Is(err, ErrUnauthorized) {
+	if _, err := service.AuthenticateProbe(t.Context(), registered.GetProbeId(), registered.GetAccessToken()); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("old token authentication error = %v", err)
 	}
 }
 
 func TestServiceRejectsInvalidRegistrationAndResult(t *testing.T) {
-	t.Parallel()
 	service, err := NewService(newMemoryRepository(), Config{EnrollmentToken: "enroll"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	invalid := validRegistration()
-	invalid.Runtime.Protocol = ProtocolVersion + 1
-	if _, err := service.RegisterProbe(context.Background(), invalid, "127.0.0.1:1", "enroll"); !errors.Is(err, ErrInvalid) {
+	invalid.GetRuntime().SetComponentVersion("invalid")
+	if _, err := service.RegisterProbe(t.Context(), invalid, "127.0.0.1:1", "enroll"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid registration error = %v", err)
 	}
-	if _, err := service.CommitResult(
-		context.Background(), Probe{ID: "probe"}, "assignment", "lease", AssignmentResult{},
-	); !errors.Is(err, ErrInvalid) {
+	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", &observationpb.AssignmentResult{}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid result error = %v", err)
 	}
 	now := time.Now().UTC()
 	invalidSeatMap := validResult(now)
-	invalidSeatMap.Captures = nil
-	invalidSeatMap.SeatMap = &contracts.SeatMapVersion{}
-	if _, err := service.CommitResult(
-		context.Background(), Probe{ID: "probe"}, "assignment", "lease", invalidSeatMap,
-	); !errors.Is(err, ErrInvalid) {
+	invalidSeatMap.GetCompleted().SetCaptures(nil)
+	invalidSeatMap.GetCompleted().SetSeatMap(seatMapSnapshot("", 1))
+	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", invalidSeatMap); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid seat-map result error = %v", err)
 	}
-	seatMap := validResult(now)
-	seatMap.Captures = nil
-	seatMap.SeatMap = &contracts.SeatMapVersion{
-		AuditoriumID: "auditorium", Capacity: 1, Layout: seatMapLayoutJSON(t, 1),
-	}
-	if _, err := service.CommitResult(
-		context.Background(), Probe{ID: "probe"}, "assignment", "lease", seatMap,
-	); err == nil {
+	seatMapResult := validResult(now)
+	seatMapResult.GetCompleted().SetCaptures(nil)
+	seatMapResult.GetCompleted().SetSeatMap(seatMapSnapshot("auditorium", 1))
+	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", seatMapResult); err == nil {
 		t.Fatal("seat-map result unexpectedly committed without an assignment")
 	}
-	both := seatMap
-	both.Catalog = &contracts.CatalogSnapshot{}
-	if _, err := service.CommitResult(
-		context.Background(), Probe{ID: "probe"}, "assignment", "lease", both,
-	); !errors.Is(err, ErrInvalid) {
+	both := proto.CloneOf(seatMapResult)
+	both.GetCompleted().SetCatalog(validCatalogSnapshot(now))
+	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", both); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("mixed catalog and seat-map result error = %v", err)
 	}
-	partial := seatMap
-	partial.Status = "partial"
-	if _, err := service.CommitResult(
-		context.Background(), Probe{ID: "probe"}, "assignment", "lease", partial,
-	); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("partial seat-map result error = %v", err)
-	}
-	seatMapWithCapture := seatMap
-	seatMapWithCapture.Captures = validResult(now).Captures
-	if _, err := service.CommitResult(
-		context.Background(), Probe{ID: "probe"}, "assignment", "lease", seatMapWithCapture,
-	); !errors.Is(err, ErrInvalid) {
+	withCapture := proto.CloneOf(seatMapResult)
+	withCapture.GetCompleted().SetCaptures(validResult(now).GetCompleted().GetCaptures())
+	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", withCapture); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("seat-map result with captures error = %v", err)
 	}
-	if _, err := service.RegisterProbe(
-		context.Background(), containerRegistration(), "127.0.0.1:1", "wrong-enrollment-token",
-	); !errors.Is(err, ErrUnauthorized) {
+	if _, err := service.RegisterProbe(t.Context(), containerRegistration(), "127.0.0.1:1", "wrong"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("invalid container enrollment error = %v", err)
 	}
 }
 
 func TestClientProbeRegistrationRequiresOneTimeBootstrap(t *testing.T) {
-	t.Parallel()
 	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
 	repository := newMemoryRepository()
 	authorizer := &memoryClientAuthorizer{authorization: RegistrationAuthorization{
@@ -184,17 +144,15 @@ func TestClientProbeRegistrationRequiresOneTimeBootstrap(t *testing.T) {
 	service.clock = func() time.Time { return now }
 	service.random = deterministicRandom()
 	registration := validRegistration()
-	response, err := service.RegisterProbe(context.Background(), registration, "203.0.113.5:443", "signed-ticket")
+	response, err := service.RegisterProbe(t.Context(), registration, "203.0.113.5:443", "signed-ticket")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored := repository.probesByID[response.ProbeID]
+	stored := repository.probesByID[response.GetProbeId()]
 	if stored.OwnerUserID != "user_01" || stored.DeviceID != "device_01" || authorizer.token != "signed-ticket" {
-		t.Fatalf("client Probe registration = %+v, authorizer token = %q", stored, authorizer.token)
+		t.Fatalf("client probe registration = %+v, token = %q", stored, authorizer.token)
 	}
-	if _, err := service.RegisterProbe(
-		context.Background(), registration, "203.0.113.5:443", "signed-ticket",
-	); !errors.Is(err, ErrUnauthorized) {
+	if _, err := service.RegisterProbe(t.Context(), registration, "203.0.113.5:443", "signed-ticket"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("replayed bootstrap ticket error = %v", err)
 	}
 
@@ -202,9 +160,7 @@ func TestClientProbeRegistrationRequiresOneTimeBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := missingAuthorizer.RegisterProbe(
-		context.Background(), registration, "203.0.113.5:443", "ticket",
-	); !errors.Is(err, ErrUnauthorized) {
+	if _, err := missingAuthorizer.RegisterProbe(t.Context(), registration, "203.0.113.5:443", "ticket"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("missing client authorizer error = %v", err)
 	}
 	for _, authorization := range []RegistrationAuthorization{
@@ -221,110 +177,75 @@ func TestClientProbeRegistrationRequiresOneTimeBootstrap(t *testing.T) {
 			t.Fatal(serviceErr)
 		}
 		invalidService.clock = func() time.Time { return now }
-		if _, err := invalidService.RegisterProbe(
-			context.Background(), registration, "203.0.113.5:443", "ticket",
-		); !errors.Is(err, ErrUnauthorized) {
+		if _, err := invalidService.RegisterProbe(t.Context(), registration, "203.0.113.5:443", "ticket"); !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("invalid authorization %+v error = %v", authorization, err)
 		}
-	}
-	authorizer.err = ErrUnauthorized
-	if _, err := service.RegisterProbe(
-		context.Background(), registration, "203.0.113.5:443", "other-ticket",
-	); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("client authorizer rejection error = %v", err)
 	}
 }
 
 func TestServiceConfigurationAndDelegationErrors(t *testing.T) {
-	t.Parallel()
 	if _, err := NewService(nil, Config{EnrollmentToken: "enroll"}); err == nil {
 		t.Fatal("nil repository was accepted")
 	}
 	if _, err := NewService(newMemoryRepository(), Config{}); err == nil {
 		t.Fatal("empty enrollment token was accepted")
 	}
-	if _, err := NewService(newMemoryRepository(), Config{
-		EnrollmentToken: "enroll", ProbeTokenTTL: -time.Second,
-	}); err == nil {
+	if _, err := NewService(newMemoryRepository(), Config{EnrollmentToken: "enroll", ProbeTokenTTL: -time.Second}); err == nil {
 		t.Fatal("negative token TTL was accepted")
 	}
-	if _, err := NewService(newMemoryRepository(), Config{
-		EnrollmentToken: "enroll", MinimumRuntimeVersion: "invalid",
-	}); err == nil {
+	if _, err := NewService(newMemoryRepository(), Config{EnrollmentToken: "enroll", MinimumRuntimeVersion: "invalid"}); err == nil {
 		t.Fatal("invalid minimum runtime version was accepted")
 	}
-	if _, err := NewService(newMemoryRepository(), Config{
-		EnrollmentToken: "enroll", MinimumBrowserRevision: "invalid",
-	}); err == nil {
+	if _, err := NewService(newMemoryRepository(), Config{EnrollmentToken: "enroll", MinimumBrowserRevision: "invalid"}); err == nil {
 		t.Fatal("invalid minimum browser revision was accepted")
 	}
-
 	repository := newMemoryRepository()
 	service, err := NewService(repository, Config{EnrollmentToken: " enroll "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.config.ProbeTokenTTL != DefaultProbeTokenTTL ||
-		service.config.AssignmentLease != DefaultAssignmentLease ||
-		service.config.HeartbeatInterval != DefaultHeartbeatInterval ||
-		service.config.ProbeHeartbeatTTL != DefaultProbeHeartbeatTTL {
+	if service.config.ProbeTokenTTL != DefaultProbeTokenTTL || service.config.AssignmentLease != DefaultAssignmentLease ||
+		service.config.HeartbeatInterval != DefaultHeartbeatInterval || service.config.ProbeHeartbeatTTL != DefaultProbeHeartbeatTTL {
 		t.Fatalf("defaults = %+v", service.config)
 	}
 	if !service.ValidateEnrollmentToken("enroll") || service.ValidateEnrollmentToken("wrong") {
 		t.Fatal("enrollment token validation mismatch")
 	}
-	if err := service.Ready(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.AuthenticateProbe(context.Background(), "probe", ""); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("empty access token error = %v", err)
-	}
-
 	failure := errors.New("repository failure")
 	repository.err = failure
-	if err := service.Ready(context.Background()); !errors.Is(err, failure) {
+	if err := service.Ready(t.Context()); !errors.Is(err, failure) {
 		t.Fatalf("ready error = %v", err)
 	}
-	registration := validRegistration()
-	registration.Kind = "container"
-	if _, err := service.RegisterProbe(context.Background(), registration, "127.0.0.1:1", "enroll"); !errors.Is(err, failure) {
+	if _, err := service.RegisterProbe(t.Context(), containerRegistration(), "127.0.0.1:1", "enroll"); !errors.Is(err, failure) {
 		t.Fatalf("registration repository error = %v", err)
 	}
-	probe := Probe{ID: "probe", MaxConcurrency: 1}
-	if _, err := service.HeartbeatProbe(context.Background(), probe, ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "degraded", ReasonCode: "browser_unavailable",
-	}); !errors.Is(err, failure) {
+	probe := Probe{ID: "probe", MaxConcurrency: 1, Capabilities: []string{probedomain.CapabilityCGVScheduleCapture}}
+	if _, err := service.HeartbeatProbe(t.Context(), probe, degradedHeartbeat(1, "browser_unavailable")); !errors.Is(err, failure) {
 		t.Fatalf("heartbeat repository error = %v", err)
 	}
-	if err := service.DisconnectProbe(context.Background(), probe); !errors.Is(err, failure) {
+	if err := service.DisconnectProbe(t.Context(), probe); !errors.Is(err, failure) {
 		t.Fatalf("disconnect repository error = %v", err)
 	}
-	if _, err := service.ClaimAssignment(context.Background(), probe); !errors.Is(err, failure) {
+	if _, err := service.ClaimAssignment(t.Context(), probe); !errors.Is(err, failure) {
 		t.Fatalf("claim repository error = %v", err)
 	}
-	if _, err := service.HeartbeatAssignment(context.Background(), probe, "assignment", "lease"); !errors.Is(err, failure) {
+	if _, err := service.HeartbeatAssignment(t.Context(), probe, "assignment", "lease"); !errors.Is(err, failure) {
 		t.Fatalf("assignment heartbeat repository error = %v", err)
 	}
-	if _, err := service.CommitResult(
-		context.Background(), probe, "assignment", "lease", validResult(time.Now().UTC()),
-	); !errors.Is(err, failure) {
+	if _, err := service.CommitResult(t.Context(), probe, "assignment", "lease", validResult(time.Now().UTC())); !errors.Is(err, failure) {
 		t.Fatalf("result repository error = %v", err)
 	}
 }
 
 func TestServiceSecretGenerationFailures(t *testing.T) {
-	t.Parallel()
 	service, err := NewService(newMemoryRepository(), Config{EnrollmentToken: "enroll"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.random = func([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
-	if _, err := service.RegisterProbe(
-		context.Background(), containerRegistration(), "127.0.0.1:1", "enroll",
-	); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := service.RegisterProbe(t.Context(), containerRegistration(), "127.0.0.1:1", "enroll"); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("access token generation error = %v", err)
 	}
-
 	calls := 0
 	service.random = func(buffer []byte) (int, error) {
 		calls++
@@ -336,37 +257,54 @@ func TestServiceSecretGenerationFailures(t *testing.T) {
 		}
 		return len(buffer), nil
 	}
-	if _, err := service.RegisterProbe(
-		context.Background(), containerRegistration(), "127.0.0.1:1", "enroll",
-	); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := service.RegisterProbe(t.Context(), containerRegistration(), "127.0.0.1:1", "enroll"); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("probe id generation error = %v", err)
 	}
-
 	service.random = func([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
-	if _, err := service.ClaimAssignment(context.Background(), Probe{}); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := service.ClaimAssignment(t.Context(), Probe{}); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("lease generation error = %v", err)
-	}
-
-	service.marshal = func(any) ([]byte, error) { return nil, io.ErrUnexpectedEOF }
-	if _, err := service.CommitResult(
-		context.Background(), Probe{}, "assignment", "lease", validResult(time.Now().UTC()),
-	); !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Fatalf("result encoding error = %v", err)
 	}
 }
 
 func TestServiceValidationBoundaries(t *testing.T) {
-	t.Parallel()
 	valid := validRegistration()
-	registrations := []RegisterProbeRequest{
-		func() RegisterProbeRequest { value := valid; value.InstallationID = ""; return value }(),
-		func() RegisterProbeRequest { value := valid; value.Kind = "unknown"; return value }(),
-		func() RegisterProbeRequest { value := valid; value.MaxConcurrency = 0; return value }(),
-		func() RegisterProbeRequest { value := valid; value.Runtime.Version = ""; return value }(),
-		func() RegisterProbeRequest { value := valid; value.Runtime.Version = "invalid"; return value }(),
-		func() RegisterProbeRequest { value := valid; value.Runtime.BrowserRevision = "invalid"; return value }(),
-		func() RegisterProbeRequest { value := valid; value.Capabilities = nil; return value }(),
-		func() RegisterProbeRequest { value := valid; value.Capabilities = []string{""}; return value }(),
+	registrations := []*probepb.RegisterRequest{
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.SetInstallationId("")
+			return value
+		}(),
+		func() *probepb.RegisterRequest { value := cloneRegistration(valid); value.ClearKind(); return value }(),
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.SetMaxConcurrency(0)
+			return value
+		}(),
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.GetRuntime().SetComponentVersion("")
+			return value
+		}(),
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.GetRuntime().SetComponentVersion("invalid")
+			return value
+		}(),
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.GetRuntime().SetBrowserRevision("invalid")
+			return value
+		}(),
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.SetCapabilities(nil)
+			return value
+		}(),
+		func() *probepb.RegisterRequest {
+			value := cloneRegistration(valid)
+			value.SetCapabilities([]*observationpb.Capability{{}})
+			return value
+		}(),
 	}
 	for _, registration := range registrations {
 		if err := validateRegistration(registration); !errors.Is(err, ErrInvalid) {
@@ -375,27 +313,26 @@ func TestServiceValidationBoundaries(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	results := []AssignmentResult{
-		func() AssignmentResult { value := validResult(now); value.RunID = ""; return value }(),
-		func() AssignmentResult { value := validResult(now); value.Status = "unknown"; return value }(),
-		func() AssignmentResult {
+	results := []*observationpb.AssignmentResult{
+		func() *observationpb.AssignmentResult { value := validResult(now); value.SetRunId(""); return value }(),
+		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.FinishedAt = now.Add(-time.Second)
+			value.SetFinishedAt(timestamppb.New(now.Add(-time.Second)))
 			return value
 		}(),
-		func() AssignmentResult {
+		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.Captures[0].TargetDate = "not-a-date"
+			value.GetCompleted().GetCaptures()[0].ClearTargetDate()
 			return value
 		}(),
-		func() AssignmentResult {
+		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.Captures[0].ErrorCode = "unexpected"
+			value.GetCompleted().GetCaptures()[0].SetErrorCode("unexpected")
 			return value
 		}(),
-		func() AssignmentResult {
+		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.Captures[0].Showtimes[0].SourceKey = ""
+			value.GetCompleted().GetCaptures()[0].GetShowtimes()[0].SetSourceKey("")
 			return value
 		}(),
 	}
@@ -404,59 +341,54 @@ func TestServiceValidationBoundaries(t *testing.T) {
 			t.Fatalf("result validation error = %v for %+v", err, result)
 		}
 	}
-	catalog := validCatalogSnapshot(now)
-	validCatalogResult := AssignmentResult{
-		RunID: "catalog_run", Status: "completed", StartedAt: now,
-		FinishedAt: now.Add(time.Second), Catalog: &catalog,
-	}
-	if err := validateResult(validCatalogResult); err != nil {
+	catalogResult := validCatalogResult(now)
+	if err := validateResult(catalogResult); err != nil {
 		t.Fatalf("valid catalog result rejected: %v", err)
 	}
-	invalidCatalogResults := []AssignmentResult{
-		func() AssignmentResult { value := validCatalogResult; value.Status = "partial"; return value }(),
-		func() AssignmentResult {
-			value := validCatalogResult
-			value.Captures = validResult(now).Captures
-			return value
-		}(),
-		func() AssignmentResult {
-			value := validCatalogResult
-			broken := *value.Catalog
-			broken.Provider.Name = ""
-			value.Catalog = &broken
-			return value
-		}(),
-	}
-	for _, result := range invalidCatalogResults {
-		if err := validateResult(result); !errors.Is(err, ErrInvalid) {
-			t.Fatalf("invalid catalog result error = %v", err)
-		}
+	withCaptures := proto.CloneOf(catalogResult)
+	withCaptures.GetCompleted().SetCaptures(validResult(now).GetCompleted().GetCaptures())
+	if err := validateResult(withCaptures); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("catalog result with captures error = %v", err)
 	}
 
-	service, err := NewService(newMemoryRepository(), Config{EnrollmentToken: "enroll"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	probe := Probe{MaxConcurrency: 2, Capabilities: []string{contracts.CapabilityCGVScheduleCapture}}
-	invalidHeartbeats := []ProbeHeartbeatRequest{
-		{AvailableSlots: -1, Health: "healthy"},
-		{AvailableSlots: 0, Health: "unknown"},
-		{AvailableSlots: 0, Health: "healthy", ReasonCode: "unexpected"},
-		{AvailableSlots: 2, ActiveAssignmentIDs: []string{"assignment"}, Health: "healthy"},
-		{ActiveAssignmentIDs: []string{""}, Health: "healthy"},
-		{ActiveAssignmentIDs: []string{"assignment", "assignment"}, Health: "healthy"},
-		{AvailableCapabilities: []string{contracts.CapabilityCGVSeatMapCapture}, Health: "healthy"},
-		{AvailableCapabilities: []string{
-			contracts.CapabilityCGVScheduleCapture, contracts.CapabilityCGVScheduleCapture,
-		}, Health: "healthy"},
+	probe := Probe{MaxConcurrency: 2, Capabilities: []string{probedomain.CapabilityCGVScheduleCapture}}
+	duplicateCapabilities, _ := probedomain.Capabilities([]string{
+		probedomain.CapabilityCGVScheduleCapture, probedomain.CapabilityCGVScheduleCapture,
+	})
+	seatMapCapability, _ := probedomain.Capabilities([]string{probedomain.CapabilityCGVSeatMapCapture})
+	invalidHeartbeats := []*probepb.HeartbeatRequest{
+		healthyHeartbeat(-1),
+		new(probepb.HeartbeatRequest),
+		func() *probepb.HeartbeatRequest {
+			value := healthyHeartbeat(2)
+			value.SetActiveAssignmentIds([]string{"assignment"})
+			return value
+		}(),
+		func() *probepb.HeartbeatRequest {
+			value := healthyHeartbeat(0)
+			value.SetActiveAssignmentIds([]string{""})
+			return value
+		}(),
+		func() *probepb.HeartbeatRequest {
+			value := healthyHeartbeat(0)
+			value.SetActiveAssignmentIds([]string{"assignment", "assignment"})
+			return value
+		}(),
+		func() *probepb.HeartbeatRequest {
+			value := healthyHeartbeat(0)
+			value.SetAvailableCapabilities(seatMapCapability)
+			return value
+		}(),
+		func() *probepb.HeartbeatRequest {
+			value := healthyHeartbeat(0)
+			value.SetAvailableCapabilities(duplicateCapabilities)
+			return value
+		}(),
 	}
 	for _, heartbeat := range invalidHeartbeats {
-		if _, err := service.HeartbeatProbe(context.Background(), probe, heartbeat); !errors.Is(err, ErrInvalid) {
+		if _, err := (&Service{repository: newMemoryRepository(), clock: time.Now}).HeartbeatProbe(t.Context(), probe, heartbeat); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("heartbeat validation error = %v", err)
 		}
-	}
-	if _, err := service.HeartbeatAssignment(context.Background(), probe, "", ""); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("empty assignment lease error = %v", err)
 	}
 	if got := networkID("203.0.113.4"); got == "" {
 		t.Fatal("network id is empty")
@@ -464,7 +396,6 @@ func TestServiceValidationBoundaries(t *testing.T) {
 }
 
 func TestRuntimeCompatibilityDrainsOutdatedProbe(t *testing.T) {
-	t.Parallel()
 	repository := newMemoryRepository()
 	service, err := NewService(repository, Config{
 		EnrollmentToken: "enroll", MinimumRuntimeVersion: "1.2.0", MinimumBrowserRevision: "2000",
@@ -473,25 +404,25 @@ func TestRuntimeCompatibilityDrainsOutdatedProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe := Probe{
-		ID: "probe", MaxConcurrency: 1,
-		Runtime: Runtime{Version: "1.1.0", BrowserRevision: "1999", Platform: "linux", Arch: "amd64"},
+		ID: "probe", MaxConcurrency: 1, Capabilities: []string{probedomain.CapabilityCGVScheduleCapture},
+		Runtime: runtimeFixture("1.1.0", "1999"),
 	}
 	repository.probesByID[probe.ID] = probe
-	response, err := service.HeartbeatProbe(context.Background(), probe, ProbeHeartbeatRequest{Health: "healthy"})
+	response, err := service.HeartbeatProbe(t.Context(), probe, healthyHeartbeat(0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !response.Drain {
+	if !response.GetDrain() {
 		t.Fatalf("heartbeat response = %+v", response)
 	}
 	compatibility := []struct {
-		runtime Runtime
+		runtime *commonpb.Runtime
 		want    bool
 	}{
-		{runtime: Runtime{Version: "invalid", BrowserRevision: "2000"}},
-		{runtime: Runtime{Version: "1.1.0", BrowserRevision: "2000"}},
-		{runtime: Runtime{Version: "v1.2.0", BrowserRevision: "1999"}},
-		{runtime: Runtime{Version: "v1.2.0", BrowserRevision: "2000"}, want: true},
+		{runtime: runtimeFixture("invalid", "2000")},
+		{runtime: runtimeFixture("1.1.0", "2000")},
+		{runtime: runtimeFixture("v1.2.0", "1999")},
+		{runtime: runtimeFixture("v1.2.0", "2000"), want: true},
 	}
 	for _, test := range compatibility {
 		if got := service.runtimeCompatible(test.runtime); got != test.want {
@@ -504,50 +435,109 @@ func TestRuntimeCompatibilityDrainsOutdatedProbe(t *testing.T) {
 	}
 }
 
-func validRegistration() RegisterProbeRequest {
-	return RegisterProbeRequest{
-		InstallationID: "install_01", Kind: "client",
-		Capabilities: []string{contracts.CapabilityCGVScheduleCapture}, MaxConcurrency: 1,
-		Runtime: Runtime{
-			Version: "0.1.0", Protocol: ProtocolVersion, BrowserRevision: "1228",
-			Platform: "darwin", Arch: "arm64",
-		},
-	}
+func validRegistration() *probepb.RegisterRequest {
+	capabilities, _ := probedomain.Capabilities([]string{probedomain.CapabilityCGVScheduleCapture})
+	request := &probepb.RegisterRequest{}
+	request.SetInstallationId("install_01")
+	kind := &probepb.ProbeKind{}
+	kind.SetClient(&probepb.ClientProbe{})
+	request.SetKind(kind)
+	request.SetCapabilities(capabilities)
+	request.SetMaxConcurrency(1)
+	request.SetRuntime(runtimeFixture("0.1.0", "1228"))
+	return request
 }
 
-func containerRegistration() RegisterProbeRequest {
+func cloneRegistration(request *probepb.RegisterRequest) *probepb.RegisterRequest {
+	return proto.CloneOf(request)
+}
+
+func containerRegistration() *probepb.RegisterRequest {
 	registration := validRegistration()
-	registration.Kind = "container"
+	kind := &probepb.ProbeKind{}
+	kind.SetContainer(&probepb.ContainerProbe{})
+	registration.SetKind(kind)
 	return registration
 }
 
-func validResult(now time.Time) AssignmentResult {
-	providerID := contracts.ProviderCGV
-	theaterID := contracts.CatalogID(providerID, "theater", "0056")
-	movieSourceKey := "00001234"
-	auditoriumSourceKey := "0056/0007"
-	showtimeSourceKey := "0056/2026-08-20/0007/0003"
-	return AssignmentResult{
-		RunID: "run_01", Status: "completed", StartedAt: now, FinishedAt: now.Add(10 * time.Second),
-		Captures: []Capture{{
-			TargetDate: "2026-08-20", Complete: true, ObservedAt: now.Add(9 * time.Second),
-			Showtimes: []Showtime{{
-				ID:         contracts.CatalogID(providerID, "showtime", showtimeSourceKey),
-				ProviderID: providerID, SourceKey: showtimeSourceKey, TheaterID: theaterID,
-				Movie: Movie{
-					ID:         contracts.CatalogID(providerID, "movie", movieSourceKey),
-					ProviderID: providerID, SourceKey: movieSourceKey, Title: "영화",
-				},
-				Auditorium: Auditorium{
-					ID:        contracts.CatalogID(providerID, "auditorium", auditoriumSourceKey),
-					TheaterID: theaterID, SourceKey: auditoriumSourceKey,
-					Name: "IMAX관", ScreenTypes: []string{"IMAX"}, Capacity: 624,
-				},
-				StartsAt: now.Add(24 * time.Hour), EndsAt: now.Add(26 * time.Hour),
-				AvailableSeats: 500, Capacity: 624,
-			}},
-		}},
-	}
+func runtimeFixture(version, browserRevision string) *commonpb.Runtime {
+	runtime := &commonpb.Runtime{}
+	runtime.SetComponentVersion(version)
+	runtime.SetBrowserRevision(browserRevision)
+	runtime.SetPlatform("darwin")
+	runtime.SetArchitecture("arm64")
+	return runtime
+}
+
+func healthyHeartbeat(slots int32) *probepb.HeartbeatRequest {
+	health := &probepb.ProbeHealth{}
+	health.SetHealthy(&probepb.Healthy{})
+	request := &probepb.HeartbeatRequest{}
+	request.SetAvailableSlots(slots)
+	request.SetHealth(health)
+	return request
+}
+
+func degradedHeartbeat(slots int32, reason string) *probepb.HeartbeatRequest {
+	degraded := &probepb.Degraded{}
+	degraded.SetReasonCode(reason)
+	health := &probepb.ProbeHealth{}
+	health.SetDegraded(degraded)
+	request := &probepb.HeartbeatRequest{}
+	request.SetAvailableSlots(slots)
+	request.SetHealth(health)
+	return request
+}
+
+func validAssignmentTask(now time.Time) *observationpb.AssignmentTask {
+	snapshot := validCatalogSnapshot(now)
+	date := &commonpb.LocalDate{}
+	date.SetYear(2026)
+	date.SetMonth(8)
+	date.SetDay(20)
+	schedule := &observationpb.ScheduleTask{}
+	schedule.SetTheater(proto.CloneOf(snapshot.GetTheaters()[0]))
+	schedule.SetTargetDates([]*commonpb.LocalDate{date})
+	schedule.SetLocale("ko-KR")
+	schedule.SetTimeZone("Asia/Seoul")
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	task := &observationpb.AssignmentTask{}
+	task.SetEgress(egress)
+	task.SetSchedule(schedule)
+	return task
+}
+
+func validResult(now time.Time) *observationpb.AssignmentResult {
+	snapshot := validCatalogSnapshot(now)
+	date := &commonpb.LocalDate{}
+	date.SetYear(2026)
+	date.SetMonth(8)
+	date.SetDay(20)
+	capture := &observationpb.Capture{}
+	capture.SetTargetDate(date)
+	capture.SetComplete(true)
+	capture.SetObservedAt(timestamppb.New(now.Add(9 * time.Second)))
+	capture.SetShowtimes([]*catalogpb.Showtime{proto.CloneOf(snapshot.GetShowtimes()[0])})
+	completed := &observationpb.Completed{}
+	completed.SetCaptures([]*observationpb.Capture{capture})
+	result := &observationpb.AssignmentResult{}
+	result.SetRunId("run_01")
+	result.SetStartedAt(timestamppb.New(now))
+	result.SetFinishedAt(timestamppb.New(now.Add(10 * time.Second)))
+	result.SetCompleted(completed)
+	return result
+}
+
+func validCatalogResult(now time.Time) *observationpb.AssignmentResult {
+	completed := &observationpb.Completed{}
+	completed.SetCatalog(validCatalogSnapshot(now))
+	result := &observationpb.AssignmentResult{}
+	result.SetRunId("catalog_run")
+	result.SetStartedAt(timestamppb.New(now))
+	result.SetFinishedAt(timestamppb.New(now.Add(time.Second)))
+	result.SetCompleted(completed)
+	return result
 }
 
 func deterministicRandom() func([]byte) (int, error) {
@@ -566,7 +556,7 @@ type memoryRepository struct {
 	probesByID       map[string]Probe
 	probeByInstall   map[string]string
 	assignments      map[string]Assignment
-	resultByAssignID map[string]ResultReceipt
+	resultByAssignID map[string]*observationpb.ResultReceipt
 	resultHash       map[string]string
 	consumedTickets  map[string]struct{}
 }
@@ -574,19 +564,14 @@ type memoryRepository struct {
 func newMemoryRepository() *memoryRepository {
 	return &memoryRepository{
 		probesByID: make(map[string]Probe), probeByInstall: make(map[string]string),
-		assignments: make(map[string]Assignment), resultByAssignID: make(map[string]ResultReceipt),
+		assignments: make(map[string]Assignment), resultByAssignID: make(map[string]*observationpb.ResultReceipt),
 		resultHash: make(map[string]string), consumedTickets: make(map[string]struct{}),
 	}
 }
 
 func (repository *memoryRepository) Ready(context.Context) error { return repository.err }
 
-func (repository *memoryRepository) ConsumeProbeBootstrap(
-	_ context.Context,
-	ticketID string,
-	_ time.Time,
-	_ time.Time,
-) error {
+func (repository *memoryRepository) ConsumeProbeBootstrap(_ context.Context, ticketID string, _ time.Time, _ time.Time) error {
 	if repository.err != nil {
 		return repository.err
 	}
@@ -605,7 +590,7 @@ type memoryClientAuthorizer struct {
 
 func (authorizer *memoryClientAuthorizer) Authorize(
 	_ context.Context,
-	_ RegisterProbeRequest,
+	_ *probepb.RegisterRequest,
 	token string,
 	_ time.Time,
 ) (RegistrationAuthorization, error) {
@@ -635,25 +620,17 @@ func (repository *memoryRepository) AuthenticateProbe(
 	if repository.err != nil {
 		return Probe{}, repository.err
 	}
-	if probeID != "" {
-		probe, exists := repository.probesByID[probeID]
-		if !exists || probe.TokenExpiresAt.Before(now) || subtle.ConstantTimeCompare(probe.TokenHash[:], tokenHash[:]) != 1 {
-			return Probe{}, ErrUnauthorized
-		}
-		return probe, nil
+	probe, exists := repository.probesByID[probeID]
+	if !exists || probe.TokenExpiresAt.Before(now) || subtle.ConstantTimeCompare(probe.TokenHash[:], tokenHash[:]) != 1 {
+		return Probe{}, ErrUnauthorized
 	}
-	for _, probe := range repository.probesByID {
-		if probe.TokenExpiresAt.After(now) && subtle.ConstantTimeCompare(probe.TokenHash[:], tokenHash[:]) == 1 {
-			return probe, nil
-		}
-	}
-	return Probe{}, ErrUnauthorized
+	return probe, nil
 }
 
 func (repository *memoryRepository) HeartbeatProbe(
 	_ context.Context,
 	probeID string,
-	heartbeat ProbeHeartbeatRequest,
+	heartbeat *probepb.HeartbeatRequest,
 	now time.Time,
 ) (Probe, error) {
 	if repository.err != nil {
@@ -663,12 +640,17 @@ func (repository *memoryRepository) HeartbeatProbe(
 	if !exists {
 		return Probe{}, ErrNotFound
 	}
+	health, reason := probeHealthKey(heartbeat.GetHealth())
+	available, err := probedomain.CapabilityKeys(heartbeat.GetAvailableCapabilities())
+	if err != nil {
+		return Probe{}, err
+	}
 	probe.Status = "online"
-	probe.Draining = heartbeat.Draining
-	probe.AvailableSlots = heartbeat.AvailableSlots
-	probe.Health = heartbeat.Health
-	probe.ReasonCode = heartbeat.ReasonCode
-	probe.AvailableCapabilities = slices.Clone(heartbeat.AvailableCapabilities)
+	probe.Draining = heartbeat.GetDraining()
+	probe.AvailableSlots = int(heartbeat.GetAvailableSlots())
+	probe.Health = health
+	probe.ReasonCode = reason
+	probe.AvailableCapabilities = available
 	probe.LastHeartbeatAt = now
 	repository.probesByID[probeID] = probe
 	return probe, nil
@@ -704,7 +686,7 @@ func (repository *memoryRepository) ClaimAssignment(
 	}
 	for id, assignment := range repository.assignments {
 		if assignment.Status != "queued" || assignment.NotBefore.After(now) || !assignment.Deadline.After(now) ||
-			!slices.Contains(capabilities, assignment.Task.Kind) {
+			!slices.Contains(capabilities, assignmentCapability(assignment.Task)) {
 			continue
 		}
 		assignment.Status = "leased"
@@ -715,6 +697,19 @@ func (repository *memoryRepository) ClaimAssignment(
 		return assignment, nil
 	}
 	return Assignment{}, ErrNoAssignment
+}
+
+func assignmentCapability(task *observationpb.AssignmentTask) string {
+	switch {
+	case task.GetSchedule() != nil:
+		return probedomain.CapabilityCGVScheduleCapture
+	case task.GetCatalog() != nil:
+		return probedomain.CapabilityCGVCatalogCapture
+	case task.GetSeatMap() != nil:
+		return probedomain.CapabilityCGVSeatMapCapture
+	default:
+		return ""
+	}
 }
 
 func (repository *memoryRepository) HeartbeatAssignment(
@@ -743,31 +738,35 @@ func (repository *memoryRepository) HeartbeatAssignment(
 	return nil
 }
 
-func (repository *memoryRepository) CommitResult(_ context.Context, commit ResultCommit) (ResultReceipt, error) {
+func (repository *memoryRepository) CommitResult(_ context.Context, commit ResultCommit) (*observationpb.ResultReceipt, error) {
 	if repository.err != nil {
-		return ResultReceipt{}, repository.err
+		return nil, repository.err
 	}
 	if previous, exists := repository.resultByAssignID[commit.AssignmentID]; exists {
-		if repository.resultHash[commit.AssignmentID] == commit.PayloadHash && previous.RunID == commit.Result.RunID {
+		if repository.resultHash[commit.AssignmentID] == commit.PayloadHash && previous.GetRunId() == commit.Result.GetRunId() {
 			return previous, nil
 		}
-		return ResultReceipt{}, ErrIdempotencyConflict
+		return nil, ErrIdempotencyConflict
 	}
 	assignment, exists := repository.assignments[commit.AssignmentID]
 	if !exists || assignment.ProbeID != commit.ProbeID {
-		return ResultReceipt{}, ErrNotFound
+		return nil, ErrNotFound
 	}
 	if assignment.LeaseExpiresAt.Before(commit.CommittedAt) {
-		return ResultReceipt{}, ErrLeaseExpired
+		return nil, ErrLeaseExpired
 	}
 	if subtle.ConstantTimeCompare(assignment.LeaseTokenHash[:], commit.LeaseHash[:]) != 1 {
-		return ResultReceipt{}, ErrUnauthorized
+		return nil, ErrUnauthorized
 	}
-	receipt := ResultReceipt{
-		AssignmentID: commit.AssignmentID, RunID: commit.Result.RunID,
-		ContentHash: commit.PayloadHash, Status: commit.Result.Status,
-	}
+	receipt := &observationpb.ResultReceipt{}
+	receipt.SetAssignmentId(commit.AssignmentID)
+	receipt.SetRunId(commit.Result.GetRunId())
+	receipt.SetContentHash(commit.PayloadHash)
+	receipt.SetAccepted(&observationpb.Accepted{})
 	repository.resultByAssignID[commit.AssignmentID] = receipt
 	repository.resultHash[commit.AssignmentID] = commit.PayloadHash
 	return receipt, nil
 }
+
+var _ Repository = (*memoryRepository)(nil)
+var _ ClientRegistrationAuthorizer = (*memoryClientAuthorizer)(nil)

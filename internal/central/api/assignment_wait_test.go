@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 func TestClaimAssignmentWaitsForRepositoryWakeupBeforeRetry(t *testing.T) {
@@ -23,7 +25,11 @@ func TestClaimAssignmentWaitsForRepositoryWakeupBeforeRetry(t *testing.T) {
 		release:       make(chan struct{}),
 		assignment: central.Assignment{
 			ID: "assignment_wait", Status: "leased", LeaseExpiresAt: time.Now().Add(time.Minute),
-			Task: central.AssignmentTask{Kind: "cgv.schedule.capture.v2", Theater: central.Theater{ID: "cgv:theater:0056"}},
+			Task: observationpb.AssignmentTask_builder{
+				Schedule: observationpb.ScheduleTask_builder{
+					Theater: catalogpb.Theater_builder{Id: stringPointer("cgv:theater:0056")}.Build(),
+				}.Build(),
+			}.Build(),
 		},
 	}
 	service, err := central.NewService(repository, central.Config{EnrollmentToken: "enroll"})
@@ -39,7 +45,7 @@ func TestClaimAssignmentWaitsForRepositoryWakeupBeforeRetry(t *testing.T) {
 	go func() {
 		recorder := request(t, server.Handler(), http.MethodPost,
 			"/v1/probes/probe_wait/assignments:claim", nil,
-			map[string]string{"X-Cineko-Protocol": "3", "Authorization": "Bearer " + accessToken})
+			map[string]string{"Authorization": "Bearer " + accessToken})
 		response <- recorder.Code
 	}()
 	select {

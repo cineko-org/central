@@ -2,16 +2,21 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const reconcilerLockKey int64 = 0x43494E454B4F52
@@ -446,11 +451,11 @@ func (store *cycleStore) DuePolicies(
 			FROM (
 				SELECT DISTINCT ON (assignment.policy_id) assignment.policy_id,
 					assignment.status, assignment.finished_at, assignment.target_dates::text[] AS target_dates,
-					assignment.task_data->>'_cinekoHotFingerprint' AS fingerprint
+					assignment.hot_target_fingerprint AS fingerprint
 				FROM observation_assignments AS assignment
 				WHERE assignment.policy_id IS NOT NULL
 					AND assignment.status IN ('completed', 'partial', 'failed', 'missed')
-					AND assignment.task_data->>'_cinekoLane' = 'hot'
+					AND assignment.lane = 'hot'
 				ORDER BY assignment.policy_id, assignment.finished_at DESC NULLS LAST, assignment.created_at DESC
 			) AS latest
 			WHERE latest.status = 'completed'
@@ -460,7 +465,7 @@ func (store *cycleStore) DuePolicies(
 			FROM observation_assignments AS assignment
 			WHERE assignment.policy_id IS NOT NULL
 				AND assignment.status = 'completed'
-				AND COALESCE(assignment.task_data->>'_cinekoLane', 'baseline') = 'baseline'
+				AND assignment.lane = 'baseline'
 			ORDER BY assignment.policy_id, assignment.finished_at DESC NULLS LAST, assignment.created_at DESC
 		)
 		SELECT policy.id, policy.enabled, policy.task_kind, policy.theater_id,
@@ -503,7 +508,7 @@ func (store *cycleStore) DuePolicies(
 					AND active.status IN ('queued', 'leased', 'retry_pending')
 					AND NOT (
 						active.status = 'queued'
-						AND COALESCE(active.task_data->>'_cinekoLane', 'baseline') = 'baseline'
+						AND active.lane = 'baseline'
 						AND (demand.opening_active OR demand.cancellation_active)
 					)
 			)
@@ -553,7 +558,7 @@ const preemptQueuedBaselineAssignmentsQuery = `
 	SET status = 'missed', terminal_reason = 'hot_demand_preempted',
 		finished_at = $2, updated_at = $2
 	WHERE policy_id = $1 AND status = 'queued'
-		AND COALESCE(task_data->>'_cinekoLane', 'baseline') = 'baseline'
+		AND lane = 'baseline'
 `
 
 const makePreemptedObservationPolicyDueQuery = `
@@ -618,7 +623,7 @@ func (store *cycleStore) CatalogRefreshRequired(
 				WHERE task_kind = $1 AND status IN ('completed', 'partial', 'failed', 'missed')
 					AND updated_at > $2
 			)
-	`, contracts.CapabilityCGVCatalogCapture, retryCutoff).Scan(&required)
+	`, probedomain.CapabilityCGVCatalogCapture, retryCutoff).Scan(&required)
 	if err != nil {
 		return false, fmt.Errorf("inspect catalog refresh requirement: %w", err)
 	}
@@ -630,9 +635,12 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	now time.Time,
 ) (*reconcile.SeatMapBackfillTarget, error) {
 	target := &reconcile.SeatMapBackfillTarget{}
-	task := &target.Task
-	var auditorium contracts.Auditorium
-	var showtime contracts.Showtime
+	var theaterID, theaterProviderID, theaterSourceKey, theaterRegion, theaterName string
+	var auditoriumID, auditoriumTheaterID, auditoriumSourceKey, auditoriumName string
+	var auditoriumScreenTypes []string
+	var auditoriumCapacity int32
+	var showtimeID, showtimeProviderID, showtimeSourceKey string
+	var movieID, movieProviderID, movieSourceKey, movieTitle, moviePosterURL string
 	var startsAt, endsAt time.Time
 	err := store.tx.QueryRow(ctx, `
 		SELECT theater.id, theater.provider_id, theater.source_key, theater.region, theater.name,
@@ -655,19 +663,18 @@ func (store *cycleStore) SeatMapBackfillTarget(
 				SELECT 1 FROM observation_assignments AS assignment
 				WHERE assignment.task_kind = $2
 					AND assignment.status IN ('queued', 'leased', 'retry_pending')
-					AND assignment.task_data->'auditorium'->>'id' = auditorium.id
+					AND assignment.task_data->'seatMap'->'auditorium'->>'id' = auditorium.id
 			)
 		ORDER BY auditorium.seat_map_requested_at DESC NULLS LAST, auditorium.updated_at, showtime.starts_at
 		FOR UPDATE OF auditorium SKIP LOCKED
 		LIMIT 1
-	`, now, contracts.CapabilityCGVSeatMapCapture).Scan(
-		&task.Theater.ID, &task.Theater.ProviderID, &task.Theater.SourceKey,
-		&task.Theater.Region, &task.Theater.Name,
-		&auditorium.ID, &auditorium.TheaterID, &auditorium.SourceKey, &auditorium.Name,
-		&auditorium.ScreenTypes, &auditorium.Capacity,
-		&showtime.ID, &showtime.ProviderID, &showtime.SourceKey, &startsAt, &endsAt,
-		&showtime.Movie.ID, &showtime.Movie.ProviderID, &showtime.Movie.SourceKey,
-		&showtime.Movie.Title, &showtime.Movie.PosterURL, &target.Requested,
+	`, now, probedomain.CapabilityCGVSeatMapCapture).Scan(
+		&theaterID, &theaterProviderID, &theaterSourceKey, &theaterRegion, &theaterName,
+		&auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName,
+		&auditoriumScreenTypes, &auditoriumCapacity,
+		&showtimeID, &showtimeProviderID, &showtimeSourceKey, &startsAt, &endsAt,
+		&movieID, &movieProviderID, &movieSourceKey,
+		&movieTitle, &moviePosterURL, &target.Requested,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -675,22 +682,52 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	if err != nil {
 		return nil, fmt.Errorf("read seat-map backfill target: %w", err)
 	}
-	showtime.TheaterID = task.Theater.ID
-	showtime.Auditorium = auditorium
-	showtime.Capacity = auditorium.Capacity
-	showtime.StartsAt = startsAt
-	showtime.EndsAt = endsAt
-	task.Kind = contracts.CapabilityCGVSeatMapCapture
-	task.Auditorium = &auditorium
-	task.Showtime = &showtime
-	task.TargetDates = []string{startsAt.In(time.FixedZone("KST", 9*60*60)).Format(time.DateOnly)}
-	task.Locale = "ko-KR"
-	task.TimeZone = "Asia/Seoul"
+	theater := &catalogpb.Theater{}
+	theater.SetId(theaterID)
+	theater.SetProviderId(theaterProviderID)
+	theater.SetSourceKey(theaterSourceKey)
+	theater.SetRegion(theaterRegion)
+	theater.SetName(theaterName)
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId(auditoriumID)
+	auditorium.SetTheaterId(auditoriumTheaterID)
+	auditorium.SetSourceKey(auditoriumSourceKey)
+	auditorium.SetName(auditoriumName)
+	auditorium.SetScreenTypes(auditoriumScreenTypes)
+	auditorium.SetCapacity(auditoriumCapacity)
+	movie := &catalogpb.Movie{}
+	movie.SetId(movieID)
+	movie.SetProviderId(movieProviderID)
+	movie.SetSourceKey(movieSourceKey)
+	movie.SetTitle(movieTitle)
+	movie.SetPosterUrl(moviePosterURL)
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId(showtimeID)
+	showtime.SetProviderId(showtimeProviderID)
+	showtime.SetSourceKey(showtimeSourceKey)
+	showtime.SetTheaterId(theaterID)
+	showtime.SetAuditorium(auditorium)
+	showtime.SetMovie(movie)
+	showtime.SetCapacity(auditoriumCapacity)
+	showtime.SetStartsAt(timestamppb.New(startsAt))
+	showtime.SetEndsAt(timestamppb.New(endsAt))
+	seatMap := &observationpb.SeatMapTask{}
+	seatMap.SetTheater(theater)
+	seatMap.SetAuditorium(auditorium)
+	seatMap.SetShowtime(showtime)
+	seatMap.SetLocale("ko-KR")
+	seatMap.SetTimeZone("Asia/Seoul")
+	task := &observationpb.AssignmentTask{}
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	task.SetEgress(egress)
+	task.SetSeatMap(seatMap)
+	target.Task = task
 	return target, nil
 }
 
 func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconcile.NewAssignment) error {
-	targetDates, err := postgresDates(assignment.Task.TargetDates)
+	targetDates, err := assignmentTargetDates(assignment.Task)
 	if err != nil {
 		return err
 	}
@@ -722,18 +759,18 @@ func (store *cycleStore) insertAssignment(
 			id, policy_id, task_kind, theater_id, theater_provider_id, theater_source_key,
 			theater_region, theater_name, target_dates,
 			locale, time_zone, egress_policy_id, priority, status, not_before, deadline,
-			terminal_reason, finished_at, created_at, updated_at, task_data
+			terminal_reason, finished_at, created_at, updated_at, task_data, lane, hot_target_fingerprint
 		) VALUES (
-			$1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19, $20
+			$1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19, $20, $21, $22
 		)
 		ON CONFLICT DO NOTHING
 		RETURNING id
-	`, assignment.ID, assignment.PolicyID, assignment.Task.Kind, assignment.Task.Theater.ID,
-		assignment.Task.Theater.ProviderID, assignment.Task.Theater.SourceKey,
-		assignment.Task.Theater.Region, assignment.Task.Theater.Name, targetDates, assignment.Task.Locale,
-		assignment.Task.TimeZone, assignment.Task.EgressPolicyID, assignment.Priority, assignment.Status,
+	`, assignment.ID, assignment.PolicyID, assignmentTaskKind(assignment.Task), assignmentTaskTheater(assignment.Task).GetId(),
+		assignmentTaskTheater(assignment.Task).GetProviderId(), assignmentTaskTheater(assignment.Task).GetSourceKey(),
+		assignmentTaskTheater(assignment.Task).GetRegion(), assignmentTaskTheater(assignment.Task).GetName(), targetDates, assignmentTaskLocale(assignment.Task),
+		assignmentTaskTimeZone(assignment.Task), string(central.EgressPolicyScanDefault), assignment.Priority, assignment.Status,
 		assignment.NotBefore, assignment.Deadline, assignment.ReasonCode, nullableTime(assignment.FinishedAt),
-		assignment.CreatedAt, taskData).Scan(&insertedID)
+		assignment.CreatedAt, taskData, assignment.Lane, assignment.HotTargetFingerprint).Scan(&insertedID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var idCollision bool
 		if err := store.tx.QueryRow(ctx, `
@@ -847,10 +884,11 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	var lastHotTargetFingerprint *string
 	var lastBaselineTargetDate *string
 	var monitorTargetsRaw []byte
+	var theaterID, providerID, sourceKey, region, name string
 	err := row.Scan(
-		&policy.ID, &policy.Enabled, &policy.TaskKind, &policy.Theater.ID,
-		&policy.Theater.ProviderID, &policy.Theater.SourceKey, &policy.Theater.Region,
-		&policy.Theater.Name, &policy.TargetDateMode, &policy.TargetDates, &horizonDays,
+		&policy.ID, &policy.Enabled, &policy.TaskKind, &theaterID,
+		&providerID, &sourceKey, &region,
+		&name, &policy.TargetDateMode, &policy.TargetDates, &horizonDays,
 		&policy.Locale, &policy.TimeZone, &policy.EgressPolicyID, &policy.Priority,
 		&minimumSeconds, &maximumSeconds, &executionWindowSeconds, &baselineMaximumSeconds,
 		&policy.NextRunAt, &lastFinishedAt, &policy.LastOutcome, &monitorTargetsRaw,
@@ -860,6 +898,12 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	if err != nil {
 		return reconcile.Policy{}, fmt.Errorf("scan observation policy: %w", err)
 	}
+	policy.Theater = &catalogpb.Theater{}
+	policy.Theater.SetId(theaterID)
+	policy.Theater.SetProviderId(providerID)
+	policy.Theater.SetSourceKey(sourceKey)
+	policy.Theater.SetRegion(region)
+	policy.Theater.SetName(name)
 	if horizonDays != nil {
 		policy.HorizonDays = *horizonDays
 	}
@@ -892,18 +936,6 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	return policy, nil
 }
 
-func postgresDates(values []string) ([]time.Time, error) {
-	dates := make([]time.Time, len(values))
-	for index, value := range values {
-		date, err := time.Parse(time.DateOnly, value)
-		if err != nil {
-			return nil, fmt.Errorf("encode assignment target date %q: %w", value, err)
-		}
-		dates[index] = date
-	}
-	return dates, nil
-}
-
 func nullableTime(value time.Time) *time.Time {
 	if value.IsZero() {
 		return nil
@@ -912,30 +944,76 @@ func nullableTime(value time.Time) *time.Time {
 }
 
 func marshalAssignmentTask(assignment reconcile.NewAssignment) ([]byte, error) {
-	rawTask, err := json.Marshal(assignment.Task)
-	if err != nil {
-		return nil, err
+	return protojson.MarshalOptions{UseProtoNames: false}.Marshal(assignment.Task)
+}
+
+func assignmentTaskKind(task *observationpb.AssignmentTask) string {
+	switch {
+	case task.GetSchedule() != nil:
+		return probedomain.CapabilityCGVScheduleCapture
+	case task.GetCatalog() != nil:
+		return probedomain.CapabilityCGVCatalogCapture
+	case task.GetSeatMap() != nil:
+		return probedomain.CapabilityCGVSeatMapCapture
+	default:
+		return ""
 	}
-	if assignment.Lane == "" {
-		return rawTask, nil
+}
+
+func assignmentTaskTheater(task *observationpb.AssignmentTask) *catalogpb.Theater {
+	if task.GetSchedule() != nil {
+		return task.GetSchedule().GetTheater()
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(rawTask, &fields); err != nil {
-		return nil, fmt.Errorf("assignment task is not an object: %w", err)
+	if task.GetCatalog() != nil {
+		return task.GetCatalog().GetTheater()
 	}
-	lane, err := json.Marshal(assignment.Lane)
-	if err != nil {
-		return nil, fmt.Errorf("encode assignment lane: %w", err)
+	return task.GetSeatMap().GetTheater()
+}
+
+func assignmentTaskLocale(task *observationpb.AssignmentTask) string {
+	if task.GetSchedule() != nil {
+		return task.GetSchedule().GetLocale()
 	}
-	fields[planning.TaskDataLaneKey] = lane
-	if assignment.HotTargetFingerprint != "" {
-		fingerprint, err := json.Marshal(assignment.HotTargetFingerprint)
+	if task.GetCatalog() != nil {
+		return task.GetCatalog().GetLocale()
+	}
+	return task.GetSeatMap().GetLocale()
+}
+
+func assignmentTaskTimeZone(task *observationpb.AssignmentTask) string {
+	if task.GetSchedule() != nil {
+		return task.GetSchedule().GetTimeZone()
+	}
+	if task.GetCatalog() != nil {
+		return task.GetCatalog().GetTimeZone()
+	}
+	return task.GetSeatMap().GetTimeZone()
+}
+
+func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, error) {
+	var values []*commonpb.LocalDate
+	switch {
+	case task.GetSchedule() != nil:
+		values = task.GetSchedule().GetTargetDates()
+	case task.GetCatalog() != nil:
+		values = task.GetCatalog().GetTargetDates()
+	case task.GetSeatMap() != nil:
+		location, err := time.LoadLocation(task.GetSeatMap().GetTimeZone())
 		if err != nil {
-			return nil, fmt.Errorf("encode hot target fingerprint: %w", err)
+			return nil, fmt.Errorf("load assignment time zone: %w", err)
 		}
-		fields[planning.TaskDataHotFingerprintKey] = fingerprint
+		startsAt := task.GetSeatMap().GetShowtime().GetStartsAt().AsTime().In(location)
+		return []time.Time{time.Date(startsAt.Year(), startsAt.Month(), startsAt.Day(), 0, 0, 0, 0, time.UTC)}, nil
 	}
-	return json.Marshal(fields)
+	dates := make([]time.Time, 0, len(values))
+	for _, value := range values {
+		date := time.Date(int(value.GetYear()), time.Month(value.GetMonth()), int(value.GetDay()), 0, 0, 0, 0, time.UTC)
+		if date.Year() != int(value.GetYear()) || int(date.Month()) != int(value.GetMonth()) || date.Day() != int(value.GetDay()) {
+			return nil, fmt.Errorf("assignment target date is invalid")
+		}
+		dates = append(dates, date)
+	}
+	return dates, nil
 }
 
 func expectOneRow(affected int64, operation string) error {

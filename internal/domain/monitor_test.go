@@ -4,240 +4,151 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-func TestMonitorJobValidateChecksDatesAndTimeWindow(t *testing.T) {
-	t.Parallel()
+func validMonitorProto() *clientpb.Monitor {
+	mode := &clientpb.MonitorMode{}
+	mode.SetOpening(&clientpb.OpeningMonitor{})
+	state := &clientpb.MonitorState{}
+	state.SetPending(&clientpb.MonitorPending{})
+	monitor := &clientpb.Monitor{}
+	monitor.SetId("m1")
+	monitor.SetUserId("u1")
+	monitor.SetPresetId("p1")
+	monitor.SetMovieId("movie_1")
+	monitor.SetMode(mode)
+	monitor.SetState(state)
+	monitor.SetPollInterval(durationpb.New(5 * time.Second))
+	monitor.SetMaximumPollInterval(durationpb.New(10 * time.Second))
+	monitor.SetTargetDates([]*commonpb.LocalDate{protoDate(8, 10)})
+	return monitor
+}
 
-	job := MonitorJob{
-		ID: "m1", UserID: "u1", PresetID: "p1", MovieID: "movie_1", Movie: "오디세이",
-		TargetDates: []string{"2026-08-10"}, PollInterval: 5 * time.Second,
-		EarliestTime: "20:00", LatestTime: "18:00",
+func protoDate(month, day int32) *commonpb.LocalDate {
+	value := &commonpb.LocalDate{}
+	value.SetYear(2026)
+	value.SetMonth(month)
+	value.SetDay(day)
+	return value
+}
+
+func protoTime(hour int32) *commonpb.LocalTime {
+	value := &commonpb.LocalTime{}
+	value.SetHour(hour)
+	value.SetMinute(0)
+	return value
+}
+
+func TestValidateMonitorChecksIdentityScheduleAndTimeWindow(t *testing.T) {
+	t.Parallel()
+	monitor := validMonitorProto()
+	monitor.SetEarliestTime(protoTime(20))
+	monitor.SetLatestTime(protoTime(18))
+	if err := ValidateMonitor(monitor); err != nil {
+		t.Fatalf("ValidateMonitor() rejected an overnight window: %v", err)
 	}
-	if err := job.Validate(); err != nil {
-		t.Fatalf("Validate() rejected an overnight time window: %v", err)
+	monitor.SetLatestTime(protoTime(20))
+	if err := ValidateMonitor(monitor); err == nil {
+		t.Fatal("ValidateMonitor() accepted an empty window")
 	}
-	job.EarliestTime, job.LatestTime = "20:00", "20:00"
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted an empty time window")
+	monitor.SetLatestTime(protoTime(21))
+	monitor.SetMovieId("")
+	if err := ValidateMonitor(monitor); err == nil {
+		t.Fatal("ValidateMonitor() accepted a missing movie identity")
 	}
-	job.EarliestTime, job.LatestTime = "18:00", "20:00"
-	job.Movie = ""
-	if err := job.Validate(); err != nil {
-		t.Fatalf("Validate() rejected a monitor without a display title snapshot: %v", err)
-	}
-	job.MovieID = ""
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted a monitor without a canonical movie id")
-	}
-	job.MovieID = "movie_1"
-	job.TargetDates = []string{"08/10/2026"}
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted a non-ISO date")
+	monitor.SetMovieId("movie_1")
+	monitor.SetTargetDates([]*commonpb.LocalDate{protoDate(2, 30)})
+	if err := ValidateMonitor(monitor); err == nil {
+		t.Fatal("ValidateMonitor() accepted an invalid calendar date")
 	}
 }
 
-func TestMonitorJobMatchesTimeWindow(t *testing.T) {
+func TestMonitorTimeWindowSupportsOvernightAndOpenBounds(t *testing.T) {
 	t.Parallel()
-
 	location, err := time.LoadLocation("Asia/Seoul")
 	if err != nil {
 		t.Fatal(err)
 	}
-	job := MonitorJob{EarliestTime: "21:00", LatestTime: "06:00"}
+	monitor := &clientpb.Monitor{}
+	monitor.SetEarliestTime(protoTime(21))
+	monitor.SetLatestTime(protoTime(6))
 	cases := []struct {
-		name string
-		date time.Time
-		want bool
+		hour, minute int
+		want         bool
 	}{
-		{name: "before overnight start", date: time.Date(2026, time.August, 14, 20, 59, 0, 0, location), want: false},
-		{name: "overnight start inclusive", date: time.Date(2026, time.August, 14, 21, 0, 0, 0, location), want: true},
-		{name: "before midnight", date: time.Date(2026, time.August, 14, 23, 59, 0, 0, location), want: true},
-		{name: "Saturday after midnight", date: time.Date(2026, time.August, 15, 1, 0, 0, 0, location), want: true},
-		{name: "overnight end exclusive", date: time.Date(2026, time.August, 15, 6, 0, 0, 0, location), want: false},
+		{20, 59, false}, {21, 0, true}, {23, 59, true}, {1, 0, true}, {6, 0, false},
 	}
 	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			if got := job.MatchesTimeWindow(test.date, location); got != test.want {
-				t.Fatalf("MatchesTimeWindow() = %t, want %t", got, test.want)
-			}
-		})
+		start := time.Date(2026, time.August, 15, test.hour, test.minute, 0, 0, location)
+		if got := monitorMatchesTimeWindow(monitor, start, location); got != test.want {
+			t.Fatalf("monitorMatchesTimeWindow(%s) = %t, want %t", start, got, test.want)
+		}
 	}
-
-	normal := MonitorJob{EarliestTime: "18:00", LatestTime: "21:00"}
-	if !normal.MatchesTimeWindow(time.Date(2026, time.August, 15, 18, 0, 0, 0, location), location) ||
-		normal.MatchesTimeWindow(time.Date(2026, time.August, 15, 21, 0, 0, 0, location), location) {
-		t.Fatal("MatchesTimeWindow() did not apply a normal half-open interval")
+	monitor.SetEarliestTime(nil)
+	monitor.SetLatestTime(protoTime(6))
+	if !monitorMatchesTimeWindow(monitor, time.Date(2026, 8, 15, 5, 59, 0, 0, location), location) {
+		t.Fatal("latest-only window rejected a time before its end")
 	}
-	if !(MonitorJob{}).MatchesTimeWindow(time.Date(2026, time.August, 15, 1, 0, 0, 0, location), location) {
-		t.Fatal("MatchesTimeWindow() rejected an unrestricted window")
-	}
-
-	edges := []struct {
-		name     string
-		job      MonitorJob
-		start    time.Time
-		location *time.Location
-		want     bool
-	}{
-		{
-			name:     "zero start",
-			job:      MonitorJob{EarliestTime: "18:00"},
-			start:    time.Time{},
-			location: location,
-		},
-		{
-			name:  "missing location",
-			job:   MonitorJob{EarliestTime: "18:00"},
-			start: time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
-			want:  false,
-		},
-		{
-			name:     "invalid clock",
-			job:      MonitorJob{EarliestTime: "not-a-time"},
-			start:    time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
-			location: location,
-			want:     false,
-		},
-		{
-			name:     "equal bounds",
-			job:      MonitorJob{EarliestTime: "18:00", LatestTime: "18:00"},
-			start:    time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
-			location: location,
-			want:     false,
-		},
-		{
-			name:     "latest-only before end",
-			job:      MonitorJob{LatestTime: "06:00"},
-			start:    time.Date(2026, time.August, 15, 5, 59, 0, 0, location),
-			location: location,
-			want:     true,
-		},
-		{
-			name:     "latest-only end exclusive",
-			job:      MonitorJob{LatestTime: "06:00"},
-			start:    time.Date(2026, time.August, 15, 6, 0, 0, 0, location),
-			location: location,
-			want:     false,
-		},
-		{
-			name:     "earliest-only start inclusive",
-			job:      MonitorJob{EarliestTime: "18:00"},
-			start:    time.Date(2026, time.August, 15, 18, 0, 0, 0, location),
-			location: location,
-			want:     true,
-		},
-		{
-			name:     "earliest-only before start",
-			job:      MonitorJob{EarliestTime: "18:00"},
-			start:    time.Date(2026, time.August, 15, 17, 59, 0, 0, location),
-			location: location,
-			want:     false,
-		},
-	}
-	for _, test := range edges {
-		t.Run(test.name, func(t *testing.T) {
-			if got := test.job.MatchesTimeWindow(test.start, test.location); got != test.want {
-				t.Fatalf("MatchesTimeWindow() = %t, want %t", got, test.want)
-			}
-		})
+	monitor.SetLatestTime(nil)
+	if !monitorMatchesTimeWindow(monitor, time.Date(2026, 8, 15, 12, 0, 0, 0, location), location) {
+		t.Fatal("unrestricted window rejected a time")
 	}
 }
 
-func TestMonitorJobMatchesScheduleUsesLocalCalendarDate(t *testing.T) {
+func TestMonitorScheduleUsesLocalCalendarDate(t *testing.T) {
 	t.Parallel()
-
 	location, err := time.LoadLocation("Asia/Seoul")
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, location)
-	job := MonitorJob{
-		TargetWeekdays:    []int{int(time.Saturday)},
-		SearchHorizonDays: 2,
-		EarliestTime:      "00:00",
-		LatestTime:        "06:00",
+	monitor := validMonitorProto()
+	monitor.SetTargetDates(nil)
+	monitor.SetTargetWeekdays([]int32{int32(time.Saturday)})
+	monitor.SetSearchHorizonDays(2)
+	monitor.SetEarliestTime(protoTime(0))
+	monitor.SetLatestTime(protoTime(6))
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, location)
+	saturday := time.Date(2026, 8, 15, 1, 0, 0, 0, location)
+	if !MonitorMatchesSchedule(monitor, "2026-08-15", saturday, now, location) {
+		t.Fatal("MonitorMatchesSchedule() rejected Saturday 01:00")
 	}
-	saturday := time.Date(2026, time.August, 15, 1, 0, 0, 0, location)
-	if !job.MatchesSchedule("2026-08-15", saturday, now, location) {
-		t.Fatal("MatchesSchedule() rejected Saturday 01:00")
-	}
-	if job.MatchesSchedule("2026-08-14", saturday, now, location) {
-		t.Fatal("MatchesSchedule() attributed Saturday 01:00 to Friday")
-	}
-}
-
-func TestMonitorJobValidateAcceptsWeekdaySchedule(t *testing.T) {
-	t.Parallel()
-
-	job := MonitorJob{
-		ID: "m1", UserID: "u1", PresetID: "p1", MovieID: "movie_1", Movie: "오디세이",
-		TargetWeekdays:    []int{int(time.Monday), int(time.Saturday)},
-		SearchHorizonDays: 28, PollInterval: 5 * time.Second,
-	}
-	if err := job.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-
-	job.TargetWeekdays = []int{int(time.Monday), int(time.Monday)}
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted a duplicate weekday")
-	}
-	job.TargetWeekdays = []int{7}
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted an out-of-range weekday")
-	}
-	job.TargetWeekdays = []int{int(time.Monday)}
-	job.SearchHorizonDays = 0
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted an empty weekday search horizon")
+	if MonitorMatchesSchedule(monitor, "2026-08-14", saturday, now, location) {
+		t.Fatal("MonitorMatchesSchedule() attributed Saturday 01:00 to Friday")
 	}
 }
 
-func TestMonitorJobResolveTargetDatesUsesRollingWeekdayWindow(t *testing.T) {
+func TestMonitorTargetDatesAndExpiry(t *testing.T) {
 	t.Parallel()
-
-	job := MonitorJob{
-		TargetDates:       []string{"2026-08-20"},
-		TargetWeekdays:    []int{int(time.Monday), int(time.Saturday)},
-		SearchHorizonDays: 7,
-	}
-	now := time.Date(2026, time.August, 9, 18, 30, 0, 0, time.FixedZone("KST", 9*60*60))
+	monitor := validMonitorProto()
+	monitor.SetTargetDates([]*commonpb.LocalDate{protoDate(8, 20)})
+	monitor.SetTargetWeekdays([]int32{int32(time.Monday), int32(time.Saturday)})
+	monitor.SetSearchHorizonDays(7)
+	now := time.Date(2026, 8, 9, 18, 30, 0, 0, time.FixedZone("KST", 9*60*60))
 	want := []string{"2026-08-10", "2026-08-15", "2026-08-20"}
-
-	if got := job.ResolveTargetDates(now); !reflect.DeepEqual(got, want) {
-		t.Fatalf("ResolveTargetDates() = %v, want %v", got, want)
+	if got := MonitorTargetDates(monitor, now); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MonitorTargetDates() = %v, want %v", got, want)
 	}
-}
-
-func TestMonitorJobExpiredOnlyWhenAllExactDatesHavePassed(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, time.August, 9, 18, 30, 0, 0, time.FixedZone("KST", 9*60*60))
-	job := MonitorJob{TargetDates: []string{"2026-08-08", "2026-08-09"}}
-	if job.Expired(now) {
-		t.Fatal("Expired() treated today's target as expired")
-	}
-	job.TargetDates = []string{"2026-08-07", "2026-08-08"}
-	if !job.Expired(now) {
-		t.Fatal("Expired() did not reject dates before today")
-	}
-	job.TargetWeekdays = []int{int(time.Monday)}
-	if job.Expired(now) {
-		t.Fatal("Expired() treated a rolling weekday schedule as expired")
+	monitor.SetTargetWeekdays(nil)
+	monitor.SetTargetDates([]*commonpb.LocalDate{protoDate(8, 7), protoDate(8, 8)})
+	if !MonitorExpired(monitor, now) {
+		t.Fatal("MonitorExpired() did not reject dates before today")
 	}
 }
 
 func TestCancellationMonitorRequiresExactDates(t *testing.T) {
 	t.Parallel()
-
-	job := MonitorJob{
-		ID: "m1", UserID: "u1", PresetID: "p1", Mode: MonitorModeCancellation,
-		MovieID: "movie_1",
-		Movie:   "오디세이", TargetWeekdays: []int{int(time.Saturday)},
-		SearchHorizonDays: 28, PollInterval: 5 * time.Second,
-	}
-	if err := job.Validate(); err == nil {
-		t.Fatal("Validate() accepted recurring weekdays for a cancellation-seat monitor")
+	monitor := validMonitorProto()
+	mode := &clientpb.MonitorMode{}
+	mode.SetCancellation(&clientpb.CancellationMonitor{})
+	monitor.SetMode(mode)
+	monitor.SetTargetDates(nil)
+	monitor.SetTargetWeekdays([]int32{int32(time.Saturday)})
+	monitor.SetSearchHorizonDays(28)
+	if err := ValidateMonitor(monitor); err == nil {
+		t.Fatal("ValidateMonitor() accepted recurring weekdays for cancellation monitoring")
 	}
 }

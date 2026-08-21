@@ -18,6 +18,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "2.14.0",
+    "@cineko/contracts": "git+https://github.com/cineko-org/contracts.git#3ce1fdcc56411c0fcc03e59030ae0f449bcc959f",
     "@mantine/core": "9.5.1",
     "@tabler/icons-react": "3.46.0",
     "react": "19.2.8",
@@ -32,8 +34,8 @@
     "jsdom": "30.0.1",
     "oxlint": "1.79.0",
     "pretendard": "1.3.9",
-    "typescript": "7.0.2",
     "storybook": "10.5.10",
+    "typescript": "7.0.2",
     "vite": "8.2.2",
     "vitest": "4.1.11"
   }

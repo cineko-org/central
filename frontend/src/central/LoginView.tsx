@@ -1,9 +1,13 @@
 import { type FormEvent, useState } from 'react';
-import { loadJSON } from './api';
-import type { AdminSession } from './types';
+import {
+  LoginRequestSchema,
+  LoginResponseSchema,
+  type Principal,
+} from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { loadProto, protoBody } from './api';
 import { LoginPageView } from './ui/LoginPageView';
 
-export function LoginView({ onLogin }: { onLogin: (session: AdminSession) => void }) {
+export function LoginView({ onLogin }: { onLogin: (session: Principal) => void }) {
   const [userId, setUserId] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -14,9 +18,11 @@ export function LoginView({ onLogin }: { onLogin: (session: AdminSession) => voi
     setLoading(true);
     setFailed(false);
     try {
-      onLogin(await loadJSON<AdminSession>('/v1/admin/login', {
-        method: 'POST', body: JSON.stringify({ userId, password }),
-      }));
+      const response = await loadProto(LoginResponseSchema, '/v1/admin/login', {
+        method: 'POST', body: protoBody(LoginRequestSchema, { userId, password }),
+      });
+      if (!response.principal) throw new Error('missing admin principal');
+      onLogin(response.principal);
     } catch {
       setFailed(true);
     } finally {

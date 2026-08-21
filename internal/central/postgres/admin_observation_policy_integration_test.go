@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	centralapi "github.com/cineko-org/central/internal/central/api"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 )
 
 // TestPostgresUpdatesObservationPolicy exercises the production UPDATE
@@ -59,24 +59,32 @@ func TestPostgresUpdatesObservationPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	input := centralapi.AdminObservationPolicyInput{
-		TheaterID: theaterID, Enabled: true, HorizonDays: 14, Priority: 50,
-		BaselineMinSeconds: 300, BaselineMaxSeconds: 900,
-		DemandMinSeconds: 30, DemandMaxSeconds: 45,
-		BurstMinSeconds: 15, BurstMaxSeconds: 30, BurstDurationSeconds: 1800,
-		Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: "scan_default",
-	}
+	input := &adminpb.ObservationPolicyInput{}
+	input.SetTheaterId(theaterID)
+	input.SetEnabled(true)
+	input.SetHorizonDays(14)
+	input.SetPriority(50)
+	input.SetBaselineMinSeconds(300)
+	input.SetBaselineMaxSeconds(900)
+	input.SetDemandMinSeconds(30)
+	input.SetDemandMaxSeconds(45)
+	input.SetBurstMinSeconds(15)
+	input.SetBurstMaxSeconds(30)
+	input.SetBurstDurationSeconds(1800)
+	input.SetLocale("ko-KR")
+	input.SetTimeZone("Asia/Seoul")
+	input.SetEgressPolicyId("scan_default")
 	created, err := store.CreateAdminObservationPolicy(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	input.HorizonDays = 7
-	updated, err := store.UpdateAdminObservationPolicy(ctx, created.ID, created.Revision, input)
+	input.SetHorizonDays(7)
+	updated, err := store.UpdateAdminObservationPolicy(ctx, created.GetId(), created.GetRevision(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.HorizonDays != 7 || updated.Revision != created.Revision+1 {
+	if updated.GetInput().GetHorizonDays() != 7 || updated.GetRevision() != created.GetRevision()+1 {
 		t.Fatalf("updated policy = %+v", updated)
 	}
 }

@@ -1,15 +1,17 @@
 import { Alert, Anchor, Badge, Button, Divider, Group, SimpleGrid, Skeleton, Stack, Table, Text } from '@mantine/core';
-import type { AdminReleases, BrowserRelease, ClientRelease, LauncherRelease, PlaywrightRelease, ProbeRelease, ReleaseArtifact } from '../types';
+import type { Timestamp } from '@bufbuild/protobuf/wkt';
+import type { Artifact, BrowserRelease, ClientRelease, LauncherRelease, PlaywrightRelease, ProbeRelease, Registry } from '@cineko/contracts/gen/ts/cineko/release/release_pb';
 import { PageHeader } from './PageHeader';
+import { timestampDate } from './protoPresentation';
 
 export interface ReleasesPageViewProps {
-  releases?: AdminReleases;
+  releases?: Registry;
   failed: boolean;
   onRefresh: () => void;
 }
 
 type ComponentRelease = LauncherRelease | ClientRelease | BrowserRelease | PlaywrightRelease | ProbeRelease;
-type ComponentKey = keyof AdminReleases['components'];
+type ComponentKey = 'launcher' | 'client' | 'browser' | 'playwright' | 'probe';
 
 const componentLabels: Record<ComponentKey, string> = {
   launcher: 'Launcher',
@@ -24,27 +26,38 @@ export function releaseVersion(release: ComponentRelease): string {
 }
 
 function releaseTarget(release: ComponentRelease): string {
-  return 'platform' in release ? `${release.platform}/${release.arch}` : 'multi-arch';
+  return 'platform' in release ? `${release.platform}/${release.architecture}` : 'multi-arch';
 }
 
-function releaseArtifact(release: ComponentRelease): ReleaseArtifact | undefined {
+function releaseArtifact(release: ComponentRelease): Artifact | undefined {
   if ('artifact' in release) return release.artifact;
   if ('launcher' in release) return release.launcher;
   return undefined;
 }
 
-function totalRecords(releases: AdminReleases): number {
-  return Object.values(releases.components).reduce((total, items) => total + items.length, 0);
+function releaseEntries(releases: Registry): [ComponentKey, ComponentRelease[]][] {
+  return [
+    ['launcher', releases.launchers?.releases ?? []],
+    ['client', releases.clients?.releases ?? []],
+    ['browser', releases.browsers?.releases ?? []],
+    ['playwright', releases.playwright?.releases ?? []],
+    ['probe', releases.probes?.releases ?? []],
+  ];
 }
 
-function publishedAt(value: string): string {
-  return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+function totalRecords(releases: Registry): number {
+  return releaseEntries(releases).reduce((total, [, items]) => total + items.length, 0);
 }
 
-function bytes(value: number): string {
-  if (value < 1_024) return `${value} B`;
+function publishedAt(value?: Timestamp): string {
+  const date = timestampDate(value);
+  return date ? new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(date) : '게시 시각 없음';
+}
+
+function bytes(value: bigint): string {
+  if (value < 1_024n) return `${value} B`;
   const units = ['KB', 'MB', 'GB'];
-  let size = value / 1_024;
+  let size = Number(value) / 1_024;
   let unit = units[0];
   for (let index = 1; index < units.length && size >= 1_024; index += 1) {
     size /= 1_024;
@@ -53,7 +66,7 @@ function bytes(value: number): string {
   return `${size.toFixed(size >= 10 ? 0 : 1)} ${unit}`;
 }
 
-function Artifact({ release }: { release: ComponentRelease }) {
+function ArtifactView({ release }: { release: ComponentRelease }) {
   const artifact = releaseArtifact(release);
   if (!artifact && 'image' in release) {
     return (
@@ -98,7 +111,7 @@ function ComponentSection({ name, releases }: { name: string; releases: Componen
                   <Table.Td><Badge variant="outline" color="gray">{release.channel}</Badge></Table.Td>
                   <Table.Td><Text ff="monospace" size="sm">{releaseTarget(release)}</Text></Table.Td>
                   <Table.Td><Text size="sm" c="dimmed">{publishedAt(release.publishedAt)}</Text></Table.Td>
-                  <Table.Td><Artifact release={release} /></Table.Td>
+                  <Table.Td><ArtifactView release={release} /></Table.Td>
                 </Table.Tr>
               ))}
             </Table.Tbody>
@@ -114,7 +127,7 @@ export function ReleasesPageView({ releases, failed, onRefresh }: ReleasesPageVi
   if (!releases && !failed) return <Stack gap="md"><PageHeader title="릴리스" /><Skeleton h={72} /><Skeleton h={320} /></Stack>;
   if (!releases) return <Stack gap="xl"><PageHeader title="릴리스" /><Alert color="red" title="릴리스 레지스트리를 불러오지 못했습니다"><Button variant="subtle" color="red" p={0} mt="xs" onClick={onRefresh}>다시 시도</Button></Alert></Stack>;
   const total = totalRecords(releases);
-  const entries = Object.entries(releases.components) as [ComponentKey, ComponentRelease[]][];
+  const entries = releaseEntries(releases);
   return (
     <Stack gap={40}>
       <PageHeader

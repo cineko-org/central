@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -19,8 +18,19 @@ import (
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/bootstrap"
 	"github.com/cineko-org/central/internal/central/reconcile"
-	"github.com/cineko-org/central/internal/domain"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	"github.com/cineko-org/central/internal/support/numeric"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestPostgresClientPlaneLifecycle(t *testing.T) {
@@ -63,94 +73,33 @@ func TestPostgresClientPlaneLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release := central.ClientRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "1.0.0",
-		MinimumLauncherVersion: "1.0.0", MinimumBrowserRevision: "1234",
-		PlaywrightVersion: "1.61.1", Protocol: central.ProtocolVersion,
-		Artifact: central.ReleaseArtifact{
-			URL: "https://download.example/client.zip", Size: 1,
-			SHA256:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			Executable: "Cineko.app/Contents/MacOS/Cineko",
-		},
-		ProbeBootstrapPublicKeys: map[string]string{
-			"primary": "-----BEGIN PUBLIC KEY-----\nplaceholder\n-----END PUBLIC KEY-----\n",
-		},
-		PublishedAt: time.Now().UTC(),
+	publishedAt := time.Now().UTC()
+	release := integrationClientRelease(publishedAt, "darwin", "arm64", "https://download.example/client.zip", "Cineko.app/Contents/MacOS/Cineko")
+	browserRelease := integrationBrowserRelease(publishedAt, "darwin", "arm64", "https://download.example/browser.zip", "chromium/Chromium")
+	playwrightRelease := integrationPlaywrightRelease(publishedAt, "darwin", "arm64", "https://download.example/driver.zip", "driver/playwright")
+	launcherRelease := integrationLauncherRelease(publishedAt, "darwin", "arm64", "https://download.example/launcher.zip", "cineko-launcher")
+	clientReleases := []*releasepb.ClientRelease{release,
+		integrationClientRelease(publishedAt, "linux", "amd64", "https://download.example/linux/client.zip", "cineko-client"),
+		integrationClientRelease(publishedAt, "windows", "amd64", "https://download.example/windows/client.zip", "cineko-client.exe"),
 	}
-	browserRelease := central.BrowserRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Revision: "1234",
-		CompatiblePlaywrightVersions: []string{"1.61.1"},
-		Artifact: central.ReleaseArtifact{
-			URL: "https://download.example/browser.zip", Size: 1,
-			SHA256:     "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			Executable: "chromium/Chromium",
-		},
-		PublishedAt: time.Now().UTC(),
+	browserReleases := []*releasepb.BrowserRelease{browserRelease,
+		integrationBrowserRelease(publishedAt, "linux", "amd64", "https://download.example/linux/browser.zip", "cineko-browser"),
+		integrationBrowserRelease(publishedAt, "windows", "amd64", "https://download.example/windows/browser.zip", "cineko-browser.exe"),
 	}
-	playwrightRelease := central.PlaywrightRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "1.61.1",
-		Artifact: central.ReleaseArtifact{
-			URL: "https://download.example/driver.zip", Size: 1,
-			SHA256:     "2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			Executable: "driver/playwright",
-		},
-		PublishedAt: time.Now().UTC(),
+	playwrightReleases := []*releasepb.PlaywrightRelease{playwrightRelease,
+		integrationPlaywrightRelease(publishedAt, "linux", "amd64", "https://download.example/linux/driver.zip", "driver/playwright"),
+		integrationPlaywrightRelease(publishedAt, "windows", "amd64", "https://download.example/windows/driver.zip", "driver/playwright.exe"),
 	}
-	launcherRelease := central.LauncherRelease{
-		Channel: "stable", Platform: "darwin", Arch: "arm64", Version: "1.0.0",
-		Protocol: central.ProtocolVersion,
-		Launcher: central.ReleaseArtifact{
-			URL: "https://download.example/launcher.zip", Size: 1,
-			SHA256: strings.Repeat("3", 64), Executable: "cineko-launcher",
-		},
-		PublishedAt: time.Now().UTC(),
-	}
-	clientReleases := make([]central.ClientRelease, 1, 3)
-	clientReleases[0] = release
-	browserReleases := make([]central.BrowserRelease, 1, 3)
-	browserReleases[0] = browserRelease
-	playwrightReleases := make([]central.PlaywrightRelease, 1, 3)
-	playwrightReleases[0] = playwrightRelease
-	launcherReleases := make([]central.LauncherRelease, 1, 3)
-	launcherReleases[0] = launcherRelease
-	for _, target := range []struct {
-		platform     string
-		architecture string
-		executable   string
-	}{
-		{platform: "linux", architecture: "amd64", executable: "cineko-client"},
-		{platform: "windows", architecture: "amd64", executable: "cineko-client.exe"},
-	} {
-		clientTarget := release
-		clientTarget.Platform, clientTarget.Arch = target.platform, target.architecture
-		clientTarget.Artifact.URL = "https://download.example/" + target.platform + "/client.zip"
-		clientTarget.Artifact.Executable = target.executable
-		clientReleases = append(clientReleases, clientTarget)
-
-		browserTarget := browserRelease
-		browserTarget.Platform, browserTarget.Arch = target.platform, target.architecture
-		browserTarget.Artifact.URL = "https://download.example/" + target.platform + "/browser.zip"
-		browserTarget.Artifact.Executable = target.executable
-		browserReleases = append(browserReleases, browserTarget)
-
-		playwrightTarget := playwrightRelease
-		playwrightTarget.Platform, playwrightTarget.Arch = target.platform, target.architecture
-		playwrightTarget.Artifact.URL = "https://download.example/" + target.platform + "/driver.zip"
-		playwrightTarget.Artifact.Executable = target.executable
-		playwrightReleases = append(playwrightReleases, playwrightTarget)
-
-		launcherTarget := launcherRelease
-		launcherTarget.Platform, launcherTarget.Arch = target.platform, target.architecture
-		launcherTarget.Launcher.URL = "https://download.example/" + target.platform + "/launcher.zip"
-		launcherTarget.Launcher.Executable = target.executable
-		launcherReleases = append(launcherReleases, launcherTarget)
+	launcherReleases := []*releasepb.LauncherRelease{launcherRelease,
+		integrationLauncherRelease(publishedAt, "linux", "amd64", "https://download.example/linux/launcher.zip", "cineko-launcher"),
+		integrationLauncherRelease(publishedAt, "windows", "amd64", "https://download.example/windows/launcher.zip", "cineko-launcher.exe"),
 	}
 	if err := service.BootstrapReleaseRegistry(
 		ctx,
-		clientReleases,
-		browserReleases,
-		playwrightReleases,
-		launcherReleases,
+		releaseSetClients(clientReleases),
+		releaseSetBrowsers(browserReleases),
+		releaseSetPlaywright(playwrightReleases),
+		releaseSetLaunchers(launcherReleases),
 		nil,
 	); err != nil {
 		t.Fatal(err)
@@ -160,117 +109,121 @@ func TestPostgresClientPlaneLifecycle(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := service.Exchange(ctx, central.AuthExchangeRequest{UserID: userID, AccessToken: accessToken})
+	exchange := &clientpb.TokenExchangeRequest{}
+	exchange.SetUserId(userID)
+	exchange.SetAccessToken(accessToken)
+	auth, err := service.Exchange(ctx, exchange)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := service.Authenticate(ctx, auth.AccessToken)
+	principal, err := service.Authenticate(ctx, auth.GetAccessToken())
 	if err != nil || principal.UserID != userID {
 		t.Fatalf("authenticated client = %+v, %v", principal, err)
 	}
-	refreshed, err := service.Refresh(ctx, central.AuthRefreshRequest{RefreshToken: auth.RefreshToken})
-	if err != nil || refreshed.User.ID != userID || refreshed.AccessToken == auth.AccessToken ||
-		refreshed.RefreshToken == auth.RefreshToken {
+	refresh := &clientpb.TokenRefreshRequest{}
+	refresh.SetRefreshToken(auth.GetRefreshToken())
+	refreshed, err := service.Refresh(ctx, refresh)
+	if err != nil || refreshed.GetUser().GetId() != userID || refreshed.GetAccessToken() == auth.GetAccessToken() ||
+		refreshed.GetRefreshToken() == auth.GetRefreshToken() {
 		t.Fatalf("refreshed client session = %+v, %v", refreshed, err)
 	}
-	if _, err := service.Authenticate(ctx, auth.AccessToken); !errors.Is(err, central.ErrUnauthorized) {
+	if _, err := service.Authenticate(ctx, auth.GetAccessToken()); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("revoked access token error = %v", err)
 	}
-	if _, err := service.Refresh(ctx, central.AuthRefreshRequest{RefreshToken: auth.RefreshToken}); !errors.Is(err, central.ErrUnauthorized) {
+	refreshReplay := &clientpb.TokenRefreshRequest{}
+	refreshReplay.SetRefreshToken(auth.GetRefreshToken())
+	if _, err := service.Refresh(ctx, refreshReplay); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("replayed refresh token error = %v", err)
 	}
-	principal, err = service.Authenticate(ctx, refreshed.AccessToken)
+	principal, err = service.Authenticate(ctx, refreshed.GetAccessToken())
 	if err != nil || principal.UserID != userID {
 		t.Fatalf("authenticated refreshed client = %+v, %v", principal, err)
 	}
-	device, err := service.UpsertDevice(ctx, principal, central.ClientDevice{
-		InstallationID: installationID, DeviceID: "device_integration", Platform: "darwin",
-		Arch: "arm64", AppVersion: "1.0.0",
-	})
-	if err != nil || device.UserID != userID {
+	deviceRequest := &clientpb.Device{}
+	deviceRequest.SetInstallationId(installationID)
+	deviceRequest.SetDeviceId("device_integration")
+	deviceRequest.SetPlatform("darwin")
+	deviceRequest.SetArchitecture("arm64")
+	deviceRequest.SetAppVersion("1.0.0")
+	device, err := service.UpsertDevice(ctx, principal, deviceRequest)
+	if err != nil || device.GetUserId() != userID {
 		t.Fatalf("client device = %+v, %v", device, err)
 	}
-	launch, err := service.IssueLaunchTicket(ctx, principal, central.LaunchTicketRequest{
-		InstallationID: installationID, DeviceID: device.DeviceID,
-		ReleaseGeneration: service.ReleaseGeneration(), ClientVersion: release.Version,
-		ArtifactSHA256: release.Artifact.SHA256, Protocol: release.Protocol,
-		BrowserRevision: browserRelease.Revision, BrowserArtifactSHA256: browserRelease.Artifact.SHA256,
-		PlaywrightVersion:        playwrightRelease.Version,
-		PlaywrightArtifactSHA256: playwrightRelease.Artifact.SHA256, Nonce: "launcher_nonce_integration",
-	})
-	if err != nil || launch.LaunchTicket == "" {
+	launchContext := &clientpb.LaunchContext{}
+	launchContext.SetInstallationId(installationID)
+	launchContext.SetDeviceId(device.GetDeviceId())
+	launchContext.SetReleaseGeneration(service.ReleaseGeneration())
+	launchContext.SetClientVersion(release.GetVersion())
+	launchContext.SetArtifactSha256(release.GetArtifact().GetSha256())
+	launchContext.SetBrowserRevision(browserRelease.GetRevision())
+	launchContext.SetBrowserArtifactSha256(browserRelease.GetArtifact().GetSha256())
+	launchContext.SetPlaywrightVersion(playwrightRelease.GetVersion())
+	launchContext.SetPlaywrightArtifactSha256(playwrightRelease.GetArtifact().GetSha256())
+	launchRequest := &clientpb.LaunchTicketRequest{}
+	launchRequest.SetContext(launchContext)
+	launchRequest.SetNonce("launcher_nonce_integration")
+	launch, err := service.IssueLaunchTicket(ctx, principal, launchRequest)
+	if err != nil || launch.GetLaunchTicket() == "" {
 		t.Fatalf("launch ticket = %+v, %v", launch, err)
 	}
-	launched, err := service.ExchangeLaunchTicket(ctx, central.ClientSessionExchangeRequest{
-		LaunchTicket: launch.LaunchTicket, ClientNonce: "client_nonce_integration",
-	})
-	if err != nil || launched.User.ID != userID {
+	launchExchange := &clientpb.SessionExchangeRequest{}
+	launchExchange.SetLaunchTicket(launch.GetLaunchTicket())
+	launchExchange.SetClientNonce("client_nonce_integration")
+	launched, err := service.ExchangeLaunchTicket(ctx, launchExchange)
+	if err != nil || launched.GetUser().GetId() != userID {
 		t.Fatalf("launched client session = %+v, %v", launched, err)
 	}
-	if _, err := service.ExchangeLaunchTicket(ctx, central.ClientSessionExchangeRequest{
-		LaunchTicket: launch.LaunchTicket, ClientNonce: "client_nonce_replay",
-	}); !errors.Is(err, central.ErrUnauthorized) {
+	launchReplay := &clientpb.SessionExchangeRequest{}
+	launchReplay.SetLaunchTicket(launch.GetLaunchTicket())
+	launchReplay.SetClientNonce("client_nonce_replay")
+	if _, err := service.ExchangeLaunchTicket(ctx, launchReplay); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("replayed launch ticket error = %v", err)
 	}
 	clientBootstrap, err := service.Bootstrap(ctx, principal, installationID)
-	if err != nil || clientBootstrap.Device == nil || clientBootstrap.User.ID != userID {
+	if err != nil || clientBootstrap.GetDevice() == nil || clientBootstrap.GetUser().GetId() != userID {
 		t.Fatalf("client bootstrap = %+v, %v", clientBootstrap, err)
 	}
 
-	presetPayload := json.RawMessage(`{"id":"preset_integration","userId":"` + userID + `","name":"IMAX","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}`)
-	created, err := service.PutResource(
-		ctx, principal, "presets", "preset_integration", presetPayload, nil, "create_preset",
-	)
-	if err != nil || created.Revision != 1 {
+	presetResource := storeIntegrationPresetResource("IMAX")
+	created, err := service.PutResource(ctx, principal, "presets", "preset_integration", presetResource, nil, "create_preset")
+	if err != nil || created.GetIdentity().GetRevision() != 1 {
 		t.Fatalf("create client resource = %+v, %v", created, err)
 	}
-	replayed, err := service.PutResource(
-		ctx, principal, "presets", "preset_integration", json.RawMessage(`{"id":"preset_integration","userId":"`+userID+`","name":"Ignored","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}`), nil, "create_preset",
-	)
-	var replayedData struct {
-		Name string `json:"name"`
-	}
-	decodeErr := json.Unmarshal(replayed.Data, &replayedData)
-	if err != nil || decodeErr != nil || replayed.Revision != created.Revision || replayedData.Name != "IMAX" {
+	replayedResource := storeIntegrationPresetResource("Ignored")
+	replayed, err := service.PutResource(ctx, principal, "presets", "preset_integration", replayedResource, nil, "create_preset")
+	if err != nil || replayed.GetIdentity().GetRevision() != created.GetIdentity().GetRevision() || replayed.GetPreset().GetName() != "IMAX" {
 		t.Fatalf("replay client resource = %+v, %v", replayed, err)
 	}
-	if _, err := service.PutResource(
-		ctx, principal, "monitors", "other", json.RawMessage(`{"id":"other","userId":"`+userID+`","presetId":"preset_integration","movieId":"movie_1","movie":"Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}`), nil, "create_preset",
-	); !errors.Is(err, central.ErrIdempotencyConflict) {
+	if _, err := service.PutResource(ctx, principal, "monitors", "other", storeIntegrationMonitorResource(userID, "other", "preset_integration", "movie_1"), nil, "create_preset"); !errors.Is(err, central.ErrIdempotencyConflict) {
 		t.Fatalf("reused client command error = %v", err)
 	}
-	revision := created.Revision
-	updated, err := service.PutResource(
-		ctx, principal, "presets", created.ID, json.RawMessage(`{"id":"preset_integration","userId":"`+userID+`","name":"IMAX center","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}`), &revision, "update_preset",
-	)
-	if err != nil || updated.Revision != 2 {
+	revision := created.GetIdentity().GetRevision()
+	updatedResource := storeIntegrationPresetResource("IMAX center")
+	updated, err := service.PutResource(ctx, principal, "presets", created.GetIdentity().GetId(), updatedResource, &revision, "update_preset")
+	if err != nil || updated.GetIdentity().GetRevision() != 2 {
 		t.Fatalf("update client resource = %+v, %v", updated, err)
 	}
-	if _, err := service.PutResource(
-		ctx, principal, "presets", created.ID, json.RawMessage(`{"id":"preset_integration","userId":"`+userID+`","name":"Stale","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}`), &revision, "stale_update",
-	); !errors.Is(err, central.ErrRevisionConflict) {
+	if _, err := service.PutResource(ctx, principal, "presets", created.GetIdentity().GetId(), storeIntegrationPresetResource("Stale"), &revision, "stale_update"); !errors.Is(err, central.ErrRevisionConflict) {
 		t.Fatalf("stale client revision error = %v", err)
 	}
 	resources, err := service.ListResources(ctx, principal, "presets")
-	if err != nil || len(resources) != 1 || resources[0].Revision != 2 {
+	if err != nil || len(resources) != 1 || resources[0].GetIdentity().GetRevision() != 2 {
 		t.Fatalf("list client resources = %+v, %v", resources, err)
 	}
 	events, err := service.Events(ctx, principal, 0, 10)
-	if err != nil || len(events) != 2 || events[0].Sequence >= events[1].Sequence {
+	if err != nil || len(events) != 2 || events[0].GetSequence() >= events[1].GetSequence() {
 		t.Fatalf("client events = %+v, %v", events, err)
 	}
 	concurrentCreateErrors := make(chan error, 2)
 	var concurrentCreates sync.WaitGroup
-	for index, payload := range []string{`{"source":"a"}`, `{"source":"b"}`} {
+	for index := range 2 {
 		concurrentCreates.Add(1)
-		go func(index int, payload string) {
+		go func(index int) {
 			defer concurrentCreates.Done()
-			_, createErr := service.PutResource(
-				ctx, principal, "settings", "settings", json.RawMessage(payload), nil,
-				fmt.Sprintf("create_concurrent_settings_%d", index),
-			)
+			settingsResource := storeIntegrationSettingsResource()
+			_, createErr := service.PutResource(ctx, principal, "settings", "settings", settingsResource, nil, fmt.Sprintf("create_concurrent_settings_%d", index))
 			concurrentCreateErrors <- createErr
-		}(index, payload)
+		}(index)
 	}
 	concurrentCreates.Wait()
 	close(concurrentCreateErrors)
@@ -288,15 +241,15 @@ func TestPostgresClientPlaneLifecycle(t *testing.T) {
 	if createdCount != 1 || conflictCount != 1 {
 		t.Fatalf("concurrent create results = created %d, conflicts %d", createdCount, conflictCount)
 	}
-	revision = updated.Revision
-	deleted, err := service.DeleteResource(ctx, principal, "presets", created.ID, &revision, "delete_preset")
-	if err != nil || deleted.Revision != 3 {
+	revision = updated.GetIdentity().GetRevision()
+	deleted, err := service.DeleteResource(ctx, principal, "presets", created.GetIdentity().GetId(), &revision, "delete_preset")
+	if err != nil || deleted.GetIdentity().GetRevision() != 3 {
 		t.Fatalf("delete client resource = %+v, %v", deleted, err)
 	}
-	if _, err := service.DeleteResource(ctx, principal, "presets", created.ID, &revision, "delete_preset"); err != nil {
+	if _, err := service.DeleteResource(ctx, principal, "presets", created.GetIdentity().GetId(), &revision, "delete_preset"); err != nil {
 		t.Fatalf("replay client resource deletion = %v", err)
 	}
-	if _, err := service.GetResource(ctx, principal, "presets", created.ID); !errors.Is(err, central.ErrNotFound) {
+	if _, err := service.GetResource(ctx, principal, "presets", created.GetIdentity().GetId()); !errors.Is(err, central.ErrNotFound) {
 		t.Fatalf("get deleted client resource error = %v", err)
 	}
 }
@@ -405,7 +358,7 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 			theater_region, theater_name, target_dates, locale, time_zone, egress_policy_id,
 			status, not_before, deadline, finished_at, created_at, updated_at
 		) VALUES (
-			$1, 'cgv.schedule.capture.v2', 'theater_admin_delete', 'cgv', 'admin-delete',
+			$1, 'cgv.schedule.capture', 'theater_admin_delete', 'cgv', 'admin-delete',
 			'서울', '관리 시험관', ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
 			'completed', $2, $3, $3, $2, $3
 		)
@@ -446,7 +399,7 @@ func TestPostgresAdminProbeDeletion(t *testing.T) {
 			status, not_before, deadline, probe_id, lease_token_hash, lease_expires_at,
 			created_at, updated_at
 		) VALUES (
-			$1, 'cgv.schedule.capture.v2', 'theater_admin_delete_leased', 'cgv', 'admin-delete-leased',
+			$1, 'cgv.schedule.capture', 'theater_admin_delete_leased', 'cgv', 'admin-delete-leased',
 			'서울', '관리 시험관', ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
 			'leased', $2, $3, $4, $5, $3, $2, $3
 		)
@@ -489,7 +442,7 @@ func TestPostgresClientPINLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = store.pool.Exec(context.Background(), `DELETE FROM client_users WHERE id = $1`, issue.User.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM client_users WHERE id = $1`, issue.GetUser().GetId())
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM client_pin_attempts`)
 	})
 	users, err := pinService.ListUsers(ctx)
@@ -498,34 +451,35 @@ func TestPostgresClientPINLifecycle(t *testing.T) {
 	}
 	found := false
 	for _, user := range users {
-		found = found || user.User.ID == issue.User.ID && user.PINActive
+		found = found || user.GetUser().GetId() == issue.GetUser().GetId() && user.GetPinActive()
 	}
 	if !found {
 		t.Fatalf("created PIN user missing from %+v", users)
 	}
-	request := central.ClientPINExchangeRequest{
-		PIN: issue.PIN, InstallationID: "install_pin_integration", DeviceID: "device_pin_integration",
-	}
+	request := &clientpb.PinExchangeRequest{}
+	request.SetPin(issue.GetPin())
+	request.SetInstallationId("install_pin_integration")
+	request.SetDeviceId("device_pin_integration")
 	auth, err := pinService.Exchange(ctx, request, "198.51.100.40")
-	if err != nil || auth.User.ID != issue.User.ID {
+	if err != nil || auth.GetUser().GetId() != issue.GetUser().GetId() {
 		t.Fatalf("PIN exchange = %+v, %v", auth, err)
 	}
-	principal, err := clientService.Authenticate(ctx, auth.AccessToken)
-	if err != nil || principal.UserID != issue.User.ID {
+	principal, err := clientService.Authenticate(ctx, auth.GetAccessToken())
+	if err != nil || principal.UserID != issue.GetUser().GetId() {
 		t.Fatalf("PIN session principal = %+v, %v", principal, err)
 	}
-	rotated, err := pinService.Rotate(ctx, issue.User.ID)
-	if err != nil || rotated.PIN == issue.PIN {
+	rotated, err := pinService.Rotate(ctx, issue.GetUser().GetId())
+	if err != nil || rotated.GetPin() == issue.GetPin() {
 		t.Fatalf("rotated PIN = %+v, %v", rotated, err)
 	}
 	if _, err := pinService.Exchange(ctx, request, "198.51.100.41"); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("old PIN exchange error = %v", err)
 	}
-	request.PIN = rotated.PIN
+	request.SetPin(rotated.GetPin())
 	if _, err := pinService.Exchange(ctx, request, "198.51.100.41"); err != nil {
 		t.Fatalf("rotated PIN exchange = %v", err)
 	}
-	request.PIN = "999999"
+	request.SetPin("999999")
 	for attempt := 1; attempt <= central.ClientPINFailureLimit; attempt++ {
 		_, err := pinService.Exchange(ctx, request, "198.51.100.42")
 		if attempt < central.ClientPINFailureLimit && !errors.Is(err, central.ErrUnauthorized) {
@@ -535,25 +489,25 @@ func TestPostgresClientPINLifecycle(t *testing.T) {
 			t.Fatalf("rate-limited PIN attempt = %v", err)
 		}
 	}
-	request.PIN = rotated.PIN
+	request.SetPin(rotated.GetPin())
 	if _, err := pinService.Exchange(ctx, request, "198.51.100.42"); !errors.Is(err, central.ErrRateLimited) {
 		t.Fatalf("blocked correct PIN exchange = %v", err)
 	}
-	request.InstallationID = "install_pin_persistent_source"
-	request.DeviceID = "device_pin_persistent_source"
-	request.PIN = "999999"
+	request.SetInstallationId("install_pin_persistent_source")
+	request.SetDeviceId("device_pin_persistent_source")
+	request.SetPin("999999")
 	for attempt := 1; attempt < central.ClientPINFailureLimit; attempt++ {
 		if _, err := pinService.Exchange(ctx, request, "198.51.100.43"); !errors.Is(err, central.ErrUnauthorized) {
 			t.Fatalf("persistent source failed PIN attempt %d = %v", attempt, err)
 		}
 	}
-	request.PIN = rotated.PIN
+	request.SetPin(rotated.GetPin())
 	if _, err := pinService.Exchange(ctx, request, "198.51.100.43"); err != nil {
 		t.Fatalf("valid PIN before source limit = %v", err)
 	}
-	request.InstallationID = "install_pin_rotated_device"
-	request.DeviceID = "device_pin_rotated_device"
-	request.PIN = "999999"
+	request.SetInstallationId("install_pin_rotated_device")
+	request.SetDeviceId("device_pin_rotated_device")
+	request.SetPin("999999")
 	if _, err := pinService.Exchange(ctx, request, "198.51.100.43"); !errors.Is(err, central.ErrRateLimited) {
 		t.Fatalf("device rotation reset source-wide PIN limit: %v", err)
 	}
@@ -561,29 +515,29 @@ func TestPostgresClientPINLifecycle(t *testing.T) {
 		INSERT INTO client_resources (
 			user_id, kind, id, revision, payload, created_at, updated_at
 		) VALUES ($1, 'monitors', 'monitor_delete_with_user', 1, '{}'::jsonb, now(), now())
-	`, issue.User.ID); err != nil {
+	`, issue.GetUser().GetId()); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinService.DeleteUser(ctx, issue.User.ID); err != nil {
+	if err := pinService.DeleteUser(ctx, issue.GetUser().GetId()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := clientService.Authenticate(ctx, auth.AccessToken); !errors.Is(err, central.ErrUnauthorized) {
+	if _, err := clientService.Authenticate(ctx, auth.GetAccessToken()); !errors.Is(err, central.ErrUnauthorized) {
 		t.Fatalf("deleted user session error = %v", err)
 	}
 	var userCount, monitorCount int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM client_users WHERE id = $1`, issue.User.ID).Scan(&userCount); err != nil {
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM client_users WHERE id = $1`, issue.GetUser().GetId()).Scan(&userCount); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.pool.QueryRow(ctx, `
 		SELECT count(*) FROM client_resources
 		WHERE user_id = $1 AND kind = 'monitors'
-	`, issue.User.ID).Scan(&monitorCount); err != nil {
+	`, issue.GetUser().GetId()).Scan(&monitorCount); err != nil {
 		t.Fatal(err)
 	}
 	if userCount != 0 || monitorCount != 0 {
 		t.Fatalf("deleted user data remains: users=%d monitors=%d", userCount, monitorCount)
 	}
-	if err := pinService.DeleteUser(ctx, issue.User.ID); !errors.Is(err, central.ErrNotFound) {
+	if err := pinService.DeleteUser(ctx, issue.GetUser().GetId()); !errors.Is(err, central.ErrNotFound) {
 		t.Fatalf("delete missing user = %v", err)
 	}
 }
@@ -631,80 +585,125 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := service.Exchange(ctx, central.AuthExchangeRequest{UserID: userID, AccessToken: accessToken})
+	exchange := &clientpb.TokenExchangeRequest{}
+	exchange.SetUserId(userID)
+	exchange.SetAccessToken(accessToken)
+	auth, err := service.Exchange(ctx, exchange)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := service.Authenticate(ctx, auth.AccessToken)
+	principal, err := service.Authenticate(ctx, auth.GetAccessToken())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, device := range []central.ClientDevice{
-		{InstallationID: "execution_install_a", DeviceID: "execution_device_a", Platform: "darwin", Arch: "arm64", AppVersion: "1.0.0"},
-		{InstallationID: "execution_install_b", DeviceID: "execution_device_b", Platform: "darwin", Arch: "arm64", AppVersion: "1.0.0"},
-	} {
+	for _, deviceValues := range [][2]string{{"execution_install_a", "execution_device_a"}, {"execution_install_b", "execution_device_b"}} {
+		device := &clientpb.Device{}
+		device.SetInstallationId(deviceValues[0])
+		device.SetDeviceId(deviceValues[1])
+		device.SetPlatform("darwin")
+		device.SetArchitecture("arm64")
+		device.SetAppVersion("1.0.0")
 		if _, err := service.UpsertDevice(ctx, principal, device); err != nil {
 			t.Fatal(err)
 		}
 	}
-	preset := domain.Preset{
-		ID: "execution_preset", UserID: userID, Name: "IMAX", TheaterID: "0013",
-		AuditoriumID: "imax", SeatCount: 2,
-	}
+	preset := &clientpb.Preset{}
+	preset.SetId("execution_preset")
+	preset.SetUserId(userID)
+	preset.SetName("IMAX")
+	preset.SetTheaterId("0013")
+	preset.SetAuditoriumId("imax")
+	preset.SetSeatCount(2)
+	preset.SetSeatPreference(&clientpb.SeatPreference{})
 	showtimeStart := time.Now().UTC().Add(2 * time.Hour)
 	targetDate := showtimeStart.In(time.FixedZone("KST", 9*60*60)).Format(time.DateOnly)
-	monitor := domain.MonitorJob{
-		ID: "execution_monitor", UserID: userID, PresetID: preset.ID,
-		Mode: domain.MonitorModeCancellation, MovieID: "movie_execution", Movie: "Execution Movie",
-		TargetDates: []string{targetDate}, EarliestTime: "00:00", LatestTime: "23:59",
-		PollInterval: 2 * time.Second, PollIntervalMax: 3 * time.Second, Status: domain.MonitorPending,
-	}
+	targetDateMessage := localDateMessage(targetDate)
+	mode := &clientpb.MonitorMode{}
+	mode.SetCancellation(&clientpb.CancellationMonitor{})
+	earliest := &commonpb.LocalTime{}
+	earliest.SetHour(0)
+	earliest.SetMinute(0)
+	latest := &commonpb.LocalTime{}
+	latest.SetHour(23)
+	latest.SetMinute(59)
+	state := &clientpb.MonitorState{}
+	state.SetPending(&clientpb.MonitorPending{})
+	monitor := &clientpb.Monitor{}
+	monitor.SetId("execution_monitor")
+	monitor.SetUserId(userID)
+	monitor.SetPresetId(preset.GetId())
+	monitor.SetMode(mode)
+	monitor.SetMovieId("movie_execution")
+	monitor.SetMovieTitle("Execution Movie")
+	monitor.SetTargetDates([]*commonpb.LocalDate{targetDateMessage})
+	monitor.SetEarliestTime(earliest)
+	monitor.SetLatestTime(latest)
+	monitor.SetPollInterval(durationpb.New(2 * time.Second))
+	monitor.SetMaximumPollInterval(durationpb.New(3 * time.Second))
+	monitor.SetState(state)
 	for _, resource := range []struct {
 		kind string
 		id   string
-		data any
-	}{{"presets", preset.ID, preset}, {"monitors", monitor.ID, monitor}} {
-		payload, marshalErr := json.Marshal(resource.data)
-		if marshalErr != nil {
-			t.Fatal(marshalErr)
-		}
-		if _, err := service.PutResource(
-			ctx, principal, resource.kind, resource.id, payload, nil, "create_"+resource.id,
-		); err != nil {
+		data *clientpb.Resource
+	}{{"presets", preset.GetId(), storeIntegrationResource(preset.GetId(), preset, nil)}, {"monitors", monitor.GetId(), storeIntegrationResource(monitor.GetId(), nil, monitor)}} {
+		if _, err := service.PutResource(ctx, principal, resource.kind, resource.id, resource.data, nil, "create_"+resource.id); err != nil {
 			t.Fatal(err)
 		}
+	}
+	corruptPreset := &clientpb.Preset{}
+	corruptPreset.SetId("corrupt_execution_preset")
+	corruptPreset.SetUserId("foreign_user")
+	corruptPreset.SetName("Poison")
+	corruptPreset.SetTheaterId("0013")
+	corruptPreset.SetAuditoriumId("imax")
+	corruptPreset.SetSeatCount(1)
+	corruptMonitor := &clientpb.Monitor{}
+	corruptMonitor.SetId("corrupt_execution_monitor")
+	corruptMonitor.SetUserId("foreign_user")
+	corruptMonitor.SetPresetId("corrupt_execution_preset")
+	corruptMonitor.SetMode(mode)
+	corruptMonitor.SetMovieId("movie_execution")
+	corruptMonitor.SetTargetDates([]*commonpb.LocalDate{targetDateMessage})
+	corruptMonitor.SetPollInterval(durationpb.New(2 * time.Second))
+	corruptMonitor.SetMaximumPollInterval(durationpb.New(3 * time.Second))
+	corruptMonitor.SetState(state)
+	corruptPresetPayload, marshalErr := protojson.Marshal(corruptPreset)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	corruptMonitorPayload, marshalErr := protojson.Marshal(corruptMonitor)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
 	}
 	if _, err := store.pool.Exec(ctx, `
 		INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
 		VALUES
-			($1, 'presets', 'corrupt_execution_preset', 1,
-			 '{"id":"corrupt_execution_preset","userId":"foreign_user","name":"Poison","theaterId":"0013","auditoriumId":"imax","seatCount":1,"seatPreference":{}}', now(), now()),
-			($1, 'monitors', 'corrupt_execution_monitor', 1,
-			 '{"id":"corrupt_execution_monitor","userId":"foreign_user","presetId":"corrupt_execution_preset","movieId":"movie_execution","movie":"Execution Movie","targetDates":["2026-08-20"],"pollInterval":2000000000,"pollIntervalMax":3000000000,"status":"pending"}', now(), now())
-	`, userID); err != nil {
+			($1, 'presets', 'corrupt_execution_preset', 1, $2::jsonb, now(), now()),
+			($1, 'monitors', 'corrupt_execution_monitor', 1, $3::jsonb, now(), now())
+	`, userID, corruptPresetPayload, corruptMonitorPayload); err != nil {
 		t.Fatal(err)
 	}
 	observedAt := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
-	showtime := central.Showtime{
-		ID: "show_execution", Movie: central.Movie{ID: monitor.MovieID, Title: monitor.Movie},
-		Auditorium:     central.Auditorium{ID: preset.AuditoriumID, Name: "IMAX관"},
-		StartsAt:       showtimeStart,
-		EndsAt:         showtimeStart.Add(150 * time.Minute),
-		AvailableSeats: 300, Capacity: 624,
-	}
+	showtime := executionIntegrationShowtime(monitor.GetMovieId(), preset.GetAuditoriumId(), showtimeStart)
+	capture := &observationpb.Capture{}
+	capture.SetTargetDate(targetDateMessage)
+	capture.SetComplete(true)
+	capture.SetObservedAt(timestamppb.New(observedAt))
+	capture.SetShowtimes([]*catalogpb.Showtime{showtime})
+	completed := &observationpb.Completed{}
+	completed.SetCaptures([]*observationpb.Capture{capture})
+	result := &observationpb.AssignmentResult{}
+	result.SetCompleted(completed)
 	commit := central.ResultCommit{
 		CommittedAt: observedAt,
-		Result: central.AssignmentResult{Captures: []central.Capture{{
-			TargetDate: targetDate, Complete: true, ObservedAt: observedAt,
-			Showtimes: []central.Showtime{showtime},
-		}}},
+		Result:      result,
 	}
 	for range 2 {
 		tx, beginErr := store.pool.Begin(ctx)
 		if beginErr != nil {
 			t.Fatal(beginErr)
 		}
-		if err := enqueueClientExecutions(ctx, tx, commit, preset.TheaterID, "Asia/Seoul"); err != nil {
+		if err := enqueueClientExecutions(ctx, tx, commit, preset.GetTheaterId(), "Asia/Seoul"); err != nil {
 			_ = tx.Rollback(ctx)
 			t.Fatal(err)
 		}
@@ -718,86 +717,94 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	`, userID).Scan(&queuedCommands); err != nil || queuedCommands != 1 {
 		t.Fatalf("queued commands after corrupt target quarantine = %d, %v", queuedCommands, err)
 	}
-	first, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
-		InstallationID: "execution_install_a",
-	})
-	if err != nil || first == nil || first.MonitorID != monitor.ID || first.Payload.Showtime.ID != showtime.ID {
+	claimA := &executionpb.ClaimRequest{}
+	claimA.SetInstallationId("execution_install_a")
+	firstResponse, err := service.ClaimExecution(ctx, principal, claimA)
+	first := firstResponse.GetCommand()
+	if err != nil || first == nil || first.GetMonitorId() != monitor.GetId() || first.GetPayload().GetShowtime().GetId() != showtime.GetId() {
 		t.Fatalf("first execution claim = %+v, %v", first, err)
 	}
-	if empty, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
-		InstallationID: "execution_install_b",
-	}); err != nil || empty != nil {
-		t.Fatalf("concurrent execution claim = %+v, %v", empty, err)
+	claimB := &executionpb.ClaimRequest{}
+	claimB.SetInstallationId("execution_install_b")
+	emptyResponse, err := service.ClaimExecution(ctx, principal, claimB)
+	if err != nil || emptyResponse.GetNoCommand() == nil {
+		t.Fatalf("concurrent execution claim = %+v, %v", emptyResponse, err)
 	}
-	if _, err := service.HeartbeatExecution(ctx, principal, first.ID, central.ExecutionHeartbeatRequest{
-		LeaseToken: first.LeaseToken,
-	}); err != nil {
+	heartbeat := &executionpb.HeartbeatRequest{}
+	heartbeat.SetCommandId(first.GetId())
+	heartbeat.SetLeaseToken(first.GetLeaseToken())
+	if _, err := service.HeartbeatExecution(ctx, principal, heartbeat); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.CompleteExecution(ctx, principal, first.ID, central.ExecutionResultRequest{
-		LeaseToken: first.LeaseToken, Status: "failed", ReasonCode: "test_retry",
-	}); err != nil {
+	failFirst := &executionpb.ResultRequest{}
+	failFirst.SetCommandId(first.GetId())
+	failFirst.SetLeaseToken(first.GetLeaseToken())
+	failedFirst := &executionpb.Failed{}
+	failedFirst.SetReasonCode("test_retry")
+	failFirst.SetFailed(failedFirst)
+	if err := service.CompleteExecution(ctx, principal, failFirst); err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
-		InstallationID: "execution_install_b",
-	})
-	if err != nil || second == nil || second.Attempt != 2 || second.InstallationID != "execution_install_b" {
+	secondResponse, err := service.ClaimExecution(ctx, principal, claimB)
+	second := secondResponse.GetCommand()
+	if err != nil || second == nil || second.GetAttempt() != 2 || second.GetInstallationId() != "execution_install_b" {
 		t.Fatalf("second execution claim = %+v, %v", second, err)
 	}
-	if err := service.CompleteExecution(ctx, principal, second.ID, central.ExecutionResultRequest{
-		LeaseToken: second.LeaseToken, Status: "failed", ReasonCode: executionReasonPreferredSeatsUnavailable,
-	}); err != nil {
+	failSecond := &executionpb.ResultRequest{}
+	failSecond.SetCommandId(second.GetId())
+	failSecond.SetLeaseToken(second.GetLeaseToken())
+	failedSecond := &executionpb.Failed{}
+	failedSecond.SetReasonCode(executionReasonPreferredSeatsUnavailable)
+	failSecond.SetFailed(failedSecond)
+	if err := service.CompleteExecution(ctx, principal, failSecond); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.CompleteExecution(ctx, principal, second.ID, central.ExecutionResultRequest{
-		LeaseToken: second.LeaseToken, Status: "failed", ReasonCode: executionReasonPreferredSeatsUnavailable,
-	}); !errors.Is(err, central.ErrLeaseExpired) {
+	if err := service.CompleteExecution(ctx, principal, failSecond); !errors.Is(err, central.ErrLeaseExpired) {
 		t.Fatalf("replayed execution completion error = %v", err)
 	}
 	commit.CommittedAt = time.Now().UTC()
-	commit.Result.Captures[0].ObservedAt = commit.CommittedAt
+	commit.Result.GetCompleted().GetCaptures()[0].SetObservedAt(timestamppb.New(commit.CommittedAt))
 	tx, beginErr := store.pool.Begin(ctx)
 	if beginErr != nil {
 		t.Fatal(beginErr)
 	}
-	if err := enqueueClientExecutions(ctx, tx, commit, preset.TheaterID, "Asia/Seoul"); err != nil {
+	if err := enqueueClientExecutions(ctx, tx, commit, preset.GetTheaterId(), "Asia/Seoul"); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if empty, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
-		InstallationID: "execution_install_a",
-	}); err != nil || empty != nil {
-		t.Fatalf("availability cooldown claim = %+v, %v", empty, err)
+	emptyResponse, err = service.ClaimExecution(ctx, principal, claimA)
+	if err != nil || emptyResponse.GetNoCommand() == nil {
+		t.Fatalf("availability cooldown claim = %+v, %v", emptyResponse, err)
 	}
 	commit.CommittedAt = commit.CommittedAt.Add(31 * time.Second)
-	commit.Result.Captures[0].ObservedAt = commit.CommittedAt
-	for index := range commit.Result.Captures[0].Showtimes {
-		commit.Result.Captures[0].Showtimes[index].AvailableSeats = 1
+	commit.Result.GetCompleted().GetCaptures()[0].SetObservedAt(timestamppb.New(commit.CommittedAt))
+	for _, value := range commit.Result.GetCompleted().GetCaptures()[0].GetShowtimes() {
+		value.SetAvailableSeats(1)
 	}
 	tx, beginErr = store.pool.Begin(ctx)
 	if beginErr != nil {
 		t.Fatal(beginErr)
 	}
-	if err := enqueueClientExecutions(ctx, tx, commit, preset.TheaterID, "Asia/Seoul"); err != nil {
+	if err := enqueueClientExecutions(ctx, tx, commit, preset.GetTheaterId(), "Asia/Seoul"); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	third, err := service.ClaimExecution(ctx, principal, central.ExecutionClaimRequest{
-		InstallationID: "execution_install_a",
-	})
-	if err != nil || third == nil || third.Attempt != 1 {
+	thirdResponse, err := service.ClaimExecution(ctx, principal, claimA)
+	third := thirdResponse.GetCommand()
+	if err != nil || third == nil || third.GetAttempt() != 1 {
 		t.Fatalf("availability rearmed execution claim = %+v, %v", third, err)
 	}
-	if err := service.CompleteExecution(ctx, principal, third.ID, central.ExecutionResultRequest{
-		LeaseToken: third.LeaseToken, Status: "completed",
-	}); err != nil {
+	completeThird := &executionpb.ResultRequest{}
+	completeThird.SetCommandId(third.GetId())
+	completeThird.SetLeaseToken(third.GetLeaseToken())
+	completeThird.SetCompleted(&executionpb.Completed{})
+	if err := service.CompleteExecution(ctx, principal, completeThird); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -856,18 +863,27 @@ func TestPostgresClientProbeBootstrapLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registration := central.RegisterProbeRequest{
-		InstallationID: installationID, Kind: "client", Capabilities: []string{"cgv.schedule.capture.v2"},
-		MaxConcurrency: 1,
-		Runtime: central.Runtime{
-			Version: "1.0.0", Protocol: central.ProtocolVersion, BrowserRevision: "1228",
-			Platform: "darwin", Arch: "arm64",
-		},
-	}
+	capability := &observationpb.Capability{}
+	capability.SetScheduleCapture(&observationpb.ScheduleCapture{})
+	kind := &probepb.ProbeKind{}
+	kind.SetClient(&probepb.ClientProbe{})
+	runtime := &commonpb.Runtime{}
+	runtime.SetComponentVersion("1.0.0")
+	runtime.SetBrowserRevision("1228")
+	runtime.SetPlatform("darwin")
+	runtime.SetArchitecture("arm64")
+	registration := &probepb.RegisterRequest{}
+	registration.SetInstallationId(installationID)
+	registration.SetKind(kind)
+	registration.SetNetworkHint("203.0.113.10:443")
+	registration.SetCapabilities([]*observationpb.Capability{capability})
+	registration.SetMaxConcurrency(1)
+	registration.SetRuntime(runtime)
 	ticket, err := signer.Issue(bootstrap.Claims{
 		UserID: userID, TicketID: ticketID, InstallationID: installationID, DeviceID: deviceID,
-		Kind: "client", Capabilities: registration.Capabilities,
-		MaxConcurrency: 1, Runtime: registration.Runtime,
+		Kind: "client", Capabilities: []string{"cgv.schedule.capture"},
+		MaxConcurrency: 1, RuntimeVersion: runtime.GetComponentVersion(), BrowserRevision: runtime.GetBrowserRevision(),
+		Platform: runtime.GetPlatform(), Architecture: runtime.GetArchitecture(),
 	}, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -879,7 +895,7 @@ func TestPostgresClientProbeBootstrapLifecycle(t *testing.T) {
 	var storedUserID, storedDeviceID string
 	if err := store.pool.QueryRow(ctx, `
 		SELECT owner_user_id, device_id FROM probe_runtimes WHERE id = $1
-	`, registered.ProbeID).Scan(&storedUserID, &storedDeviceID); err != nil {
+	`, registered.GetProbeId()).Scan(&storedUserID, &storedDeviceID); err != nil {
 		t.Fatal(err)
 	}
 	if storedUserID != userID || storedDeviceID != deviceID {
@@ -917,18 +933,15 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	leaseToken := "lease_integration"
 	leaseHash := sha256.Sum256([]byte(leaseToken))
 	theaterSourceKey := "theater_integration"
-	theaterID := contracts.CatalogID(contracts.ProviderCGV, "theater", theaterSourceKey)
+	theaterID := catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", theaterSourceKey)
 
 	cleanupIntegrationRows(t, store, probeID, assignmentID)
 	t.Cleanup(func() { cleanupIntegrationRows(t, store, probeID, assignmentID) })
 
 	registered, err := store.RegisterProbe(ctx, central.Probe{
 		ID: probeID, InstallationID: installationID, Kind: "container", NetworkID: "net_integration",
-		Capabilities: []string{"cgv.schedule.capture.v2"}, MaxConcurrency: 1,
-		Runtime: central.Runtime{
-			Version: "integration", Protocol: central.ProtocolVersion, BrowserRevision: "integration",
-			Platform: "linux", Arch: "amd64",
-		},
+		Capabilities: []string{"cgv.schedule.capture"}, MaxConcurrency: 1,
+		Runtime:   storeIntegrationRuntime("integration", "integration", "linux", "amd64"),
 		TokenHash: accessHash, TokenExpiresAt: now.Add(time.Hour), Status: "online", Health: "healthy",
 		CreatedAt: now, UpdatedAt: now,
 	})
@@ -945,9 +958,18 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	if probe.InstallationID != installationID {
 		t.Fatalf("authenticated installation = %q", probe.InstallationID)
 	}
-	if _, err := store.HeartbeatProbe(ctx, probeID, central.ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "healthy",
-	}, now.Add(time.Second)); err != nil {
+	if _, err := store.HeartbeatProbe(ctx, probeID, storeIntegrationHeartbeat(), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	theater := &catalogpb.Theater{}
+	theater.SetId(theaterID)
+	theater.SetProviderId(catalogdomain.ProviderCGV)
+	theater.SetSourceKey(theaterSourceKey)
+	theater.SetRegion("서울")
+	theater.SetName("통합 시험관")
+	task := storeIntegrationScheduleTask(theater, "2026-08-20", "ko-KR", "Asia/Seoul")
+	taskData, err := protojson.Marshal(task)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -955,11 +977,11 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 		INSERT INTO observation_assignments (
 			id, task_kind, theater_id, theater_provider_id, theater_source_key,
 			theater_region, theater_name, target_dates,
-			locale, time_zone, egress_policy_id, status, not_before, deadline, created_at, updated_at
-		) VALUES ($1, 'cgv.schedule.capture.v2', $2, $3, $4, '서울', '통합 시험관',
-			ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default', 'queued', $5, $6, $5, $5)
-	`, assignmentID, theaterID, contracts.ProviderCGV, theaterSourceKey,
-		now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
+			locale, time_zone, egress_policy_id, status, not_before, deadline, created_at, updated_at, task_data
+		) VALUES ($1, 'cgv.schedule.capture', $2, $3, $4, '서울', '통합 시험관',
+			ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default', 'queued', $5, $6, $5, $5, $7::jsonb)
+	`, assignmentID, theaterID, catalogdomain.ProviderCGV, theaterSourceKey,
+		now.Add(-time.Minute), now.Add(time.Hour), taskData); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.pool.Exec(ctx, `
@@ -974,7 +996,7 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if assignment.ID != assignmentID || assignment.Task.Theater.ID != theaterID {
+	if assignment.ID != assignmentID || assignment.Task.GetSchedule().GetTheater().GetId() != theaterID {
 		t.Fatalf("claimed assignment = %+v", assignment)
 	}
 	if err := store.HeartbeatAssignment(
@@ -983,14 +1005,8 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := central.AssignmentResult{
-		RunID: "run_integration", Status: "completed", StartedAt: now, FinishedAt: now.Add(10 * time.Second),
-		Captures: []central.Capture{{
-			TargetDate: "2026-08-20", Complete: true, ObservedAt: now.Add(9 * time.Second),
-			Showtimes: []central.Showtime{integrationShowtime(assignment.Task.Theater, now)},
-		}},
-	}
-	payload, err := json.Marshal(result)
+	result := integrationAssignmentResult(assignment.Task.GetSchedule().GetTheater(), "2026-08-20", now)
+	payload, err := protojson.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1005,7 +1021,9 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	repeated, err := store.CommitResult(ctx, commit)
-	if err != nil || repeated != receipt {
+	if err != nil || repeated.GetAssignmentId() != receipt.GetAssignmentId() ||
+		repeated.GetRunId() != receipt.GetRunId() || repeated.GetContentHash() != receipt.GetContentHash() ||
+		receipt.GetAccepted() == nil || repeated.GetDuplicate() == nil {
 		t.Fatalf("repeated receipt = %+v, %v; want %+v", repeated, err, receipt)
 	}
 	commit.PayloadHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -1031,7 +1049,7 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	`, assignmentID).Scan(&observedMovieID); err != nil {
 		t.Fatal(err)
 	}
-	if expected := result.Captures[0].Showtimes[0].Movie.ID; observedMovieID != expected {
+	if expected := result.GetCompleted().GetCaptures()[0].GetShowtimes()[0].GetMovie().GetId(); observedMovieID != expected {
 		t.Fatalf("observation movie ID = %q, want %q", observedMovieID, expected)
 	}
 }
@@ -1072,7 +1090,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 		t.Fatalf("initial reconcile report = %+v", report)
 	}
 	retryAssignment := assignmentForPolicy(t, store, policyIDs[0])
-	if retryAssignment.Status != "queued" || len(retryAssignment.Task.TargetDates) != 1 {
+	if retryAssignment.Status != "queued" || len(retryAssignment.Task.GetSchedule().GetTargetDates()) != 1 {
 		t.Fatalf("scheduled assignment = %+v", retryAssignment)
 	}
 	var eligibleCount int
@@ -1097,9 +1115,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	makeAssignmentClaimable(t, store, retryAssignment.ID)
-	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], central.ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "healthy",
-	}, time.Now().UTC()); err != nil {
+	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], storeIntegrationHeartbeat(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ClaimAssignment(
@@ -1129,9 +1145,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 	}
 	assertPolicyOutcome(t, store, policyIDs[0], reconcile.OutcomeCompleted)
 
-	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], central.ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "healthy",
-	}, time.Now().UTC()); err != nil {
+	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], storeIntegrationHeartbeat(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	seedIntegrationPolicy(t, store, policyIDs[1], "theater_failed", time.Now().UTC().Add(-time.Minute))
@@ -1169,9 +1183,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 	}
 	assertPolicyOutcome(t, store, policyIDs[2], reconcile.OutcomeMissed)
 
-	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], central.ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "healthy",
-	}, time.Now().UTC()); err != nil {
+	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], storeIntegrationHeartbeat(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	seedIntegrationPolicy(t, store, policyIDs[3], "theater_returned", time.Now().UTC().Add(-time.Minute))
@@ -1250,7 +1262,7 @@ func TestPostgresScheduleIntelligenceProjection(t *testing.T) {
 				theater_region, theater_name, target_dates,
 				locale, time_zone, egress_policy_id, status, not_before, deadline,
 				run_id, created_at, updated_at
-			) VALUES ($1, $2, 'cgv.schedule.capture.v2', $3, 'cgv', $4, '서울', '용산아이파크몰',
+			) VALUES ($1, $2, 'cgv.schedule.capture', $3, 'cgv', $4, '서울', '용산아이파크몰',
 				ARRAY['2026-08-20'::date], 'ko-KR', 'Asia/Seoul', 'scan_default', 'completed',
 				$5, $6, $7, $5, $5)
 		`, assignmentID, policyID, theaterID, theaterSourceKey,
@@ -1569,9 +1581,9 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 		due[3].HorizonDays != 14 {
 		t.Fatalf("automatic observation cadence = %+v", due[:3])
 	}
-	if due[0].Theater.ID != demandTheaterID || due[1].Theater.ID != burstTheaterID ||
-		due[2].Theater.ID != cancellationTheaterID {
-		t.Fatalf("unexpected lane theaters: demand=%q burst=%q", due[0].Theater.ID, due[1].Theater.ID)
+	if due[0].Theater.GetId() != demandTheaterID || due[1].Theater.GetId() != burstTheaterID ||
+		due[2].Theater.GetId() != cancellationTheaterID {
+		t.Fatalf("unexpected lane theaters: demand=%q burst=%q", due[0].Theater.GetId(), due[1].Theater.GetId())
 	}
 }
 
@@ -1597,17 +1609,26 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 	t.Cleanup(cleanup)
 	now := time.Now().UTC()
 	leader, err := store.RunLeaderCycle(ctx, func(repository reconcile.CycleRepository) error {
+		theater := &catalogpb.Theater{}
+		theater.SetId("system-catalog")
+		theater.SetProviderId(catalogdomain.ProviderCGV)
+		theater.SetSourceKey("__catalog__")
+		theater.SetRegion("system")
+		theater.SetName("CGV catalog")
+		catalogTask := &observationpb.CatalogTask{}
+		catalogTask.SetTheater(theater)
+		catalogTask.SetTargetDates([]*commonpb.LocalDate{localDateMessage(now.Format(time.DateOnly))})
+		catalogTask.SetLocale("ko-KR")
+		catalogTask.SetTimeZone("Asia/Seoul")
+		egress := &commonpb.EgressPolicy{}
+		egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+		task := &observationpb.AssignmentTask{}
+		task.SetCatalog(catalogTask)
+		task.SetEgress(egress)
 		return repository.CreateAssignment(ctx, reconcile.NewAssignment{
 			ID: assignmentID, Priority: 100, Status: "queued", NotBefore: now,
 			Deadline: now.Add(time.Minute), CreatedAt: now,
-			Task: contracts.AssignmentTask{
-				Kind: contracts.CapabilityCGVCatalogCapture,
-				Theater: contracts.Theater{
-					ID: "system-catalog", ProviderID: contracts.ProviderCGV,
-					SourceKey: "__catalog__", Region: "system", Name: "CGV catalog",
-				},
-				Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: "scan_default",
-			},
+			Task: task,
 		})
 	})
 	if err != nil || !leader {
@@ -1638,19 +1659,24 @@ func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T)
 	fixtureID := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
 	providerID := "catalog_refresh_integration_" + fixtureID
 	sourceKey := "catalog-refresh-theater-" + fixtureID
-	snapshot := contracts.CatalogSnapshot{
-		Provider: contracts.Provider{ID: providerID, Name: "Catalog refresh integration"},
-		Theaters: []contracts.Theater{{
-			ID: contracts.CatalogID(providerID, "theater", sourceKey), ProviderID: providerID,
-			SourceKey: sourceKey, Region: "Seoul", Name: "Catalog refresh theater",
-		}},
-		ObservedAt: time.Now().UTC(),
-	}
+	provider := &catalogpb.Provider{}
+	provider.SetId(providerID)
+	provider.SetName("Catalog refresh integration")
+	theater := &catalogpb.Theater{}
+	theater.SetId(catalogdomain.CatalogID(providerID, "theater", sourceKey))
+	theater.SetProviderId(providerID)
+	theater.SetSourceKey(sourceKey)
+	theater.SetRegion("Seoul")
+	theater.SetName("Catalog refresh theater")
+	snapshot := &catalogpb.CatalogSnapshot{}
+	snapshot.SetProvider(provider)
+	snapshot.SetTheaters([]*catalogpb.Theater{theater})
+	snapshot.SetObservedAt(timestamppb.New(time.Now().UTC()))
 	t.Cleanup(func() {
-		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, snapshot.Provider.ID)
-		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, snapshot.Provider.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, snapshot.GetProvider().GetId())
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, snapshot.GetProvider().GetId())
 	})
-	if err := store.RequestCatalogRefresh(ctx, snapshot.ObservedAt); err != nil {
+	if err := store.RequestCatalogRefresh(ctx, snapshot.GetObservedAt().AsTime()); err != nil {
 		t.Fatal(err)
 	}
 	firstGeneration, err := store.UpsertCatalogSnapshot(ctx, snapshot)
@@ -1671,13 +1697,17 @@ func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T)
 	if requestedAt == nil {
 		t.Fatal("partial catalog write cleared the pending full refresh")
 	}
-	empty := snapshot
-	empty.Theaters = nil
+	empty := proto.CloneOf(snapshot)
+	empty.SetTheaters(nil)
+	invalidCompleted := &observationpb.Completed{}
+	invalidCompleted.SetCatalog(empty)
+	invalidResult := &observationpb.AssignmentResult{}
+	invalidResult.SetCompleted(invalidCompleted)
 	invalidTx, err := store.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storeCatalogResult(ctx, invalidTx, central.AssignmentResult{Catalog: &empty}); !errors.Is(err, central.ErrInvalid) {
+	if err := storeCatalogResult(ctx, invalidTx, invalidResult); !errors.Is(err, central.ErrInvalid) {
 		_ = invalidTx.Rollback(ctx)
 		t.Fatalf("provider-only full catalog result = %v", err)
 	}
@@ -1696,7 +1726,11 @@ func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T)
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := storeCatalogResult(ctx, tx, central.AssignmentResult{Catalog: &snapshot}); err != nil {
+	completed := &observationpb.Completed{}
+	completed.SetCatalog(snapshot)
+	result := &observationpb.AssignmentResult{}
+	result.SetCompleted(completed)
+	if err := storeCatalogResult(ctx, tx, result); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1725,42 +1759,60 @@ func TestPostgresCatalogRetainsMovieHistoryOutsideClientProjection(t *testing.T)
 	now := time.Now().UTC()
 	fixtureID := fmt.Sprintf("%d", now.UnixNano())
 	providerID := "catalog_history_integration_" + fixtureID
-	theater := contracts.Theater{
-		ID: contracts.CatalogID(providerID, "theater", "theater"), ProviderID: providerID,
-		SourceKey: "theater", Region: "Seoul", Name: "History theater",
-	}
-	auditorium := contracts.Auditorium{
-		ID: contracts.CatalogID(providerID, "auditorium", "auditorium"), TheaterID: theater.ID,
-		SourceKey: "auditorium", Name: "History auditorium", ScreenTypes: []string{"STANDARD"}, Capacity: 100,
-	}
-	pastMovie := contracts.Movie{
-		ID: contracts.CatalogID(providerID, "movie", "past"), ProviderID: providerID,
-		SourceKey: "past", Title: "Past movie",
-	}
-	futureMovie := contracts.Movie{
-		ID: contracts.CatalogID(providerID, "movie", "future"), ProviderID: providerID,
-		SourceKey: "future", Title: "Future movie",
-	}
-	snapshot := contracts.CatalogSnapshot{
-		Provider: contracts.Provider{ID: providerID, Name: "Catalog history integration"},
-		Theaters: []contracts.Theater{theater}, Movies: []contracts.Movie{pastMovie, futureMovie},
-		Auditoriums: []contracts.Auditorium{auditorium}, ObservedAt: now,
-		Showtimes: []contracts.Showtime{
-			{
-				ID: contracts.CatalogID(providerID, "showtime", "past"), ProviderID: providerID,
-				SourceKey: "past", TheaterID: theater.ID, Movie: pastMovie, Auditorium: auditorium,
-				StartsAt: now.Add(-2 * time.Hour), EndsAt: now.Add(-time.Hour),
-			},
-			{
-				ID: contracts.CatalogID(providerID, "showtime", "future"), ProviderID: providerID,
-				SourceKey: "future", TheaterID: theater.ID, Movie: futureMovie, Auditorium: auditorium,
-				StartsAt: now.Add(time.Hour), EndsAt: now.Add(2 * time.Hour),
-			},
-		},
-	}
+	theater := &catalogpb.Theater{}
+	theater.SetId(catalogdomain.CatalogID(providerID, "theater", "theater"))
+	theater.SetProviderId(providerID)
+	theater.SetSourceKey("theater")
+	theater.SetRegion("Seoul")
+	theater.SetName("History theater")
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId(catalogdomain.CatalogID(providerID, "auditorium", "auditorium"))
+	auditorium.SetTheaterId(theater.GetId())
+	auditorium.SetSourceKey("auditorium")
+	auditorium.SetName("History auditorium")
+	auditorium.SetScreenTypes([]string{"STANDARD"})
+	auditorium.SetCapacity(100)
+	pastMovie := &catalogpb.Movie{}
+	pastMovie.SetId(catalogdomain.CatalogID(providerID, "movie", "past"))
+	pastMovie.SetProviderId(providerID)
+	pastMovie.SetSourceKey("past")
+	pastMovie.SetTitle("Past movie")
+	futureMovie := &catalogpb.Movie{}
+	futureMovie.SetId(catalogdomain.CatalogID(providerID, "movie", "future"))
+	futureMovie.SetProviderId(providerID)
+	futureMovie.SetSourceKey("future")
+	futureMovie.SetTitle("Future movie")
+	pastShowtime := &catalogpb.Showtime{}
+	pastShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", "past"))
+	pastShowtime.SetProviderId(providerID)
+	pastShowtime.SetSourceKey("past")
+	pastShowtime.SetTheaterId(theater.GetId())
+	pastShowtime.SetMovie(pastMovie)
+	pastShowtime.SetAuditorium(auditorium)
+	pastShowtime.SetStartsAt(timestamppb.New(now.Add(-2 * time.Hour)))
+	pastShowtime.SetEndsAt(timestamppb.New(now.Add(-time.Hour)))
+	futureShowtime := &catalogpb.Showtime{}
+	futureShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", "future"))
+	futureShowtime.SetProviderId(providerID)
+	futureShowtime.SetSourceKey("future")
+	futureShowtime.SetTheaterId(theater.GetId())
+	futureShowtime.SetMovie(futureMovie)
+	futureShowtime.SetAuditorium(auditorium)
+	futureShowtime.SetStartsAt(timestamppb.New(now.Add(time.Hour)))
+	futureShowtime.SetEndsAt(timestamppb.New(now.Add(2 * time.Hour)))
+	provider := &catalogpb.Provider{}
+	provider.SetId(providerID)
+	provider.SetName("Catalog history integration")
+	snapshot := &catalogpb.CatalogSnapshot{}
+	snapshot.SetProvider(provider)
+	snapshot.SetTheaters([]*catalogpb.Theater{theater})
+	snapshot.SetMovies([]*catalogpb.Movie{pastMovie, futureMovie})
+	snapshot.SetAuditoriums([]*catalogpb.Auditorium{auditorium})
+	snapshot.SetShowtimes([]*catalogpb.Showtime{pastShowtime, futureShowtime})
+	snapshot.SetObservedAt(timestamppb.New(now))
 	t.Cleanup(func() {
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM showtimes WHERE provider_id = $1`, providerID)
-		_, _ = store.pool.Exec(context.Background(), `DELETE FROM auditoriums WHERE theater_id = $1`, theater.ID)
+		_, _ = store.pool.Exec(context.Background(), `DELETE FROM auditoriums WHERE theater_id = $1`, theater.GetId())
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM movies WHERE provider_id = $1`, providerID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM theaters WHERE provider_id = $1`, providerID)
 		_, _ = store.pool.Exec(context.Background(), `DELETE FROM providers WHERE id = $1`, providerID)
@@ -1780,12 +1832,12 @@ func TestPostgresCatalogRetainsMovieHistoryOutsideClientProjection(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, movie := range catalog.Movies {
-		if movie.ID == pastMovie.ID {
+	for _, movie := range catalog.GetMovies() {
+		if movie.GetId() == pastMovie.GetId() {
 			t.Fatal("historical movie leaked into Client catalog")
 		}
 	}
-	if !slices.ContainsFunc(catalog.Movies, func(movie contracts.Movie) bool { return movie.ID == futureMovie.ID }) {
+	if !slices.ContainsFunc(catalog.GetMovies(), func(movie *catalogpb.Movie) bool { return movie.GetId() == futureMovie.GetId() }) {
 		t.Fatal("future movie missing from Client catalog")
 	}
 }
@@ -1877,19 +1929,14 @@ func registerIntegrationProbe(t *testing.T, store *Store, probeID, installationI
 	tokenHash := sha256.Sum256([]byte("token_" + probeID))
 	if _, err := store.RegisterProbe(context.Background(), central.Probe{
 		ID: probeID, InstallationID: installationID, Kind: "container", NetworkID: "net_" + probeID,
-		Capabilities: []string{"cgv.schedule.capture.v2"}, MaxConcurrency: 1,
-		Runtime: central.Runtime{
-			Version: "1.0.0", Protocol: central.ProtocolVersion, BrowserRevision: "2000",
-			Platform: "linux", Arch: "amd64",
-		},
+		Capabilities: []string{"cgv.schedule.capture"}, MaxConcurrency: 1,
+		Runtime:   storeIntegrationRuntime("1.0.0", "2000", "linux", "amd64"),
 		TokenHash: tokenHash, TokenExpiresAt: now.Add(time.Hour), Status: "online", Health: "healthy",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.HeartbeatProbe(context.Background(), probeID, central.ProbeHeartbeatRequest{
-		AvailableSlots: 1, Health: "healthy",
-	}, now); err != nil {
+	if _, err := store.HeartbeatProbe(context.Background(), probeID, storeIntegrationHeartbeat(), now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1903,7 +1950,7 @@ func seedIntegrationPolicy(
 ) string {
 	t.Helper()
 	now := time.Now().UTC()
-	theaterID := contracts.CatalogID(contracts.ProviderCGV, "theater", theaterSourceKey)
+	theaterID := catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", theaterSourceKey)
 	if _, err := store.pool.Exec(context.Background(), `
 		INSERT INTO observation_policies (
 			id, task_kind, theater_id, theater_provider_id, theater_source_key,
@@ -1911,10 +1958,10 @@ func seedIntegrationPolicy(
 			horizon_days, locale, time_zone, egress_policy_id, priority, min_interval_seconds,
 			max_interval_seconds, execution_window_seconds, next_run_at, created_at, updated_at
 		) VALUES (
-			$1, 'cgv.schedule.capture.v2', $2, $3, $4, '서울', '통합 시험관', 'rolling', '{}',
+			$1, 'cgv.schedule.capture', $2, $3, $4, '서울', '통합 시험관', 'rolling', '{}',
 			2, 'ko-KR', 'Asia/Seoul', 'scan_default', 50, 60, 61, 120, $5, $6, $6
 		)
-	`, policyID, theaterID, contracts.ProviderCGV, theaterSourceKey, nextRunAt, now); err != nil {
+	`, policyID, theaterID, catalogdomain.ProviderCGV, theaterSourceKey, nextRunAt, now); err != nil {
 		t.Fatal(err)
 	}
 	return theaterID
@@ -1923,10 +1970,8 @@ func seedIntegrationPolicy(
 func assignmentForPolicy(t *testing.T, store *Store, policyID string) central.Assignment {
 	t.Helper()
 	assignment, err := scanAssignment(store.pool.QueryRow(context.Background(), `
-		SELECT id, task_kind, theater_id, theater_provider_id, theater_source_key,
-			theater_region, theater_name, target_dates::text[],
-			locale, time_zone, egress_policy_id, status, not_before, deadline,
-			COALESCE(probe_id, ''), lease_expires_at, created_at, updated_at, task_data
+		SELECT id, status, not_before, deadline, probe_id, lease_expires_at,
+			created_at, updated_at, task_data
 		FROM observation_assignments
 		WHERE policy_id = $1
 		ORDER BY created_at DESC
@@ -1979,6 +2024,138 @@ func claimAndExpire(
 	}
 }
 
+func storeIntegrationResourceIdentity(id string) *commonpb.ResourceIdentity {
+	identity := &commonpb.ResourceIdentity{}
+	identity.SetId(id)
+	return identity
+}
+
+func storeIntegrationPresetResource(name string) *clientpb.Resource {
+	const id = "preset_integration"
+	preset := &clientpb.Preset{}
+	preset.SetId(id)
+	preset.SetUserId("user_client_plane_integration")
+	preset.SetName(name)
+	preset.SetTheaterId("0013")
+	preset.SetAuditoriumId("imax")
+	preset.SetSeatCount(1)
+	preset.SetSeatPreference(&clientpb.SeatPreference{})
+	resource := &clientpb.Resource{}
+	resource.SetIdentity(storeIntegrationResourceIdentity(id))
+	resource.SetPreset(preset)
+	return resource
+}
+
+func storeIntegrationMonitorResource(userID, id, presetID, movieID string) *clientpb.Resource {
+	targetDate := &commonpb.LocalDate{}
+	targetDate.SetYear(2026)
+	targetDate.SetMonth(8)
+	targetDate.SetDay(20)
+	mode := &clientpb.MonitorMode{}
+	mode.SetOpening(&clientpb.OpeningMonitor{})
+	state := &clientpb.MonitorState{}
+	state.SetPending(&clientpb.MonitorPending{})
+	monitor := &clientpb.Monitor{}
+	monitor.SetId(id)
+	monitor.SetUserId(userID)
+	monitor.SetPresetId(presetID)
+	monitor.SetMode(mode)
+	monitor.SetMovieId(movieID)
+	monitor.SetMovieTitle("Movie")
+	monitor.SetTargetDates([]*commonpb.LocalDate{targetDate})
+	monitor.SetPollInterval(durationpb.New(2 * time.Second))
+	monitor.SetMaximumPollInterval(durationpb.New(3 * time.Second))
+	monitor.SetState(state)
+	resource := &clientpb.Resource{}
+	resource.SetIdentity(storeIntegrationResourceIdentity(id))
+	resource.SetMonitor(monitor)
+	return resource
+}
+
+func storeIntegrationSettingsResource() *clientpb.Resource {
+	resource := &clientpb.Resource{}
+	resource.SetIdentity(storeIntegrationResourceIdentity("settings"))
+	resource.SetSettings(&clientpb.Settings{})
+	return resource
+}
+
+func storeIntegrationResource(id string, preset *clientpb.Preset, monitor *clientpb.Monitor) *clientpb.Resource {
+	resource := &clientpb.Resource{}
+	resource.SetIdentity(storeIntegrationResourceIdentity(id))
+	if preset != nil {
+		resource.SetPreset(preset)
+	}
+	if monitor != nil {
+		resource.SetMonitor(monitor)
+	}
+	return resource
+}
+
+func localDateMessage(value string) *commonpb.LocalDate {
+	parsed, err := time.Parse(time.DateOnly, value)
+	if err != nil {
+		return &commonpb.LocalDate{}
+	}
+	date := &commonpb.LocalDate{}
+	date.SetYear(numeric.ClampInt32(parsed.Year()))
+	date.SetMonth(numeric.ClampInt32(int(parsed.Month())))
+	date.SetDay(numeric.ClampInt32(parsed.Day()))
+	return date
+}
+
+func executionIntegrationShowtime(movieID, auditoriumID string, startsAt time.Time) *catalogpb.Showtime {
+	movie := &catalogpb.Movie{}
+	movie.SetId(movieID)
+	movie.SetTitle("Execution Movie")
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId(auditoriumID)
+	auditorium.SetName("IMAX관")
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId("show_execution")
+	showtime.SetMovie(movie)
+	showtime.SetAuditorium(auditorium)
+	showtime.SetStartsAt(timestamppb.New(startsAt))
+	showtime.SetEndsAt(timestamppb.New(startsAt.Add(150 * time.Minute)))
+	showtime.SetAvailableSeats(300)
+	showtime.SetCapacity(624)
+	return showtime
+}
+
+func storeIntegrationRuntime(version, browserRevision, platform, architecture string) *commonpb.Runtime {
+	runtime := &commonpb.Runtime{}
+	runtime.SetComponentVersion(version)
+	runtime.SetBrowserRevision(browserRevision)
+	runtime.SetPlatform(platform)
+	runtime.SetArchitecture(architecture)
+	return runtime
+}
+
+func storeIntegrationHeartbeat() *probepb.HeartbeatRequest {
+	capability := &observationpb.Capability{}
+	capability.SetScheduleCapture(&observationpb.ScheduleCapture{})
+	health := &probepb.ProbeHealth{}
+	health.SetHealthy(&probepb.Healthy{})
+	heartbeat := &probepb.HeartbeatRequest{}
+	heartbeat.SetAvailableCapabilities([]*observationpb.Capability{capability})
+	heartbeat.SetAvailableSlots(1)
+	heartbeat.SetHealth(health)
+	return heartbeat
+}
+
+func storeIntegrationScheduleTask(theater *catalogpb.Theater, targetDate, locale, timeZone string) *observationpb.AssignmentTask {
+	schedule := &observationpb.ScheduleTask{}
+	schedule.SetTheater(theater)
+	schedule.SetTargetDates([]*commonpb.LocalDate{localDateMessage(targetDate)})
+	schedule.SetLocale(locale)
+	schedule.SetTimeZone(timeZone)
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	task := &observationpb.AssignmentTask{}
+	task.SetSchedule(schedule)
+	task.SetEgress(egress)
+	return task
+}
+
 func integrationResultCommit(
 	t *testing.T,
 	assignment central.Assignment,
@@ -1987,16 +2164,14 @@ func integrationResultCommit(
 ) central.ResultCommit {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	targetDate := assignment.Task.TargetDates[0]
-	result := central.AssignmentResult{
-		RunID: "run_reconcile", Status: reconcile.OutcomeCompleted,
-		StartedAt: now.Add(-2 * time.Second), FinishedAt: now.Add(-time.Second),
-		Captures: []central.Capture{{
-			TargetDate: targetDate, Complete: true, ObservedAt: now.Add(-time.Second),
-			Showtimes: []central.Showtime{integrationShowtime(assignment.Task.Theater, now)},
-		}},
-	}
-	payload, err := json.Marshal(result)
+	schedule := assignment.Task.GetSchedule()
+	targetDate := schedule.GetTargetDates()[0]
+	theater := schedule.GetTheater()
+	result := integrationAssignmentResult(theater, localDateString(targetDate), now)
+	result.SetRunId("run_reconcile")
+	result.SetStartedAt(timestamppb.New(now.Add(-2 * time.Second)))
+	result.SetFinishedAt(timestamppb.New(now.Add(-time.Second)))
+	payload, err := protojson.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2007,26 +2182,47 @@ func integrationResultCommit(
 	}
 }
 
-func integrationShowtime(theater central.Theater, now time.Time) central.Showtime {
+func integrationAssignmentResult(theater *catalogpb.Theater, targetDate string, now time.Time) *observationpb.AssignmentResult {
+	capture := &observationpb.Capture{}
+	capture.SetTargetDate(localDateMessage(targetDate))
+	capture.SetComplete(true)
+	capture.SetObservedAt(timestamppb.New(now.Add(-time.Second)))
+	capture.SetShowtimes([]*catalogpb.Showtime{integrationShowtime(theater, now)})
+	completed := &observationpb.Completed{}
+	completed.SetCaptures([]*observationpb.Capture{capture})
+	result := &observationpb.AssignmentResult{}
+	result.SetCompleted(completed)
+	return result
+}
+
+func integrationShowtime(theater *catalogpb.Theater, now time.Time) *catalogpb.Showtime {
 	movieSourceKey := "00001234"
-	movie := central.Movie{
-		ID:         contracts.CatalogID(theater.ProviderID, "movie", movieSourceKey),
-		ProviderID: theater.ProviderID, SourceKey: movieSourceKey, Title: "통합 시험 영화",
-	}
-	auditoriumSourceKey := theater.SourceKey + "/0007"
-	auditorium := central.Auditorium{
-		ID:        contracts.CatalogID(theater.ProviderID, "auditorium", auditoriumSourceKey),
-		TheaterID: theater.ID, SourceKey: auditoriumSourceKey, Name: "IMAX관",
-		ScreenTypes: []string{"IMAX"}, Capacity: 624,
-	}
-	showtimeSourceKey := theater.SourceKey + "/2026-08-20/0007/0003"
-	return central.Showtime{
-		ID:         contracts.CatalogID(theater.ProviderID, "showtime", showtimeSourceKey),
-		ProviderID: theater.ProviderID, SourceKey: showtimeSourceKey, TheaterID: theater.ID,
-		Movie: movie, Auditorium: auditorium,
-		StartsAt: now.Add(24 * time.Hour), EndsAt: now.Add(26 * time.Hour),
-		AvailableSeats: 500, Capacity: 624,
-	}
+	movie := &catalogpb.Movie{}
+	movie.SetId(catalogdomain.CatalogID(theater.GetProviderId(), "movie", movieSourceKey))
+	movie.SetProviderId(theater.GetProviderId())
+	movie.SetSourceKey(movieSourceKey)
+	movie.SetTitle("통합 시험 영화")
+	auditoriumSourceKey := theater.GetSourceKey() + "/0007"
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId(catalogdomain.CatalogID(theater.GetProviderId(), "auditorium", auditoriumSourceKey))
+	auditorium.SetTheaterId(theater.GetId())
+	auditorium.SetSourceKey(auditoriumSourceKey)
+	auditorium.SetName("IMAX관")
+	auditorium.SetScreenTypes([]string{"IMAX"})
+	auditorium.SetCapacity(624)
+	showtimeSourceKey := theater.GetSourceKey() + "/2026-08-20/0007/0003"
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId(catalogdomain.CatalogID(theater.GetProviderId(), "showtime", showtimeSourceKey))
+	showtime.SetProviderId(theater.GetProviderId())
+	showtime.SetSourceKey(showtimeSourceKey)
+	showtime.SetTheaterId(theater.GetId())
+	showtime.SetMovie(movie)
+	showtime.SetAuditorium(auditorium)
+	showtime.SetStartsAt(timestamppb.New(now.Add(24 * time.Hour)))
+	showtime.SetEndsAt(timestamppb.New(now.Add(26 * time.Hour)))
+	showtime.SetAvailableSeats(500)
+	showtime.SetCapacity(624)
+	return showtime
 }
 
 func assertPolicyOutcome(t *testing.T, store *Store, policyID, expected string) {

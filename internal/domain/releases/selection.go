@@ -4,125 +4,96 @@ import (
 	"sort"
 	"strings"
 
-	contracts "github.com/cineko-org/contracts/v3"
-
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
 	"golang.org/x/mod/semver"
 )
 
-// CurrentRuntime selects the newest client stack compatible with the active
-// launcher, Playwright, and browser releases for one desktop target.
-func CurrentRuntime(
-	catalog Catalog,
-	channel string,
-	platform string,
-	arch string,
-) (contracts.RuntimeRelease, bool) {
+func CurrentRuntime(catalog Catalog, channel, platform, arch string) (*releasepb.RuntimeRelease, bool) {
 	prefix := ReleaseKey(channel, platform, arch) + "/"
-	candidates := make([]contracts.ClientRelease, 0, len(catalog.Clients))
+	candidates := make([]*releasepb.ClientRelease, 0, len(catalog.Clients))
 	for key, client := range catalog.Clients {
 		if strings.HasPrefix(key, prefix) {
 			candidates = append(candidates, client)
 		}
 	}
 	sort.Slice(candidates, func(left, right int) bool {
-		return semver.Compare(CanonicalVersion(candidates[left].Version), CanonicalVersion(candidates[right].Version)) > 0
+		return semver.Compare(CanonicalVersion(candidates[left].GetVersion()), CanonicalVersion(candidates[right].GetVersion())) > 0
 	})
 	launcher, launcherExists := CurrentLauncher(catalog, channel, platform, arch)
 	if !launcherExists {
-		return contracts.RuntimeRelease{}, false
+		return nil, false
 	}
 	for _, client := range candidates {
-		if semver.Compare(CanonicalVersion(launcher.Version), CanonicalVersion(client.MinimumLauncherVersion)) < 0 {
+		if semver.Compare(CanonicalVersion(launcher.GetVersion()), CanonicalVersion(client.GetMinimumLauncherVersion())) < 0 {
 			continue
 		}
-		playwright, playwrightExists := catalog.Playwright[ComponentKey(
-			channel, platform, arch, client.PlaywrightVersion,
-		)]
-		if !playwrightExists {
+		playwright, exists := catalog.Playwright[ComponentKey(channel, platform, arch, client.GetPlaywrightVersion())]
+		if !exists {
 			continue
 		}
-		browser, browserExists := CompatibleBrowser(
-			catalog, channel, platform, arch, client.MinimumBrowserRevision, playwright.Version,
-		)
-		if browserExists {
-			return contracts.RuntimeRelease{Client: client, Browser: browser, Playwright: playwright}, true
+		browser, exists := CompatibleBrowser(catalog, channel, platform, arch, client.GetMinimumBrowserRevision(), playwright.GetVersion())
+		if exists {
+			runtime := &releasepb.RuntimeRelease{}
+			runtime.SetClient(client)
+			runtime.SetBrowser(browser)
+			runtime.SetPlaywright(playwright)
+			return runtime, true
 		}
 	}
-	return contracts.RuntimeRelease{}, false
+	return nil, false
 }
 
-// CompatibleBrowser selects the newest browser revision satisfying both the
-// client minimum revision and the Playwright compatibility list.
-func CompatibleBrowser(
-	catalog Catalog,
-	channel string,
-	platform string,
-	arch string,
-	minimumRevision string,
-	playwrightVersion string,
-) (contracts.BrowserRelease, bool) {
+func CompatibleBrowser(catalog Catalog, channel, platform, arch, minimumRevision, playwrightVersion string) (*releasepb.BrowserRelease, bool) {
 	if !IsNumericRevision(minimumRevision) {
-		return contracts.BrowserRelease{}, false
+		return nil, false
 	}
 	prefix := ReleaseKey(channel, platform, arch) + "/"
-	var selected contracts.BrowserRelease
+	var selected *releasepb.BrowserRelease
 	for key, release := range catalog.Browsers {
-		if !strings.HasPrefix(key, prefix) || !IsNumericRevision(release.Revision) ||
-			CompareNumericRevision(release.Revision, minimumRevision) < 0 ||
-			!contains(release.CompatiblePlaywrightVersions, playwrightVersion) {
+		if !strings.HasPrefix(key, prefix) || !IsNumericRevision(release.GetRevision()) ||
+			CompareNumericRevision(release.GetRevision(), minimumRevision) < 0 ||
+			!contains(release.GetCompatiblePlaywrightVersions(), playwrightVersion) {
 			continue
 		}
-		if selected.Revision == "" || CompareNumericRevision(release.Revision, selected.Revision) > 0 {
+		if selected == nil || CompareNumericRevision(release.GetRevision(), selected.GetRevision()) > 0 {
 			selected = release
 		}
 	}
-	return selected, selected.Revision != ""
+	return selected, selected != nil
 }
 
-// CurrentLauncher selects the newest launcher release for one desktop target.
-func CurrentLauncher(
-	catalog Catalog,
-	channel string,
-	platform string,
-	arch string,
-) (contracts.LauncherRelease, bool) {
+func CurrentLauncher(catalog Catalog, channel, platform, arch string) (*releasepb.LauncherRelease, bool) {
 	prefix := ReleaseKey(channel, platform, arch) + "/"
-	var selected contracts.LauncherRelease
+	var selected *releasepb.LauncherRelease
 	for key, candidate := range catalog.Launchers {
-		if strings.HasPrefix(key, prefix) && (selected.Version == "" ||
-			semver.Compare(CanonicalVersion(candidate.Version), CanonicalVersion(selected.Version)) > 0) {
+		if strings.HasPrefix(key, prefix) && (selected == nil ||
+			semver.Compare(CanonicalVersion(candidate.GetVersion()), CanonicalVersion(selected.GetVersion())) > 0) {
 			selected = candidate
 		}
 	}
-	return selected, selected.Version != ""
+	return selected, selected != nil
 }
 
-// CurrentProbe selects the newest Probe release for one channel.
-func CurrentProbe(catalog Catalog, channel string) (contracts.ProbeRelease, bool) {
+func CurrentProbe(catalog Catalog, channel string) (*releasepb.ProbeRelease, bool) {
 	prefix := strings.TrimSpace(channel) + "/"
-	var selected contracts.ProbeRelease
+	var selected *releasepb.ProbeRelease
 	for key, release := range catalog.Probes {
-		if strings.HasPrefix(key, prefix) && (selected.Version == "" ||
-			semver.Compare(CanonicalVersion(release.Version), CanonicalVersion(selected.Version)) > 0) {
+		if strings.HasPrefix(key, prefix) && (selected == nil ||
+			semver.Compare(CanonicalVersion(release.GetVersion()), CanonicalVersion(selected.GetVersion())) > 0) {
 			selected = release
 		}
 	}
-	return selected, selected.Version != ""
+	return selected, selected != nil
 }
 
-// RuntimeMatchesLaunchRequest verifies that every launch artifact matches the
-// runtime selected from the current release catalog.
-func RuntimeMatchesLaunchRequest(
-	runtime contracts.RuntimeRelease,
-	request contracts.LaunchTicketRequest,
-) bool {
-	return runtime.Client.Version == request.ClientVersion &&
-		runtime.Client.Artifact.SHA256 == request.ArtifactSHA256 &&
-		runtime.Client.Protocol == request.Protocol &&
-		runtime.Browser.Revision == request.BrowserRevision &&
-		runtime.Browser.Artifact.SHA256 == request.BrowserArtifactSHA256 &&
-		runtime.Playwright.Version == request.PlaywrightVersion &&
-		runtime.Playwright.Artifact.SHA256 == request.PlaywrightArtifactSHA256
+func RuntimeMatchesLaunchRequest(runtime *releasepb.RuntimeRelease, request *clientpb.LaunchContext) bool {
+	return runtime.GetClient().GetVersion() == request.GetClientVersion() &&
+		runtime.GetClient().GetArtifact().GetSha256() == request.GetArtifactSha256() &&
+		runtime.GetBrowser().GetRevision() == request.GetBrowserRevision() &&
+		runtime.GetBrowser().GetArtifact().GetSha256() == request.GetBrowserArtifactSha256() &&
+		runtime.GetPlaywright().GetVersion() == request.GetPlaywrightVersion() &&
+		runtime.GetPlaywright().GetArtifact().GetSha256() == request.GetPlaywrightArtifactSha256()
 }
 
 func contains(values []string, expected string) bool {

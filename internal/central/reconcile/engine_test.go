@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cineko-org/central/internal/central"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
-	contracts "github.com/cineko-org/contracts/v3"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 func TestReconcileCycleDecisions(t *testing.T) {
@@ -80,13 +82,18 @@ func TestReconcileCycleDecisions(t *testing.T) {
 		t.Fatalf("created assignments = %+v", cycle.created)
 	}
 	queued := cycle.created[0]
-	if queued.Status != "queued" || !slices.Equal(queued.Task.TargetDates, []string{"2026-08-10"}) ||
+	queuedSchedule := queued.Task.GetSchedule()
+	if queued.Status != "queued" || queuedSchedule == nil || len(queuedSchedule.GetTargetDates()) != 1 ||
+		queuedSchedule.GetTargetDates()[0].GetYear() != 2026 || queuedSchedule.GetTargetDates()[0].GetMonth() != 8 ||
+		queuedSchedule.GetTargetDates()[0].GetDay() != 10 ||
 		len(queued.Candidates) != 1 {
 		t.Fatalf("queued assignment = %+v", queued)
 	}
 	missed := cycle.created[1]
-	if missed.Status != OutcomeMissed || missed.ReasonCode != "no_eligible_probe" ||
-		!slices.Equal(missed.Task.TargetDates, []string{"2026-08-20"}) {
+	missedSchedule := missed.Task.GetSchedule()
+	if missed.Status != OutcomeMissed || missed.ReasonCode != "no_eligible_probe" || missedSchedule == nil ||
+		len(missedSchedule.GetTargetDates()) != 1 || missedSchedule.GetTargetDates()[0].GetYear() != 2026 ||
+		missedSchedule.GetTargetDates()[0].GetMonth() != 8 || missedSchedule.GetTargetDates()[0].GetDay() != 20 {
 		t.Fatalf("missed assignment = %+v", missed)
 	}
 	if cycle.suspended["invalid"] != "invalid_policy" {
@@ -132,8 +139,10 @@ func TestHotPolicyPreemptsQueuedBaselineBeforeScheduling(t *testing.T) {
 	if !slices.Equal(cycle.preempted, []string{policy.ID}) {
 		t.Fatalf("preempted policies = %v", cycle.preempted)
 	}
-	if len(cycle.created) != 1 || cycle.created[0].Lane != planning.LaneHot ||
-		!slices.Equal(cycle.created[0].Task.TargetDates, []string{"2026-08-21"}) {
+	createdSchedule := cycle.created[0].Task.GetSchedule()
+	if len(cycle.created) != 1 || cycle.created[0].Lane != planning.LaneHot || createdSchedule == nil ||
+		len(createdSchedule.GetTargetDates()) != 1 || createdSchedule.GetTargetDates()[0].GetYear() != 2026 ||
+		createdSchedule.GetTargetDates()[0].GetMonth() != 8 || createdSchedule.GetTargetDates()[0].GetDay() != 21 {
 		t.Fatalf("created hot assignment = %+v", cycle.created)
 	}
 }
@@ -196,8 +205,9 @@ func TestCatalogRefreshWaitsForProbeAndCreatesOneSystemAssignment(t *testing.T) 
 		t.Fatalf("created report = %+v, assignments = %+v", report, ready.created)
 	}
 	assignment := ready.created[0]
-	if assignment.PolicyID != "" || assignment.Task.Kind != "cgv.catalog.capture.v1" ||
-		assignment.Task.Theater.SourceKey != "__catalog__" || len(assignment.Task.TargetDates) != 0 ||
+	catalogTask := assignment.Task.GetCatalog()
+	if assignment.PolicyID != "" || catalogTask == nil || catalogTask.GetTheater() == nil ||
+		catalogTask.GetTheater().GetSourceKey() != "__catalog__" || len(catalogTask.GetTargetDates()) != 0 ||
 		len(assignment.Candidates) != 1 {
 		t.Fatalf("catalog assignment = %+v", assignment)
 	}
@@ -242,14 +252,8 @@ func TestCatalogRefreshFailureAndBusyBoundaries(t *testing.T) {
 func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
-	task := central.AssignmentTask{
-		Kind:       contracts.CapabilityCGVSeatMapCapture,
-		Theater:    central.Theater{ID: "theater", ProviderID: contracts.ProviderCGV},
-		Auditorium: &central.Auditorium{ID: "auditorium", TheaterID: "theater"},
-		Showtime:   &central.Showtime{ID: "showtime"}, Locale: "ko-KR", TimeZone: "Asia/Seoul",
-	}
 	waiting := newMemoryCycle()
-	waiting.seatMapTarget = &SeatMapBackfillTarget{Task: task, Requested: true}
+	waiting.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask(), Requested: true}
 	engine := newTestEngine(t, &memoryRepository{cycle: waiting, leader: true}, now)
 	report, err := engine.RunOnce(context.Background())
 	if err != nil || !report.SeatMapBackfillWaiting || len(waiting.created) != 0 {
@@ -257,7 +261,7 @@ func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) 
 	}
 
 	ready := newMemoryCycle()
-	ready.seatMapTarget = &SeatMapBackfillTarget{Task: task, Requested: true}
+	ready.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask(), Requested: true}
 	ready.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: ready, leader: true}, now)
 	report, err = engine.RunOnce(context.Background())
@@ -265,9 +269,10 @@ func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) 
 		t.Fatalf("created seat-map report = %+v, assignments = %+v, error = %v", report, ready.created, err)
 	}
 	assignment := ready.created[0]
-	if assignment.Priority != 95 || assignment.Task.Auditorium == nil ||
-		assignment.Task.Auditorium.ID != "auditorium" || len(assignment.Candidates) != 1 ||
-		assignment.Task.EgressPolicyID != contracts.EgressPolicyScanDefault {
+	seatMapTask := assignment.Task.GetSeatMap()
+	if assignment.Priority != 95 || seatMapTask == nil || seatMapTask.GetAuditorium() == nil ||
+		seatMapTask.GetAuditorium().GetId() != "auditorium" || len(assignment.Candidates) != 1 ||
+		assignment.Task.GetEgress() == nil || assignment.Task.GetEgress().GetManagedScan() == nil {
 		t.Fatalf("seat-map assignment = %+v", assignment)
 	}
 }
@@ -275,19 +280,13 @@ func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) 
 func TestSeatMapBackfillBoundaries(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
-	task := central.AssignmentTask{
-		Kind:       contracts.CapabilityCGVSeatMapCapture,
-		Theater:    central.Theater{ID: "theater", ProviderID: contracts.ProviderCGV},
-		Auditorium: &central.Auditorium{ID: "auditorium", TheaterID: "theater"},
-		Showtime:   &central.Showtime{ID: "showtime"}, Locale: "ko-KR", TimeZone: "Asia/Seoul",
-	}
 
 	for _, stage := range []string{"seat_map_backfill", "eligible_probes", "create_assignment"} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
 			cycle := newMemoryCycle()
 			cycle.failAt = stage
-			cycle.seatMapTarget = &SeatMapBackfillTarget{Task: task}
+			cycle.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask()}
 			cycle.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 			engine := newTestEngine(t, &memoryRepository{cycle: cycle, leader: true}, now)
 			if _, err := engine.RunOnce(context.Background()); err == nil {
@@ -297,7 +296,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 	}
 
 	idFailure := newMemoryCycle()
-	idFailure.seatMapTarget = &SeatMapBackfillTarget{Task: task}
+	idFailure.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask()}
 	idFailure.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine := newTestEngine(t, &memoryRepository{cycle: idFailure, leader: true}, now)
 	engine.newID = func() (string, error) { return "", io.ErrUnexpectedEOF }
@@ -306,7 +305,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 	}
 
 	busy := newMemoryCycle()
-	busy.seatMapTarget = &SeatMapBackfillTarget{Task: task}
+	busy.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask()}
 	busy.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	busy.busyPolicies[""] = true
 	engine = newTestEngine(t, &memoryRepository{cycle: busy, leader: true}, now)
@@ -316,7 +315,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 	}
 
 	normal := newMemoryCycle()
-	normal.seatMapTarget = &SeatMapBackfillTarget{Task: task}
+	normal.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask()}
 	normal.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: normal, leader: true}, now)
 	if _, err := engine.RunOnce(context.Background()); err != nil || len(normal.created) != 1 || normal.created[0].Priority != 70 {
@@ -584,11 +583,8 @@ func newTestEngine(t *testing.T, repository Repository, now time.Time) *Engine {
 
 func validPolicy(id, theaterID string, now time.Time, mode string) Policy {
 	policy := Policy{
-		ID: id, Enabled: true, TaskKind: "cgv.schedule.capture.v2",
-		Theater: central.Theater{
-			ID: theaterID, ProviderID: "cgv", SourceKey: theaterID,
-			Region: "서울", Name: "용산아이파크몰",
-		},
+		ID: id, Enabled: true, TaskKind: probedomain.CapabilityCGVScheduleCapture,
+		Theater:        testTheater(theaterID),
 		TargetDateMode: mode, Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: "scan_default",
 		Priority: 50, MinimumInterval: 10 * time.Second, MaximumInterval: 20 * time.Second,
 		ExecutionWindow: time.Minute, NextRunAt: now,
@@ -599,6 +595,36 @@ func validPolicy(id, theaterID string, now time.Time, mode string) Policy {
 		policy.TargetDates = []string{"2026-08-20"}
 	}
 	return policy
+}
+
+func testTheater(id string) *catalogpb.Theater {
+	theater := &catalogpb.Theater{}
+	theater.SetId(id)
+	theater.SetProviderId(catalogdomain.ProviderCGV)
+	theater.SetSourceKey(id)
+	theater.SetRegion("서울")
+	theater.SetName("용산아이파크몰")
+	return theater
+}
+
+func seatMapAssignmentTask() *observationpb.AssignmentTask {
+	theater := &catalogpb.Theater{}
+	theater.SetId("theater")
+	theater.SetProviderId(catalogdomain.ProviderCGV)
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId("auditorium")
+	auditorium.SetTheaterId("theater")
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId("showtime")
+	seatMap := &observationpb.SeatMapTask{}
+	seatMap.SetTheater(theater)
+	seatMap.SetAuditorium(auditorium)
+	seatMap.SetShowtime(showtime)
+	seatMap.SetLocale("ko-KR")
+	seatMap.SetTimeZone("Asia/Seoul")
+	task := &observationpb.AssignmentTask{}
+	task.SetSeatMap(seatMap)
+	return task
 }
 
 func failureCycle(stage string, now time.Time) *memoryCycle {

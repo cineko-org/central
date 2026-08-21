@@ -1,14 +1,21 @@
 import { type FormEvent, useCallback, useState } from 'react';
-import { CentralAPIError, loadJSON, request } from './api';
-import type { ClientPINIssue, ClientPINUser } from './types';
+import {
+  CreateClientUserRequestSchema,
+  CreateClientUserResponseSchema,
+  ListClientUsersResponseSchema,
+  RotateClientPinResponseSchema,
+  type ClientPinIssue,
+  type ClientPinUser,
+} from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
+import { CentralAPIError, loadProto, protoBody, request } from './api';
 import { UsersPageView } from './ui/UsersPageView';
 import { useInitialRefresh } from './useInitialRefresh';
 
 export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
-  const [users, setUsers] = useState<ClientPINUser[]>([]);
+  const [users, setUsers] = useState<ClientPinUser[]>([]);
   const [displayName, setDisplayName] = useState('');
-  const [issued, setIssued] = useState<ClientPINIssue>();
-  const [deleting, setDeleting] = useState<ClientPINUser>();
+  const [issued, setIssued] = useState<ClientPinIssue>();
+  const [deleting, setDeleting] = useState<ClientPinUser>();
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState(false);
   const handleError = useCallback((error: unknown) => {
@@ -17,7 +24,7 @@ export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
   }, [onUnauthorized]);
   const refresh = useCallback(async () => {
     try {
-      setUsers((await loadJSON<{ data: ClientPINUser[] }>('/v1/admin/users')).data);
+      setUsers((await loadProto(ListClientUsersResponseSchema, '/v1/admin/users')).users);
     } catch (error) {
       handleError(error);
     }
@@ -30,9 +37,10 @@ export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
     setLoading(true);
     setFailure(false);
     try {
-      setIssued(await loadJSON<ClientPINIssue>('/v1/admin/users', {
-        method: 'POST', body: JSON.stringify({ displayName }),
-      }));
+      const response = await loadProto(CreateClientUserResponseSchema, '/v1/admin/users', {
+        method: 'POST', body: protoBody(CreateClientUserRequestSchema, { displayName }),
+      });
+      setIssued(response.issue);
       setDisplayName('');
       await refresh();
     } catch (error) {
@@ -45,7 +53,8 @@ export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
     setLoading(true);
     setFailure(false);
     try {
-      setIssued(await loadJSON<ClientPINIssue>(`/v1/admin/users/${encodeURIComponent(userId)}/pin`, { method: 'POST' }));
+      const response = await loadProto(RotateClientPinResponseSchema, `/v1/admin/users/${encodeURIComponent(userId)}/pin`, { method: 'POST' });
+      setIssued(response.issue);
       await refresh();
     } catch (error) {
       handleError(error);
@@ -54,7 +63,7 @@ export function UsersView({ onUnauthorized }: { onUnauthorized: () => void }) {
     }
   };
   const remove = async () => {
-    if (!deleting) return;
+    if (!deleting?.user) return;
     setLoading(true);
     setFailure(false);
     try {

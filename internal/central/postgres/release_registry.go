@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/cineko-org/central/internal/central"
-	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -89,12 +88,9 @@ func loadReleasePublishState(
 	ctx context.Context,
 	tx pgx.Tx,
 ) (int64, []central.ReleaseRecord, string, error) {
-	generation, storedFingerprint, resolverVersion, err := lockedDesktopState(ctx, tx)
+	generation, storedFingerprint, err := lockedDesktopState(ctx, tx)
 	if err != nil {
 		return 0, nil, "", err
-	}
-	if resolverVersion != releasepolicy.ActiveDesktopResolverVersion {
-		return 0, nil, "", fmt.Errorf("unsupported active desktop resolver version %d", resolverVersion)
 	}
 	storedRecords, err := listReleaseRecords(ctx, tx)
 	if err != nil {
@@ -146,17 +142,16 @@ func publishReleaseRecords(
 	return advanceDesktopGeneration(ctx, tx, generation, afterFingerprint)
 }
 
-func lockedDesktopState(ctx context.Context, tx pgx.Tx) (int64, string, int, error) {
+func lockedDesktopState(ctx context.Context, tx pgx.Tx) (int64, string, error) {
 	var generation int64
 	var fingerprint string
-	var resolverVersion int
 	if err := tx.QueryRow(ctx, `
-		SELECT generation, active_manifest_sha256, resolver_version
+		SELECT generation, active_manifest_sha256
 		FROM desktop_release_registry_state WHERE singleton = true FOR UPDATE
-	`).Scan(&generation, &fingerprint, &resolverVersion); err != nil {
-		return 0, "", 0, fmt.Errorf("lock desktop release state: %w", err)
+	`).Scan(&generation, &fingerprint); err != nil {
+		return 0, "", fmt.Errorf("lock desktop release state: %w", err)
 	}
-	return generation, fingerprint, resolverVersion, nil
+	return generation, fingerprint, nil
 }
 
 func releaseSetSize(ctx context.Context, tx pgx.Tx, identity central.ReleaseRecord) (int64, error) {
@@ -184,10 +179,10 @@ func identicalReleaseSet(
 			SELECT EXISTS (
 				SELECT 1 FROM release_components
 				WHERE kind = $1 AND channel = $2 AND platform = $3 AND architecture = $4
-					AND version = $5 AND schema_version = $6 AND payload = $7::jsonb
+					AND version = $5 AND payload = $6::jsonb
 			)
 		`, record.Kind, record.Channel, record.Platform, record.Arch, record.Version,
-			record.SchemaVersion, record.Payload).Scan(&equal); err != nil {
+			record.Payload).Scan(&equal); err != nil {
 			return false, fmt.Errorf("compare existing release set: %w", err)
 		}
 		if !equal {
@@ -201,10 +196,10 @@ func insertReleaseSet(ctx context.Context, tx pgx.Tx, records []central.ReleaseR
 	for _, record := range records {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO release_components (
-				kind, channel, platform, architecture, version, schema_version, payload, published_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				kind, channel, platform, architecture, version, payload, published_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		`, record.Kind, record.Channel, record.Platform, record.Arch, record.Version,
-			record.SchemaVersion, record.Payload, record.PublishedAt); err != nil {
+			record.Payload, record.PublishedAt); err != nil {
 			return fmt.Errorf("insert release component: %w", err)
 		}
 	}
@@ -215,7 +210,7 @@ func listReleaseRecords(ctx context.Context, queryer interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }) ([]central.ReleaseRecord, error) {
 	rows, err := queryer.Query(ctx, `
-		SELECT kind, channel, platform, architecture, version, schema_version, payload, published_at
+		SELECT kind, channel, platform, architecture, version, payload, published_at
 		FROM release_components
 		ORDER BY kind, channel, platform, architecture, published_at, version
 	`)
@@ -226,7 +221,7 @@ func listReleaseRecords(ctx context.Context, queryer interface {
 		var record central.ReleaseRecord
 		err := row.Scan(
 			&record.Kind, &record.Channel, &record.Platform, &record.Arch,
-			&record.Version, &record.SchemaVersion, &record.Payload, &record.PublishedAt,
+			&record.Version, &record.Payload, &record.PublishedAt,
 		)
 		return record, err
 	})

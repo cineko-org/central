@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 )
 
 var (
@@ -46,7 +49,7 @@ type ResultCommit struct {
 	LeaseHash    [32]byte
 	PayloadHash  string
 	Payload      []byte
-	Result       AssignmentResult
+	Result       *observationpb.AssignmentResult
 	CommittedAt  time.Time
 }
 
@@ -55,11 +58,11 @@ type Repository interface {
 	ConsumeProbeBootstrap(context.Context, string, time.Time, time.Time) error
 	RegisterProbe(context.Context, Probe) (Probe, error)
 	AuthenticateProbe(context.Context, string, [32]byte, time.Time) (Probe, error)
-	HeartbeatProbe(context.Context, string, ProbeHeartbeatRequest, time.Time) (Probe, error)
+	HeartbeatProbe(context.Context, string, *probepb.HeartbeatRequest, time.Time) (Probe, error)
 	DisconnectProbe(context.Context, string, time.Time) error
 	ClaimAssignment(context.Context, string, [32]byte, time.Time, time.Time, time.Time) (Assignment, error)
 	HeartbeatAssignment(context.Context, string, string, [32]byte, time.Time, time.Time) error
-	CommitResult(context.Context, ResultCommit) (ResultReceipt, error)
+	CommitResult(context.Context, ResultCommit) (*observationpb.ResultReceipt, error)
 }
 
 // AssignmentWaiter is an optional repository capability for event-driven

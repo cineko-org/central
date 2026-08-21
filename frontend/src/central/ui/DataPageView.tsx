@@ -1,20 +1,21 @@
 import { Alert, Button, Divider, Group, ScrollArea, SimpleGrid, Skeleton, Stack, Table, Text } from '@mantine/core';
-import type { AdminDataSummary, ObservationIntelligence } from '../types';
+import type { DataSummary, ObservationIntelligence } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
 import { PageHeader } from './PageHeader';
+import { integerText, timestampDate } from './protoPresentation';
 
 export interface DataPageViewProps {
-  summary?: AdminDataSummary;
+  summary?: DataSummary;
   intelligence?: ObservationIntelligence;
   failed: boolean;
   onRefresh: () => void;
 }
 
-function Metric({ label, value, detail }: { label: string; value: number; detail: string }) {
-  return <Stack gap={8} py="lg"><Text size="xs" c="dimmed" fw={700}>{label}</Text><Text fz={28} fw={700}>{value.toLocaleString('ko-KR')}</Text><Text size="sm" c="dimmed">{detail}</Text></Stack>;
+function Metric({ label, value, detail }: { label: string; value: bigint | number; detail: string }) {
+  return <Stack gap={8} py="lg"><Text size="xs" c="dimmed" fw={700}>{label}</Text><Text fz={28} fw={700}>{integerText(value)}</Text><Text size="sm" c="dimmed">{detail}</Text></Stack>;
 }
 
-function AssignmentRow({ label, value, color }: { label: string; value: number; color?: string }) {
-  return <><Group justify="space-between" py="md"><Text c="dimmed">{label}</Text><Text fw={700} c={color}>{value.toLocaleString('ko-KR')}건</Text></Group><Divider /></>;
+function AssignmentRow({ label, value, color }: { label: string; value: bigint; color?: string }) {
+  return <><Group justify="space-between" py="md"><Text c="dimmed">{label}</Text><Text fw={700} c={color}>{integerText(value)}건</Text></Group><Divider /></>;
 }
 
 function OpeningPatterns({ intelligence }: { intelligence: ObservationIntelligence }) {
@@ -72,7 +73,7 @@ export function DataPageView({ summary, intelligence, failed, onRefresh }: DataP
   if (!summary || !intelligence) return <Stack gap="xl"><PageHeader title="수집 데이터" /><Alert color="red" title="수집 현황을 불러오지 못했습니다"><Button variant="subtle" color="red" p={0} mt="xs" onClick={onRefresh}>다시 시도</Button></Alert></Stack>;
   return (
     <Stack gap={48}>
-      <PageHeader title="수집 데이터" description={summary.latestScheduleObservedAt ? `최근 관측 ${new Date(summary.latestScheduleObservedAt).toLocaleString('ko-KR')}` : '아직 저장된 관측이 없습니다.'} actions={<Button variant="default" onClick={onRefresh}>새로고침</Button>} />
+      <PageHeader title="수집 데이터" description={summary.latestScheduleObservedAt ? `최근 관측 ${timestampDate(summary.latestScheduleObservedAt)?.toLocaleString('ko-KR')}` : '아직 저장된 관측이 없습니다.'} actions={<Button variant="default" onClick={onRefresh}>새로고침</Button>} />
       <Stack gap={0}>
         <Text component="h2" fz="lg" fw={700}>카탈로그</Text>
         <SimpleGrid cols={{ base: 2, sm: 3, lg: 6 }} spacing={{ base: 0, lg: 32 }}>
@@ -101,7 +102,7 @@ export function DataPageView({ summary, intelligence, failed, onRefresh }: DataP
         <AssignmentRow label="대기" value={summary.queuedAssignments} />
         <AssignmentRow label="실행 중" value={summary.leasedAssignments} color="blue" />
         <AssignmentRow label="완료" value={summary.completedAssignments} color="green" />
-        <AssignmentRow label="실패 및 누락" value={summary.failedAssignments} color={summary.failedAssignments > 0 ? 'red' : undefined} />
+        <AssignmentRow label="실패 및 누락" value={summary.failedAssignments} color={summary.failedAssignments > 0n ? 'red' : undefined} />
       </Stack>
     </Stack>
   );

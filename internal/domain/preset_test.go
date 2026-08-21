@@ -1,24 +1,38 @@
 package domain
 
-import "testing"
+import (
+	"testing"
 
-func TestPresetValidateRejectsInvalidPreferenceData(t *testing.T) {
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+)
+
+func validPresetProto() *clientpb.Preset {
+	preset := &clientpb.Preset{}
+	preset.SetId("preset-1")
+	preset.SetUserId("user-1")
+	preset.SetName("center")
+	preset.SetTheaterId("theater-1")
+	preset.SetAuditoriumId("auditorium-1")
+	preset.SetSeatCount(1)
+	preset.SetSeatPreference(&clientpb.SeatPreference{})
+	return preset
+}
+
+func TestValidatePresetRejectsInvalidPreferenceData(t *testing.T) {
 	t.Parallel()
-
-	preset := Preset{
-		ID: "preset-1", UserID: "user-1", Name: "중앙", TheaterID: "theater-1",
-		AuditoriumID: "auditorium-1", SeatCount: 1,
-		SeatPreference: SeatPreference{PreferredZones: []SeatZone{{
-			Name: "bad", MinX: .8, MaxX: .2, MinY: 0, MaxY: 1,
-		}}},
+	preset := validPresetProto()
+	zone := &clientpb.SeatZone{}
+	zone.SetName("bad")
+	zone.SetMinX(.8)
+	zone.SetMaxX(.2)
+	zone.SetMaxY(1)
+	preset.GetSeatPreference().SetPreferredZones([]*clientpb.SeatZone{zone})
+	if err := ValidatePreset(preset, nil); err == nil {
+		t.Fatal("ValidatePreset() accepted reversed zone bounds")
 	}
-	if err := preset.Validate(nil); err == nil {
-		t.Fatal("Validate() accepted reversed zone bounds")
-	}
-
-	preset.SeatPreference.PreferredZones = nil
-	preset.SeatPreference.PreferredTypes = []SeatType{"made-up"}
-	if err := preset.Validate(nil); err == nil {
-		t.Fatal("Validate() accepted an unknown seat type")
+	preset.GetSeatPreference().SetPreferredZones(nil)
+	preset.GetSeatPreference().SetPreferredTypes([]string{"made-up"})
+	if err := ValidatePreset(preset, nil); err == nil {
+		t.Fatal("ValidatePreset() accepted an unknown seat type")
 	}
 }

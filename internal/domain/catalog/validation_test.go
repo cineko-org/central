@@ -1,259 +1,259 @@
 package catalog
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 
-	contracts "github.com/cineko-org/contracts/v3"
+	"github.com/cineko-org/central/internal/support/numeric"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestNormalizeSnapshotCanonicalizesRelationships(t *testing.T) {
 	observedAt := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	snapshot := catalogSnapshotFixture(observedAt)
-	snapshot.Provider.ID = " " + snapshot.Provider.ID + " "
-	snapshot.Provider.Name = " " + snapshot.Provider.Name + " "
-	snapshot.Auditoriums[0].ScreenTypes = []string{" IMAX ", "2D", "IMAX", " "}
-	snapshot.Showtimes[0].Movie.Title = "stale movie title"
-	snapshot.Showtimes[0].Auditorium.Name = "stale auditorium name"
+	snapshot.GetProvider().SetId(" " + snapshot.GetProvider().GetId() + " ")
+	snapshot.GetProvider().SetName(" " + snapshot.GetProvider().GetName() + " ")
+	snapshot.GetAuditoriums()[0].SetScreenTypes([]string{" IMAX ", "2D", "IMAX", " "})
+	snapshot.GetShowtimes()[0].GetMovie().SetTitle("stale movie title")
+	snapshot.GetShowtimes()[0].GetAuditorium().SetName("stale auditorium name")
 
-	if err := NormalizeSnapshot(&snapshot); err != nil {
+	if err := NormalizeSnapshot(snapshot); err != nil {
 		t.Fatalf("NormalizeSnapshot() error = %v", err)
 	}
-	if snapshot.Provider.ID != contracts.ProviderCGV || snapshot.Provider.Name != "CGV" {
-		t.Fatalf("provider = %+v", snapshot.Provider)
+	if snapshot.GetProvider().GetId() != ProviderCGV || snapshot.GetProvider().GetName() != "CGV" {
+		t.Fatalf("provider = %+v", snapshot.GetProvider())
 	}
-	auditorium := snapshot.Auditoriums[0]
-	if len(auditorium.ScreenTypes) != 2 || auditorium.ScreenTypes[0] != "2D" || auditorium.ScreenTypes[1] != "IMAX" {
-		t.Fatalf("screen types = %v", auditorium.ScreenTypes)
+	auditorium := snapshot.GetAuditoriums()[0]
+	if got := auditorium.GetScreenTypes(); !reflect.DeepEqual(got, []string{"2D", "IMAX"}) {
+		t.Fatalf("screen types = %v", got)
 	}
-	if snapshot.Showtimes[0].Movie != snapshot.Movies[0] {
-		t.Fatalf("showtime movie = %+v, want %+v", snapshot.Showtimes[0].Movie, snapshot.Movies[0])
+	if snapshot.GetShowtimes()[0].GetMovie() != snapshot.GetMovies()[0] {
+		t.Fatal("showtime movie was not replaced with the canonical catalog movie")
 	}
-	if !reflect.DeepEqual(snapshot.Showtimes[0].Auditorium, auditorium) {
-		t.Fatalf("showtime auditorium = %+v, want %+v", snapshot.Showtimes[0].Auditorium, auditorium)
+	if !proto.Equal(snapshot.GetShowtimes()[0].GetAuditorium(), auditorium) {
+		t.Fatal("showtime auditorium was not replaced with the canonical catalog auditorium")
 	}
 }
 
 func TestNormalizeSnapshotKeepsIdentityWhenDisplayNamesChange(t *testing.T) {
 	observedAt := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	original := catalogSnapshotFixture(observedAt)
-	if err := NormalizeSnapshot(&original); err != nil {
+	if err := NormalizeSnapshot(original); err != nil {
 		t.Fatal(err)
 	}
-	originalTheaterID := original.Theaters[0].ID
-	originalMovieID := original.Movies[0].ID
-	originalAuditoriumID := original.Auditoriums[0].ID
-	originalShowtimeID := original.Showtimes[0].ID
+	originalIDs := []string{
+		original.GetTheaters()[0].GetId(), original.GetMovies()[0].GetId(),
+		original.GetAuditoriums()[0].GetId(), original.GetShowtimes()[0].GetId(),
+	}
 
 	renamed := catalogSnapshotFixture(observedAt)
-	renamed.Theaters[0].Name = "용산아이파크몰 (리뉴얼)"
-	renamed.Theaters[0].Region = "서울특별시"
-	renamed.Movies[0].Title = "테스트 영화 (재개봉)"
-	renamed.Auditoriums[0].Name = "IMAX Laser"
-	if err := NormalizeSnapshot(&renamed); err != nil {
+	renamed.GetTheaters()[0].SetName("용산아이파크몰 (리뉴얼)")
+	renamed.GetTheaters()[0].SetRegion("서울특별시")
+	renamed.GetMovies()[0].SetTitle("테스트 영화 (재개봉)")
+	renamed.GetAuditoriums()[0].SetName("IMAX Laser")
+	if err := NormalizeSnapshot(renamed); err != nil {
 		t.Fatal(err)
 	}
-	if renamed.Theaters[0].ID != originalTheaterID || renamed.Movies[0].ID != originalMovieID ||
-		renamed.Auditoriums[0].ID != originalAuditoriumID || renamed.Showtimes[0].ID != originalShowtimeID {
-		t.Fatalf("display rename changed identity: original=%q/%q/%q/%q renamed=%q/%q/%q/%q",
-			originalTheaterID, originalMovieID, originalAuditoriumID, originalShowtimeID,
-			renamed.Theaters[0].ID, renamed.Movies[0].ID, renamed.Auditoriums[0].ID, renamed.Showtimes[0].ID)
+	renamedIDs := []string{
+		renamed.GetTheaters()[0].GetId(), renamed.GetMovies()[0].GetId(),
+		renamed.GetAuditoriums()[0].GetId(), renamed.GetShowtimes()[0].GetId(),
 	}
-	if renamed.Showtimes[0].Movie.Title != "테스트 영화 (재개봉)" || renamed.Showtimes[0].Auditorium.Name != "IMAX Laser" {
-		t.Fatalf("renamed display projection was not refreshed: %+v", renamed.Showtimes[0])
+	if !reflect.DeepEqual(renamedIDs, originalIDs) {
+		t.Fatalf("display rename changed identity: original=%v renamed=%v", originalIDs, renamedIDs)
+	}
+	if renamed.GetShowtimes()[0].GetMovie().GetTitle() != "테스트 영화 (재개봉)" ||
+		renamed.GetShowtimes()[0].GetAuditorium().GetName() != "IMAX Laser" {
+		t.Fatal("renamed display projection was not refreshed")
 	}
 }
 
 func TestNormalizeSnapshotRejectsInvalidEntities(t *testing.T) {
 	observedAt := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	tests := map[string]func(*contracts.CatalogSnapshot){
-		"nil snapshot": func(*contracts.CatalogSnapshot) {},
-		"provider":     func(snapshot *contracts.CatalogSnapshot) { snapshot.Provider.Name = " " },
-		"theater":      func(snapshot *contracts.CatalogSnapshot) { snapshot.Theaters[0].Name = " " },
-		"movie":        func(snapshot *contracts.CatalogSnapshot) { snapshot.Movies[0].Title = " " },
-		"auditorium": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Auditoriums[0].Name = " "
+	tests := map[string]func(*catalogpb.CatalogSnapshot){
+		"provider": func(snapshot *catalogpb.CatalogSnapshot) { snapshot.GetProvider().SetName(" ") },
+		"theater":  func(snapshot *catalogpb.CatalogSnapshot) { snapshot.GetTheaters()[0].SetName(" ") },
+		"movie":    func(snapshot *catalogpb.CatalogSnapshot) { snapshot.GetMovies()[0].SetTitle(" ") },
+		"auditorium": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.GetAuditoriums()[0].SetName(" ")
 		},
-		"showtime": func(snapshot *contracts.CatalogSnapshot) { snapshot.Showtimes[0].SourceKey = " " },
-		"unknown auditorium theater": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Auditoriums[0].TheaterID = "unknown"
+		"showtime": func(snapshot *catalogpb.CatalogSnapshot) { snapshot.GetShowtimes()[0].SetSourceKey(" ") },
+		"unknown auditorium theater": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.GetAuditoriums()[0].SetTheaterId("unknown")
 		},
-		"unknown showtime movie": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Showtimes[0].Movie.ID = "unknown"
+		"unknown showtime movie": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.GetShowtimes()[0].GetMovie().SetId("unknown")
 		},
-		"cross-theater showtime": func(snapshot *contracts.CatalogSnapshot) {
-			other := snapshot.Theaters[0]
-			other.SourceKey = "서울/영등포"
-			other.Name = "영등포"
-			other.ID = contracts.CatalogID(other.ProviderID, "theater", other.SourceKey)
-			snapshot.Theaters = append(snapshot.Theaters, other)
-			snapshot.Showtimes[0].TheaterID = other.ID
+		"cross-theater showtime": func(snapshot *catalogpb.CatalogSnapshot) {
+			other := proto.CloneOf(snapshot.GetTheaters()[0])
+			other.SetSourceKey("0043")
+			other.SetName("영등포")
+			other.SetId(CatalogID(other.GetProviderId(), "theater", other.GetSourceKey()))
+			snapshot.SetTheaters(append(snapshot.GetTheaters(), other))
+			snapshot.GetShowtimes()[0].SetTheaterId(other.GetId())
 		},
-		"duplicate theater": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Theaters = append(snapshot.Theaters, snapshot.Theaters[0])
+		"duplicate theater": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.SetTheaters(append(snapshot.GetTheaters(), proto.CloneOf(snapshot.GetTheaters()[0])))
 		},
-		"duplicate movie": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Movies = append(snapshot.Movies, snapshot.Movies[0])
+		"duplicate movie": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.SetMovies(append(snapshot.GetMovies(), proto.CloneOf(snapshot.GetMovies()[0])))
 		},
-		"duplicate auditorium": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Auditoriums = append(snapshot.Auditoriums, snapshot.Auditoriums[0])
+		"duplicate auditorium": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.SetAuditoriums(append(snapshot.GetAuditoriums(), proto.CloneOf(snapshot.GetAuditoriums()[0])))
 		},
-		"duplicate showtime": func(snapshot *contracts.CatalogSnapshot) {
-			snapshot.Showtimes = append(snapshot.Showtimes, snapshot.Showtimes[0])
+		"duplicate showtime": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.SetShowtimes(append(snapshot.GetShowtimes(), proto.CloneOf(snapshot.GetShowtimes()[0])))
 		},
+	}
+	if err := NormalizeSnapshot(nil); err == nil {
+		t.Fatal("NormalizeSnapshot(nil) accepted a nil snapshot")
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			if name == "nil snapshot" {
-				if err := NormalizeSnapshot(nil); err == nil {
-					t.Fatal("NormalizeSnapshot(nil) accepted a nil snapshot")
-				}
-				return
-			}
 			snapshot := catalogSnapshotFixture(observedAt)
-			mutate(&snapshot)
-			if err := NormalizeSnapshot(&snapshot); err == nil {
+			mutate(snapshot)
+			if err := NormalizeSnapshot(snapshot); err == nil {
 				t.Fatal("NormalizeSnapshot() accepted invalid catalog")
 			}
 		})
 	}
 }
 
-func TestNormalizeSeatMapVersionCanonicalizesLayout(t *testing.T) {
+func TestNormalizeSeatMapCanonicalizesLayout(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	layout := validSeatMapLayout(2)
-	layout.Seats[0].Features = []string{" aisle ", "premium", "aisle"}
-	layout.Seats[0], layout.Seats[1] = layout.Seats[1], layout.Seats[0]
-	raw, err := json.MarshalIndent(layout, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	version := contracts.SeatMapVersion{
-		AuditoriumID: " auditorium ",
-		Capacity:     2,
-		Layout:       raw,
-	}
+	layout.GetSeats()[0].SetFeatures([]string{" aisle ", "premium", "aisle"})
+	layout.SetSeats([]*seatmappb.Seat{layout.GetSeats()[1], layout.GetSeats()[0]})
+	snapshot := &seatmappb.Snapshot{}
+	snapshot.SetAuditoriumId(" auditorium ")
+	snapshot.SetCapacity(2)
+	snapshot.SetLayout(layout)
 
-	if err := NormalizeSeatMapVersion(&version, now); err != nil {
-		t.Fatalf("NormalizeSeatMapVersion() error = %v", err)
+	if err := NormalizeSeatMap(snapshot, now); err != nil {
+		t.Fatalf("NormalizeSeatMap() error = %v", err)
 	}
-	var normalized contracts.SeatMapLayout
-	if err := json.Unmarshal(version.Layout, &normalized); err != nil {
-		t.Fatal(err)
+	if snapshot.GetAuditoriumId() != "auditorium" || snapshot.GetLayout().GetSeats()[0].GetLabel() != "A1" ||
+		!reflect.DeepEqual(snapshot.GetLayout().GetSeats()[0].GetFeatures(), []string{"aisle", "premium"}) {
+		t.Fatalf("canonical snapshot = %+v", snapshot)
 	}
-	if version.AuditoriumID != "auditorium" || len(normalized.Seats) != 2 ||
-		normalized.Seats[0].Label != "A1" || !reflect.DeepEqual(normalized.Seats[0].Features, []string{"aisle", "premium"}) {
-		t.Fatalf("canonical version = %+v", version)
+	if snapshot.GetLayoutHash() == "" || snapshot.GetId() != SeatMapVersionID(snapshot.GetAuditoriumId(), snapshot.GetLayoutHash()) {
+		t.Fatalf("seat-map identity = %+v", snapshot)
 	}
-	if version.LayoutHash == "" || version.ID != contracts.SeatMapVersionID(version.AuditoriumID, version.LayoutHash) {
-		t.Fatalf("seat-map identity = %+v", version)
-	}
-	if version.ObservedAt != now {
-		t.Fatalf("observedAt = %v, want %v", version.ObservedAt, now)
+	if !snapshot.GetObservedAt().AsTime().Equal(now) {
+		t.Fatalf("observedAt = %v, want %v", snapshot.GetObservedAt().AsTime(), now)
 	}
 }
 
-func TestNormalizeSeatMapVersionRejectsInvalidInput(t *testing.T) {
+func TestNormalizeSeatMapRejectsInvalidInput(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	validLayout := mustLayoutJSON(t, validSeatMapLayout(1))
-	tests := map[string]contracts.SeatMapVersion{
-		"nil version":        {},
-		"missing auditorium": {Capacity: 1, Layout: validLayout},
-		"missing capacity":   {AuditoriumID: "auditorium", Layout: validLayout},
-		"invalid layout":     {AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`[]`)},
-		"future observation": {
-			AuditoriumID: "auditorium", Capacity: 1, Layout: validLayout,
-			ObservedAt: now.Add(MaximumObservationClockSkew + time.Second),
-		},
-		"noncanonical id": {
-			ID: "wrong", AuditoriumID: "auditorium", Capacity: 1, Layout: validLayout,
-		},
+	tests := map[string]*seatmappb.Snapshot{
+		"missing auditorium": seatMapFixture("", 1, validSeatMapLayout(1), nil),
+		"missing capacity":   seatMapFixture("auditorium", 0, validSeatMapLayout(1), nil),
+		"missing layout":     seatMapFixture("auditorium", 1, nil, nil),
+		"future observation": seatMapFixture("auditorium", 1, validSeatMapLayout(1), timestamppb.New(now.Add(MaximumObservationClockSkew+time.Second))),
+		"noncanonical id":    seatMapFixture("auditorium", 1, validSeatMapLayout(1), nil),
 	}
-	for name, version := range tests {
+	tests["noncanonical id"].SetId("wrong")
+	if err := NormalizeSeatMap(nil, now); err == nil {
+		t.Fatal("NormalizeSeatMap(nil) accepted a nil value")
+	}
+	for name, snapshot := range tests {
 		t.Run(name, func(t *testing.T) {
-			if name == "nil version" {
-				if err := NormalizeSeatMapVersion(nil, now); err == nil {
-					t.Fatal("NormalizeSeatMapVersion(nil) accepted a nil value")
-				}
-				return
-			}
-			if err := NormalizeSeatMapVersion(&version, now); err == nil {
-				t.Fatal("NormalizeSeatMapVersion() accepted invalid input")
+			if err := NormalizeSeatMap(snapshot, now); err == nil {
+				t.Fatal("NormalizeSeatMap() accepted invalid input")
 			}
 		})
 	}
 }
 
-func TestNormalizeSeatMapVersionRejectsCorruptCanonicalLayout(t *testing.T) {
+func TestNormalizeSeatMapRejectsCorruptCanonicalLayout(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	tests := map[string]func(*contracts.SeatMapLayout){
-		"wrong auditorium": func(layout *contracts.SeatMapLayout) { layout.Seats[0].AuditoriumID = "other" },
-		"wrong id":         func(layout *contracts.SeatMapLayout) { layout.Seats[0].ID = "wrong" },
-		"wrong label":      func(layout *contracts.SeatMapLayout) { layout.Seats[0].Label = "A2" },
-		"lowercase row":    func(layout *contracts.SeatMapLayout) { layout.Seats[0].Row = "a" },
-		"missing type":     func(layout *contracts.SeatMapLayout) { layout.Seats[0].Type = " " },
-		"invalid x":        func(layout *contracts.SeatMapLayout) { layout.Seats[0].X = 1.01 },
-		"duplicate label": func(layout *contracts.SeatMapLayout) {
-			duplicate := layout.Seats[0]
-			layout.Seats = append(layout.Seats, duplicate)
+	tests := map[string]func(*seatmappb.Layout){
+		"wrong auditorium": func(layout *seatmappb.Layout) { layout.GetSeats()[0].SetAuditoriumId("other") },
+		"wrong id":         func(layout *seatmappb.Layout) { layout.GetSeats()[0].SetId("wrong") },
+		"wrong label":      func(layout *seatmappb.Layout) { layout.GetSeats()[0].SetLabel("A2") },
+		"lowercase row":    func(layout *seatmappb.Layout) { layout.GetSeats()[0].SetRow("a") },
+		"missing type":     func(layout *seatmappb.Layout) { layout.GetSeats()[0].SetType(" ") },
+		"invalid x":        func(layout *seatmappb.Layout) { layout.GetSeats()[0].SetX(1.01) },
+		"duplicate label": func(layout *seatmappb.Layout) {
+			layout.SetSeats(append(layout.GetSeats(), proto.CloneOf(layout.GetSeats()[0])))
 		},
-		"invalid zone":  func(layout *contracts.SeatMapLayout) { layout.Zones[0].MinX = 0.8; layout.Zones[0].MaxX = 0.2 },
-		"invalid block": func(layout *contracts.SeatMapLayout) { layout.Blocks[0].MaxY = 1.1 },
+		"invalid zone": func(layout *seatmappb.Layout) {
+			layout.GetZones()[0].SetMinX(0.8)
+			layout.GetZones()[0].SetMaxX(0.2)
+		},
+		"invalid block": func(layout *seatmappb.Layout) { layout.GetBlocks()[0].SetMaxY(1.1) },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			layout := validSeatMapLayout(1)
-			mutate(&layout)
-			version := contracts.SeatMapVersion{
-				AuditoriumID: "auditorium", Capacity: len(layout.Seats), Layout: mustLayoutJSON(t, layout),
-			}
-			if err := NormalizeSeatMapVersion(&version, now); err == nil {
-				t.Fatal("NormalizeSeatMapVersion() accepted corrupt canonical layout")
+			mutate(layout)
+			if err := NormalizeSeatMap(seatMapFixture("auditorium", numeric.ClampInt32(len(layout.GetSeats())), layout, nil), now); err == nil {
+				t.Fatal("NormalizeSeatMap() accepted corrupt canonical layout")
 			}
 		})
 	}
-	version := contracts.SeatMapVersion{
-		AuditoriumID: "auditorium", Capacity: 2,
-		Layout: mustLayoutJSON(t, validSeatMapLayout(1)),
-	}
-	if err := NormalizeSeatMapVersion(&version, now); err == nil {
-		t.Fatal("NormalizeSeatMapVersion() accepted a capacity mismatch")
+	if err := NormalizeSeatMap(seatMapFixture("auditorium", 2, validSeatMapLayout(1), nil), now); err == nil {
+		t.Fatal("NormalizeSeatMap() accepted a capacity mismatch")
 	}
 }
 
-func validSeatMapLayout(count int) contracts.SeatMapLayout {
+func validSeatMapLayout(count int) *seatmappb.Layout {
 	const auditoriumID = "auditorium"
-	seats := make([]contracts.SeatMapSeat, 0, count)
+	seats := make([]*seatmappb.Seat, 0, count)
 	for number := 1; number <= count; number++ {
 		label := "A" + string(rune('0'+number))
-		seats = append(seats, contracts.SeatMapSeat{
-			ID: contracts.SeatID(auditoriumID, label), AuditoriumID: auditoriumID,
-			Label: label, Row: "A", Number: number, X: float64(number) / float64(count+1), Y: 0.5,
-			Type: "standard", Features: []string{},
-		})
+		seat := &seatmappb.Seat{}
+		seat.SetId(SeatID(auditoriumID, label))
+		seat.SetAuditoriumId(auditoriumID)
+		seat.SetLabel(label)
+		seat.SetRow("A")
+		seat.SetNumber(int32(number))
+		seat.SetX(float64(number) / float64(count+1))
+		seat.SetY(0.5)
+		seat.SetType("standard")
+		seats = append(seats, seat)
 	}
-	return contracts.SeatMapLayout{
-		Seats:  seats,
-		Zones:  []contracts.LayoutZone{{Code: "zone-1", Name: "일반", MinX: 0, MaxX: 1, MinY: 0, MaxY: 1, Capacity: count}},
-		Blocks: []contracts.LayoutBlock{{Code: "block-1", Name: "중앙", MinX: 0, MaxX: 1, MinY: 0, MaxY: 1}},
-	}
+	zone := &seatmappb.LayoutZone{}
+	zone.SetCode("zone-1")
+	zone.SetName("일반")
+	zone.SetMinX(0)
+	zone.SetMaxX(1)
+	zone.SetMinY(0)
+	zone.SetMaxY(1)
+	zone.SetCapacity(numeric.ClampInt32(count))
+	block := &seatmappb.LayoutBlock{}
+	block.SetCode("block-1")
+	block.SetName("중앙")
+	block.SetMinX(0)
+	block.SetMaxX(1)
+	block.SetMinY(0)
+	block.SetMaxY(1)
+	layout := &seatmappb.Layout{}
+	layout.SetSeats(seats)
+	layout.SetZones([]*seatmappb.LayoutZone{zone})
+	layout.SetBlocks([]*seatmappb.LayoutBlock{block})
+	return layout
 }
 
-func mustLayoutJSON(t *testing.T, layout contracts.SeatMapLayout) json.RawMessage {
-	t.Helper()
-	raw, err := json.Marshal(layout)
-	if err != nil {
-		t.Fatal(err)
+func seatMapFixture(auditoriumID string, capacity int32, layout *seatmappb.Layout, observedAt *timestamppb.Timestamp) *seatmappb.Snapshot {
+	snapshot := &seatmappb.Snapshot{}
+	snapshot.SetAuditoriumId(auditoriumID)
+	snapshot.SetCapacity(capacity)
+	snapshot.SetLayout(layout)
+	if observedAt != nil {
+		snapshot.SetObservedAt(observedAt)
 	}
-	return raw
+	return snapshot
 }
 
 func TestValidateObservationTime(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
-	if err := ValidateObservationTime(time.Time{}, now); err != nil {
-		t.Fatalf("zero observation time = %v", err)
+	if err := ValidateObservationTime(time.Time{}, now); err == nil {
+		t.Fatal("zero observation time was accepted")
 	}
 	if err := ValidateObservationTime(now.Add(MaximumObservationClockSkew), now); err != nil {
 		t.Fatalf("maximum tolerated clock skew = %v", err)
@@ -263,32 +263,43 @@ func TestValidateObservationTime(t *testing.T) {
 	}
 }
 
-func catalogSnapshotFixture(observedAt time.Time) contracts.CatalogSnapshot {
-	provider := contracts.Provider{ID: contracts.ProviderCGV, Name: "CGV"}
-	theaterSourceKey := "0056"
-	theater := contracts.Theater{
-		ID:         contracts.CatalogID(provider.ID, "theater", theaterSourceKey),
-		ProviderID: provider.ID, SourceKey: theaterSourceKey, Region: "서울", Name: "용산아이파크몰",
-	}
-	movie := contracts.Movie{
-		ID:         contracts.CatalogID(provider.ID, "movie", "00001234"),
-		ProviderID: provider.ID, SourceKey: "00001234", Title: "테스트 영화",
-	}
-	auditoriumSourceKey := theaterSourceKey + "/0007"
-	auditorium := contracts.Auditorium{
-		ID:        contracts.CatalogID(provider.ID, "auditorium", auditoriumSourceKey),
-		TheaterID: theater.ID, SourceKey: auditoriumSourceKey, Name: "IMAX관", Capacity: 624,
-	}
-	showtimeSourceKey := theaterSourceKey + "/2026-08-14/0007/0003"
-	showtime := contracts.Showtime{
-		ID:         contracts.CatalogID(provider.ID, "showtime", showtimeSourceKey),
-		ProviderID: provider.ID, SourceKey: showtimeSourceKey, TheaterID: theater.ID,
-		Movie: movie, Auditorium: auditorium,
-		StartsAt: observedAt.Add(time.Hour), EndsAt: observedAt.Add(3 * time.Hour), Capacity: 624,
-	}
-	return contracts.CatalogSnapshot{
-		Provider: provider, Theaters: []contracts.Theater{theater}, Movies: []contracts.Movie{movie},
-		Auditoriums: []contracts.Auditorium{auditorium}, Showtimes: []contracts.Showtime{showtime},
-		ObservedAt: observedAt,
-	}
+func catalogSnapshotFixture(observedAt time.Time) *catalogpb.CatalogSnapshot {
+	provider := &catalogpb.Provider{}
+	provider.SetId(ProviderCGV)
+	provider.SetName("CGV")
+	theater := &catalogpb.Theater{}
+	theater.SetProviderId(provider.GetId())
+	theater.SetSourceKey("0056")
+	theater.SetRegion("서울")
+	theater.SetName("용산아이파크몰")
+	theater.SetId(CatalogID(provider.GetId(), "theater", theater.GetSourceKey()))
+	movie := &catalogpb.Movie{}
+	movie.SetProviderId(provider.GetId())
+	movie.SetSourceKey("00001234")
+	movie.SetTitle("테스트 영화")
+	movie.SetId(CatalogID(provider.GetId(), "movie", movie.GetSourceKey()))
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetTheaterId(theater.GetId())
+	auditorium.SetSourceKey("0056/0007")
+	auditorium.SetName("IMAX관")
+	auditorium.SetCapacity(624)
+	auditorium.SetId(CatalogID(provider.GetId(), "auditorium", auditorium.GetSourceKey()))
+	showtime := &catalogpb.Showtime{}
+	showtime.SetProviderId(provider.GetId())
+	showtime.SetSourceKey("0056/2026-08-14/0007/0003")
+	showtime.SetTheaterId(theater.GetId())
+	showtime.SetMovie(proto.CloneOf(movie))
+	showtime.SetAuditorium(proto.CloneOf(auditorium))
+	showtime.SetStartsAt(timestamppb.New(observedAt.Add(time.Hour)))
+	showtime.SetEndsAt(timestamppb.New(observedAt.Add(3 * time.Hour)))
+	showtime.SetCapacity(624)
+	showtime.SetId(CatalogID(provider.GetId(), "showtime", showtime.GetSourceKey()))
+	snapshot := &catalogpb.CatalogSnapshot{}
+	snapshot.SetProvider(provider)
+	snapshot.SetTheaters([]*catalogpb.Theater{theater})
+	snapshot.SetMovies([]*catalogpb.Movie{movie})
+	snapshot.SetAuditoriums([]*catalogpb.Auditorium{auditorium})
+	snapshot.SetShowtimes([]*catalogpb.Showtime{showtime})
+	snapshot.SetObservedAt(timestamppb.New(observedAt))
+	return snapshot
 }

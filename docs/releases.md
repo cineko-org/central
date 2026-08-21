@@ -10,7 +10,7 @@
 ## Wire contract
 
 - CI registers strict typed `ReleaseSet<T>` JSON with `POST /v1/release-registry/{component}` after artifact or image verification.
-- Authentication is `Authorization: Bearer $CINEKO_RELEASE_PUBLISH_TOKEN` plus the Cineko protocol header.
+- Authentication is `Authorization: Bearer $CINEKO_RELEASE_PUBLISH_TOKEN`. Request and response bodies use only the current generated release ProtoJSON contract.
 - Desktop sets must contain exactly `darwin/arm64`, `linux/amd64`, and `windows/amd64`. Central validation is the supported-target source of truth; a partial set never activates.
 - Probe sets contain one verified multi-architecture image digest and do not affect desktop clients.
 - A new immutable set returns `201`; an identical retry returns `200`; changed data for the same component, channel, and version returns `409 conflict`.
