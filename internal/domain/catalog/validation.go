@@ -5,7 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,7 +65,7 @@ func NormalizeSeatMapVersion(version *contracts.SeatMapVersion, now time.Time) e
 	if version.AuditoriumID == "" || version.Capacity < 1 {
 		return errors.New("seat map identity and capacity are required")
 	}
-	canonical, hash, err := canonicalLayout(version.Layout)
+	canonical, hash, err := canonicalLayout(version.Layout, version.AuditoriumID, version.Capacity)
 	if err != nil {
 		return err
 	}
@@ -195,15 +199,107 @@ func normalizedStrings(values []string) []string {
 	return result
 }
 
-func canonicalLayout(raw json.RawMessage) (json.RawMessage, string, error) {
-	var value map[string]any
-	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
-		return nil, "", errors.New("seat map layout must be a JSON object")
+func canonicalLayout(raw json.RawMessage, auditoriumID string, capacity int) (json.RawMessage, string, error) {
+	var layout contracts.SeatMapLayout
+	if err := json.Unmarshal(raw, &layout); err != nil {
+		return nil, "", errors.New("seat map layout must use the canonical schema")
 	}
-	// A successful decode into map[string]any is always JSON encodable.
-	canonical, _ := json.Marshal(value)
+	if len(layout.Seats) != capacity {
+		return nil, "", fmt.Errorf("seat map contains %d seats, expected %d", len(layout.Seats), capacity)
+	}
+	if err := normalizeLayout(&layout, auditoriumID); err != nil {
+		return nil, "", err
+	}
+	// A successfully validated contract layout is always JSON encodable.
+	canonical, _ := json.Marshal(layout)
 	digest := sha256.Sum256(canonical)
 	return canonical, hex.EncodeToString(digest[:]), nil
+}
+
+func normalizeLayout(layout *contracts.SeatMapLayout, auditoriumID string) error {
+	seenIDs := make(map[string]struct{}, len(layout.Seats))
+	seenLabels := make(map[string]struct{}, len(layout.Seats))
+	for index := range layout.Seats {
+		if err := normalizeSeat(&layout.Seats[index], auditoriumID, seenIDs, seenLabels); err != nil {
+			return err
+		}
+	}
+	if err := validateLayoutGroups(layout); err != nil {
+		return err
+	}
+	sortLayout(layout)
+	return nil
+}
+
+func normalizeSeat(
+	seat *contracts.SeatMapSeat,
+	auditoriumID string,
+	seenIDs map[string]struct{},
+	seenLabels map[string]struct{},
+) error {
+	seat.AuditoriumID = strings.TrimSpace(seat.AuditoriumID)
+	seat.Label = strings.TrimSpace(seat.Label)
+	seat.Row = strings.TrimSpace(seat.Row)
+	seat.Type = strings.TrimSpace(seat.Type)
+	seat.Features = normalizedStrings(seat.Features)
+	seat.SourceClasses = normalizedStrings(seat.SourceClasses)
+	canonicalLabel := seat.Row + strconv.Itoa(seat.Number)
+	if seat.AuditoriumID != auditoriumID || seat.Row == "" || seat.Row != strings.ToUpper(seat.Row) ||
+		seat.Number < 1 || seat.Label != canonicalLabel || seat.Type == "" ||
+		seat.ID != contracts.SeatID(auditoriumID, seat.Label) {
+		return errors.New("seat map contains a noncanonical seat")
+	}
+	if !normalizedCoordinate(seat.X) || !normalizedCoordinate(seat.Y) {
+		return fmt.Errorf("seat %s position must be finite and normalized to 0..1", seat.Label)
+	}
+	if _, duplicate := seenIDs[seat.ID]; duplicate {
+		return errors.New("seat map contains a duplicate seat id")
+	}
+	if _, duplicate := seenLabels[seat.Label]; duplicate {
+		return errors.New("seat map contains a duplicate seat label")
+	}
+	seenIDs[seat.ID] = struct{}{}
+	seenLabels[seat.Label] = struct{}{}
+	return nil
+}
+
+func validateLayoutGroups(layout *contracts.SeatMapLayout) error {
+	for _, zone := range layout.Zones {
+		if zone.Capacity < 0 || !normalizedBounds(zone.MinX, zone.MaxX, zone.MinY, zone.MaxY) {
+			return errors.New("seat map contains an invalid zone")
+		}
+	}
+	for _, block := range layout.Blocks {
+		if !normalizedBounds(block.MinX, block.MaxX, block.MinY, block.MaxY) {
+			return errors.New("seat map contains an invalid block")
+		}
+	}
+	return nil
+}
+
+func sortLayout(layout *contracts.SeatMapLayout) {
+	sort.Slice(layout.Seats, func(i, j int) bool { return layout.Seats[i].Label < layout.Seats[j].Label })
+	sort.Slice(layout.Zones, func(i, j int) bool {
+		if layout.Zones[i].Code == layout.Zones[j].Code {
+			return layout.Zones[i].Name < layout.Zones[j].Name
+		}
+		return layout.Zones[i].Code < layout.Zones[j].Code
+	})
+	sort.Slice(layout.Blocks, func(i, j int) bool {
+		if layout.Blocks[i].Code == layout.Blocks[j].Code {
+			return layout.Blocks[i].Name < layout.Blocks[j].Name
+		}
+		return layout.Blocks[i].Code < layout.Blocks[j].Code
+	})
+}
+
+func normalizedCoordinate(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
+}
+
+func normalizedBounds(minX, maxX, minY, maxY float64) bool {
+	return normalizedCoordinate(minX) && normalizedCoordinate(maxX) &&
+		normalizedCoordinate(minY) && normalizedCoordinate(maxY) && minX <= maxX && minY <= maxY
 }
 
 // ValidateObservationTime checks whether a non-zero observation timestamp is

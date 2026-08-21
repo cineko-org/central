@@ -135,7 +135,7 @@ func TestServiceRejectsInvalidRegistrationAndResult(t *testing.T) {
 	seatMap := validResult(now)
 	seatMap.Captures = nil
 	seatMap.SeatMap = &contracts.SeatMapVersion{
-		AuditoriumID: "auditorium", Capacity: 1, Layout: []byte(`{"seats":[{"label":"A1"}]}`),
+		AuditoriumID: "auditorium", Capacity: 1, Layout: seatMapLayoutJSON(t, 1),
 	}
 	if _, err := service.CommitResult(
 		context.Background(), Probe{ID: "probe"}, "assignment", "lease", seatMap,
@@ -155,6 +155,13 @@ func TestServiceRejectsInvalidRegistrationAndResult(t *testing.T) {
 		context.Background(), Probe{ID: "probe"}, "assignment", "lease", partial,
 	); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("partial seat-map result error = %v", err)
+	}
+	seatMapWithCapture := seatMap
+	seatMapWithCapture.Captures = validResult(now).Captures
+	if _, err := service.CommitResult(
+		context.Background(), Probe{ID: "probe"}, "assignment", "lease", seatMapWithCapture,
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("seat-map result with captures error = %v", err)
 	}
 	if _, err := service.RegisterProbe(
 		context.Background(), containerRegistration(), "127.0.0.1:1", "wrong-enrollment-token",

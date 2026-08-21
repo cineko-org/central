@@ -645,7 +645,7 @@ func (store *cycleStore) SeatMapBackfillTarget(
 		JOIN theaters AS theater ON theater.id = auditorium.theater_id AND theater.active
 		JOIN LATERAL (
 			SELECT candidate.* FROM showtimes AS candidate
-			WHERE candidate.auditorium_id = auditorium.id AND candidate.active AND candidate.ends_at > $1
+			WHERE candidate.auditorium_id = auditorium.id AND candidate.active AND candidate.starts_at > $1
 			ORDER BY candidate.starts_at LIMIT 1
 		) AS showtime ON true
 		JOIN movies AS movie ON movie.id = showtime.movie_id AND movie.active

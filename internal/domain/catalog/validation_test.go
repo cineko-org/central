@@ -123,16 +123,28 @@ func TestNormalizeSnapshotRejectsInvalidEntities(t *testing.T) {
 
 func TestNormalizeSeatMapVersionCanonicalizesLayout(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
+	layout := validSeatMapLayout(2)
+	layout.Seats[0].Features = []string{" aisle ", "premium", "aisle"}
+	layout.Seats[0], layout.Seats[1] = layout.Seats[1], layout.Seats[0]
+	raw, err := json.MarshalIndent(layout, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
 	version := contracts.SeatMapVersion{
 		AuditoriumID: " auditorium ",
 		Capacity:     2,
-		Layout:       json.RawMessage(`{ "rows": ["A1"], "columns": 1 }`),
+		Layout:       raw,
 	}
 
 	if err := NormalizeSeatMapVersion(&version, now); err != nil {
 		t.Fatalf("NormalizeSeatMapVersion() error = %v", err)
 	}
-	if version.AuditoriumID != "auditorium" || string(version.Layout) != `{"columns":1,"rows":["A1"]}` {
+	var normalized contracts.SeatMapLayout
+	if err := json.Unmarshal(version.Layout, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	if version.AuditoriumID != "auditorium" || len(normalized.Seats) != 2 ||
+		normalized.Seats[0].Label != "A1" || !reflect.DeepEqual(normalized.Seats[0].Features, []string{"aisle", "premium"}) {
 		t.Fatalf("canonical version = %+v", version)
 	}
 	if version.LayoutHash == "" || version.ID != contracts.SeatMapVersionID(version.AuditoriumID, version.LayoutHash) {
@@ -145,17 +157,18 @@ func TestNormalizeSeatMapVersionCanonicalizesLayout(t *testing.T) {
 
 func TestNormalizeSeatMapVersionRejectsInvalidInput(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
+	validLayout := mustLayoutJSON(t, validSeatMapLayout(1))
 	tests := map[string]contracts.SeatMapVersion{
 		"nil version":        {},
-		"missing auditorium": {Capacity: 1, Layout: json.RawMessage(`{}`)},
-		"missing capacity":   {AuditoriumID: "auditorium", Layout: json.RawMessage(`{}`)},
+		"missing auditorium": {Capacity: 1, Layout: validLayout},
+		"missing capacity":   {AuditoriumID: "auditorium", Layout: validLayout},
 		"invalid layout":     {AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`[]`)},
 		"future observation": {
-			AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`{}`),
+			AuditoriumID: "auditorium", Capacity: 1, Layout: validLayout,
 			ObservedAt: now.Add(MaximumObservationClockSkew + time.Second),
 		},
 		"noncanonical id": {
-			ID: "wrong", AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`{}`),
+			ID: "wrong", AuditoriumID: "auditorium", Capacity: 1, Layout: validLayout,
 		},
 	}
 	for name, version := range tests {
@@ -171,6 +184,70 @@ func TestNormalizeSeatMapVersionRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNormalizeSeatMapVersionRejectsCorruptCanonicalLayout(t *testing.T) {
+	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
+	tests := map[string]func(*contracts.SeatMapLayout){
+		"wrong auditorium": func(layout *contracts.SeatMapLayout) { layout.Seats[0].AuditoriumID = "other" },
+		"wrong id":         func(layout *contracts.SeatMapLayout) { layout.Seats[0].ID = "wrong" },
+		"wrong label":      func(layout *contracts.SeatMapLayout) { layout.Seats[0].Label = "A2" },
+		"lowercase row":    func(layout *contracts.SeatMapLayout) { layout.Seats[0].Row = "a" },
+		"missing type":     func(layout *contracts.SeatMapLayout) { layout.Seats[0].Type = " " },
+		"invalid x":        func(layout *contracts.SeatMapLayout) { layout.Seats[0].X = 1.01 },
+		"duplicate label": func(layout *contracts.SeatMapLayout) {
+			duplicate := layout.Seats[0]
+			layout.Seats = append(layout.Seats, duplicate)
+		},
+		"invalid zone":  func(layout *contracts.SeatMapLayout) { layout.Zones[0].MinX = 0.8; layout.Zones[0].MaxX = 0.2 },
+		"invalid block": func(layout *contracts.SeatMapLayout) { layout.Blocks[0].MaxY = 1.1 },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			layout := validSeatMapLayout(1)
+			mutate(&layout)
+			version := contracts.SeatMapVersion{
+				AuditoriumID: "auditorium", Capacity: len(layout.Seats), Layout: mustLayoutJSON(t, layout),
+			}
+			if err := NormalizeSeatMapVersion(&version, now); err == nil {
+				t.Fatal("NormalizeSeatMapVersion() accepted corrupt canonical layout")
+			}
+		})
+	}
+	version := contracts.SeatMapVersion{
+		AuditoriumID: "auditorium", Capacity: 2,
+		Layout: mustLayoutJSON(t, validSeatMapLayout(1)),
+	}
+	if err := NormalizeSeatMapVersion(&version, now); err == nil {
+		t.Fatal("NormalizeSeatMapVersion() accepted a capacity mismatch")
+	}
+}
+
+func validSeatMapLayout(count int) contracts.SeatMapLayout {
+	const auditoriumID = "auditorium"
+	seats := make([]contracts.SeatMapSeat, 0, count)
+	for number := 1; number <= count; number++ {
+		label := "A" + string(rune('0'+number))
+		seats = append(seats, contracts.SeatMapSeat{
+			ID: contracts.SeatID(auditoriumID, label), AuditoriumID: auditoriumID,
+			Label: label, Row: "A", Number: number, X: float64(number) / float64(count+1), Y: 0.5,
+			Type: "standard", Features: []string{},
+		})
+	}
+	return contracts.SeatMapLayout{
+		Seats:  seats,
+		Zones:  []contracts.LayoutZone{{Code: "zone-1", Name: "일반", MinX: 0, MaxX: 1, MinY: 0, MaxY: 1, Capacity: count}},
+		Blocks: []contracts.LayoutBlock{{Code: "block-1", Name: "중앙", MinX: 0, MaxX: 1, MinY: 0, MaxY: 1}},
+	}
+}
+
+func mustLayoutJSON(t *testing.T, layout contracts.SeatMapLayout) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestValidateObservationTime(t *testing.T) {

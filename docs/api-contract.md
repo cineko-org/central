@@ -4,8 +4,8 @@ This document is the service-point inventory for the current API. It describes p
 wire behavior only; deployment addresses, secret material, and network topology are
 intentionally outside this contract.
 
-The router has 59 literal service points and five resource-family declarations. The
-five declarations expand over five resource kinds, producing 84 concrete method/path
+The router has 58 literal service points and five resource-family declarations. The
+five declarations expand over five resource kinds, producing 83 concrete method/path
 service points in total.
 
 ## Shared rules
@@ -108,9 +108,8 @@ shown; this distinction is deliberate documentation of the implemented boundary.
 | `PUT /v1/configuration` | `Idempotency-Key`, revision precondition | `200` |
 | `GET /v1/catalog` | reads active shared catalog | `200` |
 | `POST /v1/catalog/snapshots` | non-empty `Idempotency-Key`; `X-Cineko-Installation-Id` must identify this user's online Client Probe with catalog capability; additive canonical upsert | `200` generation |
-| `PUT /v1/catalog/seat-map-versions/{versionId}` | non-empty `Idempotency-Key`; same installation proof with seat-map capability; body ID must match path | `200` generation |
 | `GET /v1/catalog/auditoriums/{auditoriumId}/seat-map` | reads current stored layout | `200` or `404` |
-| `POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:request` | marks missing/stale layout for collection | `202` |
+| `POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve` | returns the stored current layout immediately; when absent, returns `waiting` after Central arranges the work behind this boundary | `200` resolution |
 
 The resource family is `presets`, `monitors`, `reservations`,
 `external-operations`, and `app-events`. For each `{resource}`:
