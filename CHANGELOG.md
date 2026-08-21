@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/cineko-org/central/compare/v2.5.0...v2.6.0) (2026-08-21)
+
+
+### Features
+
+* centralize seat map resolution ([#16](https://github.com/cineko-org/central/issues/16)) ([8441363](https://github.com/cineko-org/central/commit/84413634ac7d31112d7f72298abe7699379ce529))
+
 ## [2.5.0](https://github.com/cineko-org/central/compare/v2.4.2...v2.5.0) (2026-08-20)
 
 
