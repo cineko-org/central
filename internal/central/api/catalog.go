@@ -1,11 +1,10 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
-	"strings"
 
-	"github.com/cineko-org/central/internal/central"
 	contracts "github.com/cineko-org/contracts/v3"
 )
 
@@ -94,60 +93,32 @@ func (server *Server) putClientCatalogSnapshot(writer http.ResponseWriter, reque
 	server.writeJSON(writer, http.StatusOK, map[string]int64{"generation": generation})
 }
 
-func (server *Server) putClientSeatMapVersion(writer http.ResponseWriter, request *http.Request) {
-	if !server.requireIdempotencyKey(writer, request) {
-		return
-	}
-	principal, ok := server.authenticatedClient(writer, request)
-	if !ok || !server.requireCatalog(writer, request) {
-		return
-	}
-	if err := server.catalog.AuthorizeClientWrite(
-		request.Context(), principal, request.Header.Get(clientInstallationHeader),
-		contracts.CapabilityCGVSeatMapCapture,
-	); err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	var version contracts.SeatMapVersion
-	if !server.decodeJSON(writer, request, &version) {
-		return
-	}
-	versionID := strings.TrimSpace(request.PathValue("versionId"))
-	if versionID == "" || strings.TrimSpace(version.ID) != versionID {
-		server.writeError(writer, request, central.InvalidRequest("seat map version id does not match request path"))
-		return
-	}
-	generation, err := server.catalog.PutSeatMapVersion(request.Context(), version)
-	if err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	writer.Header().Set(contracts.CatalogGenerationHeader, strconv.FormatInt(generation, 10))
-	server.writeJSON(writer, http.StatusOK, map[string]int64{"generation": generation})
-}
-
 func (server *Server) getClientSeatMapVersion(writer http.ResponseWriter, request *http.Request) {
+	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (any, error) {
+		return server.catalog.SeatMapVersion(ctx, auditoriumID)
+	})
+}
+
+func (server *Server) resolveClientSeatMap(writer http.ResponseWriter, request *http.Request) {
+	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (any, error) {
+		return server.catalog.ResolveSeatMap(ctx, auditoriumID)
+	})
+}
+
+func (server *Server) writeClientSeatMap(
+	writer http.ResponseWriter,
+	request *http.Request,
+	load func(context.Context, string) (any, error),
+) {
 	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
 		return
 	}
-	version, err := server.catalog.SeatMapVersion(request.Context(), request.PathValue("auditoriumId"))
+	value, err := load(request.Context(), request.PathValue("auditoriumId"))
 	if err != nil {
 		server.writeError(writer, request, err)
 		return
 	}
-	server.writeJSON(writer, http.StatusOK, version)
-}
-
-func (server *Server) requestClientSeatMapBackfill(writer http.ResponseWriter, request *http.Request) {
-	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
-		return
-	}
-	if err := server.catalog.RequestSeatMapBackfill(request.Context(), request.PathValue("auditoriumId")); err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	server.writeJSON(writer, http.StatusAccepted, map[string]string{"status": "waiting"})
+	server.writeJSON(writer, http.StatusOK, value)
 }
 
 func (server *Server) requireCatalog(writer http.ResponseWriter, request *http.Request) bool {

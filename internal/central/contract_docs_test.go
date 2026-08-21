@@ -18,7 +18,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	document := contractReadFile(t, filepath.Join(root, "docs/api-contract.md"))
 
 	staticRoute := regexp.MustCompile(`mux\.Handle(?:Func)?\("([A-Z]+ /[^"]*)"`)
-	static := make([]string, 0, 59)
+	static := make([]string, 0, 58)
 	for _, line := range strings.Split(source, "\n") {
 		if strings.Contains(line, "+resource") {
 			continue
@@ -28,7 +28,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 			static = append(static, match[1])
 		}
 	}
-	if len(static) != 59 {
+	if len(static) != 58 {
 		t.Fatalf("literal HTTP service points = %d, update contract inventory", len(static))
 	}
 	for _, route := range static {
@@ -53,8 +53,8 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 			t.Errorf("HTTP contract does not document family %s", family)
 		}
 	}
-	if concrete := len(static) + len(resources)*len(families); concrete != 84 ||
-		!strings.Contains(document, "84 concrete method/path") {
+	if concrete := len(static) + len(resources)*len(families); concrete != 83 ||
+		!strings.Contains(document, "83 concrete method/path") {
 		t.Fatalf("expanded HTTP service points = %d, update contract inventory", concrete)
 	}
 	methodCounts := map[string]int{}
@@ -64,7 +64,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	for _, family := range families {
 		methodCounts[strings.SplitN(family, " ", 2)[0]] += len(resources)
 	}
-	wantMethodCounts := map[string]int{"GET": 35, "POST": 26, "PUT": 15, "DELETE": 8}
+	wantMethodCounts := map[string]int{"GET": 35, "POST": 26, "PUT": 14, "DELETE": 8}
 	for method, want := range wantMethodCounts {
 		if methodCounts[method] != want {
 			t.Errorf("%s service points = %d, want %d", method, methodCounts[method], want)

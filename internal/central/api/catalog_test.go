@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,16 +63,8 @@ func TestClientCatalogAPI(t *testing.T) {
 		t.Fatalf("get catalog = %d, %s", loaded.Code, loaded.Body.String())
 	}
 
-	layout := json.RawMessage(`{"seats":[{"id":"A1"}],"zones":[],"blocks":[]}`)
-	versionID := contracts.SeatMapVersionID(snapshot.Auditoriums[0].ID, catalogLayoutHash(t, layout))
-	version := contracts.SeatMapVersion{
-		ID: versionID, AuditoriumID: snapshot.Auditoriums[0].ID,
-		Capacity: 1, Layout: layout, ObservedAt: time.Now().UTC(),
-	}
-	seatMap := request(t, server.Handler(), http.MethodPut,
-		"/v1/catalog/seat-map-versions/"+versionID, version, headers)
-	if seatMap.Code != http.StatusOK || repository.seatMap.ID != versionID {
-		t.Fatalf("put seat map = %d, %s; stored %+v", seatMap.Code, seatMap.Body.String(), repository.seatMap)
+	repository.seatMap = contracts.SeatMapVersion{
+		ID: "stored-version", AuditoriumID: snapshot.Auditoriums[0].ID,
 	}
 	current := request(t, server.Handler(), http.MethodGet,
 		"/v1/catalog/auditoriums/"+snapshot.Auditoriums[0].ID+"/seat-map", nil, getHeaders)
@@ -80,30 +72,23 @@ func TestClientCatalogAPI(t *testing.T) {
 		t.Fatalf("get seat map = %d, %s", current.Code, current.Body.String())
 	}
 	backfill := request(t, server.Handler(), http.MethodPost,
-		"/v1/catalog/auditoriums/"+snapshot.Auditoriums[0].ID+"/seat-map:request", nil, getHeaders)
-	if backfill.Code != http.StatusAccepted || repository.requestedSeatMap != snapshot.Auditoriums[0].ID {
+		"/v1/catalog/auditoriums/"+snapshot.Auditoriums[0].ID+"/seat-map:resolve", nil, getHeaders)
+	if backfill.Code != http.StatusOK || repository.requestedSeatMap != "" ||
+		!strings.Contains(backfill.Body.String(), `"status":"ready"`) {
 		t.Fatalf("request seat map = %d, %s; requested %q", backfill.Code, backfill.Body.String(), repository.requestedSeatMap)
 	}
-
-	mismatched := request(t, server.Handler(), http.MethodPut,
-		"/v1/catalog/seat-map-versions/other", version, headers)
-	assertAPIError(t, mismatched, http.StatusBadRequest, "invalid_request")
-}
-
-func catalogLayoutHash(t *testing.T, layout json.RawMessage) string {
-	t.Helper()
-	fake := &apiCatalogRepository{generation: 1}
-	service, err := central.NewCatalogService(fake)
-	if err != nil {
-		t.Fatal(err)
+	repository.seatMap = contracts.SeatMapVersion{}
+	waiting := request(t, server.Handler(), http.MethodPost,
+		"/v1/catalog/auditoriums/"+snapshot.Auditoriums[0].ID+"/seat-map:resolve", nil, getHeaders)
+	if waiting.Code != http.StatusOK || repository.requestedSeatMap != snapshot.Auditoriums[0].ID ||
+		!strings.Contains(waiting.Body.String(), `"status":"waiting"`) {
+		t.Fatalf("resolve missing seat map = %d, %s; requested %q", waiting.Code, waiting.Body.String(), repository.requestedSeatMap)
 	}
-	_, err = service.PutSeatMapVersion(t.Context(), contracts.SeatMapVersion{
-		AuditoriumID: "hash-only", Capacity: 1, Layout: layout, ObservedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatal(err)
+	retiredDirectWrite := request(t, server.Handler(), http.MethodPut,
+		"/v1/catalog/seat-map-versions/legacy", map[string]string{"id": "legacy"}, headers)
+	if retiredDirectWrite.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("retired direct seat-map write = %d, %s", retiredDirectWrite.Code, retiredDirectWrite.Body.String())
 	}
-	return fake.seatMap.LayoutHash
 }
 
 func apiCatalogSnapshot(observedAt time.Time) contracts.CatalogSnapshot {

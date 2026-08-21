@@ -563,7 +563,7 @@ func storeScheduleResult(
 	if _, err := upsertCatalogSnapshotTx(ctx, tx, snapshot); err != nil {
 		return err
 	}
-	if err := storeCaptures(ctx, tx, commit, state.theaterID); err != nil {
+	if err := storeCaptures(ctx, tx, commit, state.theaterID, state.timeZone); err != nil {
 		return err
 	}
 	return enqueueClientExecutions(ctx, tx, commit, state.theaterID, state.timeZone)
@@ -729,13 +729,24 @@ func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.Resu
 	return nil
 }
 
-func storeCaptures(ctx context.Context, tx pgx.Tx, commit central.ResultCommit, theaterID string) error {
+func storeCaptures(
+	ctx context.Context,
+	tx pgx.Tx,
+	commit central.ResultCommit,
+	theaterID string,
+	timeZone string,
+) error {
 	for _, capture := range commit.Result.Captures {
-		opened, err := captureIntroducesNewShowtimes(ctx, tx, theaterID, capture)
+		opened, newShowtimes, err := captureIntroducesNewShowtimes(ctx, tx, theaterID, capture)
 		if err != nil {
 			return err
 		}
 		if err := storeCapture(ctx, tx, commit, theaterID, capture); err != nil {
+			return err
+		}
+		if err := requestMonitoredSeatMapValidation(
+			ctx, tx, theaterID, timeZone, capture.TargetDate, newShowtimes, commit.CommittedAt,
+		); err != nil {
 			return err
 		}
 		if opened {
@@ -752,9 +763,9 @@ func captureIntroducesNewShowtimes(
 	tx pgx.Tx,
 	theaterID string,
 	capture central.Capture,
-) (bool, error) {
+) (bool, []central.Showtime, error) {
 	if !capture.Complete || len(capture.Showtimes) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 	sourceKeys := make([]string, len(capture.Showtimes))
 	startTimes := make([]time.Time, len(capture.Showtimes))
@@ -762,32 +773,93 @@ func captureIntroducesNewShowtimes(
 		sourceKeys[index] = showtime.SourceKey
 		startTimes[index] = showtime.StartsAt
 	}
-	var hasPrior, opened bool
+	var hasPrior bool
 	err := tx.QueryRow(ctx, `
-		SELECT
-			EXISTS (
-				SELECT 1
-				FROM schedule_captures AS previous
-				JOIN observation_assignments AS assignment ON assignment.id = previous.assignment_id
-				WHERE assignment.theater_id = $1 AND previous.target_date = $2
-					AND previous.complete AND previous.observed_at < $3
-			),
-			EXISTS (
-				SELECT 1
-				FROM UNNEST($4::text[], $5::timestamptz[]) AS current(source_key, starts_at)
-				WHERE NOT EXISTS (
-					SELECT 1 FROM showtime_observations AS previous
-					WHERE previous.theater_id = $1
-						AND previous.source_key = current.source_key
-						AND previous.starts_at = current.starts_at
-						AND previous.observed_at < $3
-				)
-			)
-	`, theaterID, capture.TargetDate, capture.ObservedAt, sourceKeys, startTimes).Scan(&hasPrior, &opened)
+		SELECT EXISTS (
+			SELECT 1
+			FROM schedule_captures AS previous
+			JOIN observation_assignments AS assignment ON assignment.id = previous.assignment_id
+			WHERE assignment.theater_id = $1 AND previous.target_date = $2
+				AND previous.complete AND previous.observed_at < $3
+		)
+	`, theaterID, capture.TargetDate, capture.ObservedAt).Scan(&hasPrior)
 	if err != nil {
-		return false, fmt.Errorf("detect newly opened showtimes: %w", err)
+		return false, nil, fmt.Errorf("detect prior schedule capture: %w", err)
 	}
-	return hasPrior && opened, nil
+	rows, err := tx.Query(ctx, `
+		SELECT current.ordinality
+		FROM UNNEST($2::text[], $3::timestamptz[]) WITH ORDINALITY AS current(source_key, starts_at, ordinality)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM showtime_observations AS previous
+			WHERE previous.theater_id = $1
+				AND previous.source_key = current.source_key
+				AND previous.starts_at = current.starts_at
+				AND previous.observed_at < $4
+		)
+	`, theaterID, sourceKeys, startTimes, capture.ObservedAt)
+	if err != nil {
+		return false, nil, fmt.Errorf("detect newly observed showtimes: %w", err)
+	}
+	defer rows.Close()
+	newShowtimes := make([]central.Showtime, 0)
+	for rows.Next() {
+		var ordinal int
+		if err := rows.Scan(&ordinal); err != nil {
+			return false, nil, fmt.Errorf("scan newly observed showtime: %w", err)
+		}
+		if ordinal < 1 || ordinal > len(capture.Showtimes) {
+			return false, nil, errors.New("newly observed showtime ordinal is out of range")
+		}
+		newShowtimes = append(newShowtimes, capture.Showtimes[ordinal-1])
+	}
+	if err := rows.Err(); err != nil {
+		return false, nil, fmt.Errorf("iterate newly observed showtimes: %w", err)
+	}
+	return hasPrior && len(newShowtimes) > 0, newShowtimes, nil
+}
+
+// requestMonitoredSeatMapValidation marks only the auditorium whose newly
+// observed showtime satisfies an active monitor. Reconciliation chooses the
+// Probe and provider visit; Clients do not receive those mechanics.
+func requestMonitoredSeatMapValidation(
+	ctx context.Context,
+	tx pgx.Tx,
+	theaterID string,
+	timeZone string,
+	targetDate string,
+	showtimes []central.Showtime,
+	now time.Time,
+) error {
+	if len(showtimes) == 0 {
+		return nil
+	}
+	location, err := time.LoadLocation(timeZone)
+	if err != nil {
+		return fmt.Errorf("load seat-map validation time zone: %w", err)
+	}
+	targets, err := loadExecutionTargets(ctx, tx, theaterID)
+	if err != nil {
+		return err
+	}
+	auditoriumIDs := make(map[string]struct{})
+	for _, showtime := range showtimes {
+		for _, target := range targets {
+			if executionTargetMatches(target, targetDate, showtime, now, location) {
+				auditoriumIDs[showtime.Auditorium.ID] = struct{}{}
+				break
+			}
+		}
+	}
+	for auditoriumID := range auditoriumIDs {
+		if _, err := tx.Exec(ctx, `
+			UPDATE auditoriums
+			SET seat_map_requested_at = COALESCE(seat_map_requested_at, $2)
+			WHERE id = $1 AND active
+		`, auditoriumID, now); err != nil {
+			return fmt.Errorf("request monitored seat-map validation: %w", err)
+		}
+	}
+	return nil
 }
 
 func activateObservationBurst(ctx context.Context, tx pgx.Tx, theaterID string, now time.Time) error {

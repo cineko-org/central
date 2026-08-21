@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -169,7 +170,7 @@ func TestCatalogServiceCanonicalizesSeatMap(t *testing.T) {
 	service.clock = func() time.Time { return now }
 	version := contracts.SeatMapVersion{
 		AuditoriumID: " auditorium ", Capacity: 2,
-		Layout: json.RawMessage(`{ "rows": [{"seats":["A1","A2"]}] }`),
+		Layout: seatMapLayoutJSON(t, 2),
 	}
 
 	generation, err := service.PutSeatMapVersion(t.Context(), version)
@@ -230,7 +231,7 @@ func TestCatalogServiceBoundaries(t *testing.T) {
 		t.Fatalf("PutSnapshot() = %+v, %v", repository.snapshot, err)
 	}
 	if _, err := service.PutSeatMapVersion(t.Context(), contracts.SeatMapVersion{
-		AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`{}`),
+		AuditoriumID: "auditorium", Capacity: 1, Layout: seatMapLayoutJSON(t, 1),
 	}); !errors.Is(err, errRepository) {
 		t.Fatalf("PutSeatMapVersion() error = %v", err)
 	}
@@ -238,12 +239,13 @@ func TestCatalogServiceBoundaries(t *testing.T) {
 	repository.err = nil
 	for name, version := range map[string]contracts.SeatMapVersion{
 		"future observation": {
-			AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`{}`),
+			AuditoriumID: "auditorium", Capacity: 1, Layout: seatMapLayoutJSON(t, 1),
 			ObservedAt: now.Add(catalogdomain.MaximumObservationClockSkew + time.Second),
 		},
 		"invalid layout": {AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`[]`)},
 		"noncanonical id": {
-			ID: "wrong", AuditoriumID: "auditorium", Capacity: 1, Layout: json.RawMessage(`{}`),
+			ID: "wrong", AuditoriumID: "auditorium", Capacity: 1,
+			Layout: seatMapLayoutJSON(t, 1),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -254,18 +256,60 @@ func TestCatalogServiceBoundaries(t *testing.T) {
 	}
 }
 
+func seatMapLayoutJSON(t *testing.T, count int) json.RawMessage {
+	t.Helper()
+	const auditoriumID = "auditorium"
+	layout := contracts.SeatMapLayout{Seats: make([]contracts.SeatMapSeat, 0, count)}
+	for number := 1; number <= count; number++ {
+		label := fmt.Sprintf("A%d", number)
+		layout.Seats = append(layout.Seats, contracts.SeatMapSeat{
+			ID: contracts.SeatID(auditoriumID, label), AuditoriumID: auditoriumID,
+			Label: label, Row: "A", Number: number, X: float64(number) / float64(count+1), Y: 0.5,
+			Type: "standard", Features: []string{},
+		})
+	}
+	raw, err := json.Marshal(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestCatalogServiceRequestsSeatMapBackfill(t *testing.T) {
 	t.Parallel()
-	repository := &catalogRepositoryFake{}
+	stored := contracts.SeatMapVersion{ID: "version", AuditoriumID: "stored"}
+	repository := &catalogRepositoryFake{seatMap: stored}
 	service, err := NewCatalogService(repository)
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolution, err := service.ResolveSeatMap(t.Context(), "stored")
+	if err != nil || resolution.Status != contracts.SeatMapResolutionReady ||
+		resolution.SeatMap == nil || resolution.SeatMap.ID != stored.ID || repository.requested {
+		t.Fatalf("stored ResolveSeatMap() = %+v, requested = %v, error = %v", resolution, repository.requested, err)
+	}
+	repository.seatMap = contracts.SeatMapVersion{}
+	resolution, err = service.ResolveSeatMap(t.Context(), "missing")
+	if err != nil || resolution.Status != contracts.SeatMapResolutionWaiting ||
+		resolution.SeatMap != nil || !repository.requested {
+		t.Fatalf("missing ResolveSeatMap() = %+v, requested = %v, error = %v", resolution, repository.requested, err)
+	}
+	repository.requested = false
 	if err := service.RequestSeatMapBackfill(t.Context(), " auditorium "); err != nil || !repository.requested {
 		t.Fatalf("RequestSeatMapBackfill() requested = %v, error = %v", repository.requested, err)
 	}
 	if err := service.RequestSeatMapBackfill(t.Context(), " "); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("blank RequestSeatMapBackfill() error = %v", err)
+	}
+	repository.err = errInjectedClient
+	if _, err := service.ResolveSeatMap(t.Context(), "auditorium"); !errors.Is(err, errInjectedClient) {
+		t.Fatalf("seat-map lookup error = %v", err)
+	}
+	repository.err = nil
+	repository.seatMap = contracts.SeatMapVersion{}
+	repository.requestError = errInjectedClient
+	if _, err := service.ResolveSeatMap(t.Context(), "auditorium"); !errors.Is(err, errInjectedClient) {
+		t.Fatalf("seat-map request error = %v", err)
 	}
 }
 
@@ -310,6 +354,7 @@ type catalogRepositoryFake struct {
 	authorizedInstallation string
 	authorizedCapability   string
 	err                    error
+	requestError           error
 }
 
 func (repository *catalogRepositoryFake) AuthorizeCatalogWrite(
@@ -361,10 +406,16 @@ func (repository *catalogRepositoryFake) SeatMapVersion(
 	context.Context,
 	string,
 ) (contracts.SeatMapVersion, error) {
+	if repository.err != nil {
+		return contracts.SeatMapVersion{}, repository.err
+	}
+	if repository.seatMap.AuditoriumID == "" {
+		return contracts.SeatMapVersion{}, ErrNotFound
+	}
 	return repository.seatMap, repository.err
 }
 
 func (repository *catalogRepositoryFake) RequestSeatMapBackfill(context.Context, string, time.Time) error {
 	repository.requested = true
-	return repository.err
+	return repository.requestError
 }

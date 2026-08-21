@@ -2,6 +2,7 @@ package central
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -133,4 +134,25 @@ func (service *CatalogService) RequestSeatMapBackfill(ctx context.Context, audit
 		return fmt.Errorf("%w: auditorium id is required", ErrInvalid)
 	}
 	return service.repository.RequestSeatMapBackfill(ctx, auditoriumID, service.clock().UTC())
+}
+
+// ResolveSeatMap returns Central's current layout or schedules its collection
+// when no stored layout exists.
+func (service *CatalogService) ResolveSeatMap(
+	ctx context.Context,
+	auditoriumID string,
+) (contracts.SeatMapResolution, error) {
+	version, err := service.SeatMapVersion(ctx, auditoriumID)
+	if err == nil {
+		return contracts.SeatMapResolution{
+			Status: contracts.SeatMapResolutionReady, SeatMap: &version,
+		}, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return contracts.SeatMapResolution{}, err
+	}
+	if err := service.RequestSeatMapBackfill(ctx, auditoriumID); err != nil {
+		return contracts.SeatMapResolution{}, err
+	}
+	return contracts.SeatMapResolution{Status: contracts.SeatMapResolutionWaiting}, nil
 }

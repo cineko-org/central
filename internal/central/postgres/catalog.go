@@ -435,6 +435,8 @@ func upsertAuditorium(
 			capacity = EXCLUDED.capacity, active = true,
 			seat_map_requested_at = CASE
 				WHEN auditoriums.current_seat_map_version_id IS NULL
+					OR auditoriums.capacity IS DISTINCT FROM EXCLUDED.capacity
+					OR auditoriums.screen_types IS DISTINCT FROM EXCLUDED.screen_types
 					THEN COALESCE(auditoriums.seat_map_requested_at, EXCLUDED.seat_map_requested_at)
 				ELSE auditoriums.seat_map_requested_at
 			END,

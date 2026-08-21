@@ -22,9 +22,9 @@ Go checksums, and vendored code are reviewed for provenance and drift, not hand-
 
 ## Contract indexes produced by the review
 
-- `api-contract.md`: 59 literal router entries plus five resource templates expanded
-  over five resource kinds, for 84 concrete service points. The method split is 35 GET,
-  26 POST, 15 PUT, and 8 DELETE.
+- `api-contract.md`: 58 literal router entries plus five resource templates expanded
+  over five resource kinds, for 83 concrete service points. The method split is 35 GET,
+  26 POST, 14 PUT, and 8 DELETE.
 - `persistence-contract.md`: every external/background mutation, transaction boundary,
   durable idempotency boundary, and database effect.
 - `state-contract.md`: every persisted state set, transition, retry/lease rule, terminal

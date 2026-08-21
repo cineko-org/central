@@ -167,9 +167,8 @@ func New(service *central.Service, options ...Option) (*Server, error) {
 	mux.HandleFunc("PUT /v1/configuration", server.putClientConfiguration)
 	mux.HandleFunc("GET /v1/catalog", server.getClientCatalog)
 	mux.HandleFunc("POST /v1/catalog/snapshots", server.putClientCatalogSnapshot)
-	mux.HandleFunc("PUT /v1/catalog/seat-map-versions/{versionId}", server.putClientSeatMapVersion)
 	mux.HandleFunc("GET /v1/catalog/auditoriums/{auditoriumId}/seat-map", server.getClientSeatMapVersion)
-	mux.HandleFunc("POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:request", server.requestClientSeatMapBackfill)
+	mux.HandleFunc("POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve", server.resolveClientSeatMap)
 	for _, resource := range []string{
 		"presets", "monitors", "reservations", "external-operations", "app-events",
 	} {

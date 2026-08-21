@@ -239,7 +239,7 @@ func TestCatalogRefreshFailureAndBusyBoundaries(t *testing.T) {
 	}
 }
 
-func TestSeatMapBackfillWaitsForAuthenticatedClientAndPrioritizesRequest(t *testing.T) {
+func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
 	task := central.AssignmentTask{
@@ -258,7 +258,7 @@ func TestSeatMapBackfillWaitsForAuthenticatedClientAndPrioritizesRequest(t *test
 
 	ready := newMemoryCycle()
 	ready.seatMapTarget = &SeatMapBackfillTarget{Task: task, Requested: true}
-	ready.candidates[""] = []CandidateProbe{{ID: "client", NetworkID: "home"}}
+	ready.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: ready, leader: true}, now)
 	report, err = engine.RunOnce(context.Background())
 	if err != nil || !report.SeatMapBackfillCreated || len(ready.created) != 1 {
@@ -287,7 +287,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 			cycle := newMemoryCycle()
 			cycle.failAt = stage
 			cycle.seatMapTarget = &SeatMapBackfillTarget{Task: task}
-			cycle.candidates[""] = []CandidateProbe{{ID: "client", NetworkID: "home"}}
+			cycle.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 			engine := newTestEngine(t, &memoryRepository{cycle: cycle, leader: true}, now)
 			if _, err := engine.RunOnce(context.Background()); err == nil {
 				t.Fatalf("stage %q did not fail", stage)
@@ -297,7 +297,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 
 	idFailure := newMemoryCycle()
 	idFailure.seatMapTarget = &SeatMapBackfillTarget{Task: task}
-	idFailure.candidates[""] = []CandidateProbe{{ID: "client", NetworkID: "home"}}
+	idFailure.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine := newTestEngine(t, &memoryRepository{cycle: idFailure, leader: true}, now)
 	engine.newID = func() (string, error) { return "", io.ErrUnexpectedEOF }
 	if _, err := engine.RunOnce(context.Background()); !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -306,7 +306,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 
 	busy := newMemoryCycle()
 	busy.seatMapTarget = &SeatMapBackfillTarget{Task: task}
-	busy.candidates[""] = []CandidateProbe{{ID: "client", NetworkID: "home"}}
+	busy.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	busy.busyPolicies[""] = true
 	engine = newTestEngine(t, &memoryRepository{cycle: busy, leader: true}, now)
 	report, err := engine.RunOnce(context.Background())
@@ -316,7 +316,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 
 	normal := newMemoryCycle()
 	normal.seatMapTarget = &SeatMapBackfillTarget{Task: task}
-	normal.candidates[""] = []CandidateProbe{{ID: "client", NetworkID: "home"}}
+	normal.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: normal, leader: true}, now)
 	if _, err := engine.RunOnce(context.Background()); err != nil || len(normal.created) != 1 || normal.created[0].Priority != 70 {
 		t.Fatalf("normal seat-map assignment = %+v, %v", normal.created, err)
