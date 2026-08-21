@@ -9,6 +9,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain"
+	contracts "github.com/cineko-org/contracts/v3"
 )
 
 type AdminProbe struct {
@@ -291,7 +292,7 @@ func normalizeObservationPolicyInput(input AdminObservationPolicyInput) (AdminOb
 	input.BurstDurationSeconds = observationBurstDurationSeconds
 	input.Locale = "ko-KR"
 	input.TimeZone = "Asia/Seoul"
-	input.EgressPolicyID = "scan_default"
+	input.EgressPolicyID = string(contracts.EgressPolicyScanDefault)
 	if input.TheaterID == "" {
 		return AdminObservationPolicyInput{}, central.InvalidRequest("theater id is required")
 	}
