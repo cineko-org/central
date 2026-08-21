@@ -258,6 +258,7 @@ func (engine *Engine) scheduleSeatMapBackfill(
 		Deadline: now.Add(seatMapBackfillWindow), CreatedAt: now,
 		Candidates: slices.Clone(candidates), Task: target.Task,
 	}
+	assignment.Task.EgressPolicyID = contracts.EgressPolicyScanDefault
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 		if errors.Is(err, ErrTargetBusy) {
 			report.SeatMapBackfillWaiting = true
@@ -307,7 +308,7 @@ func (engine *Engine) scheduleCatalogRefresh(
 				ProviderID: contracts.ProviderCGV, SourceKey: sourceKey,
 				Region: "system", Name: "CGV catalog",
 			},
-			Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: "scan_default",
+			Locale: "ko-KR", TimeZone: "Asia/Seoul", EgressPolicyID: contracts.EgressPolicyScanDefault,
 		},
 	}
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
@@ -558,7 +559,8 @@ func (engine *Engine) newAssignment(
 		Lane: plan.Lane, HotTargetFingerprint: plan.HotTargetFingerprint,
 		Task: central.AssignmentTask{
 			Kind: policy.TaskKind, Theater: policy.Theater, TargetDates: plan.TargetDates,
-			Locale: policy.Locale, TimeZone: policy.TimeZone, EgressPolicyID: policy.EgressPolicyID,
+			Locale: policy.Locale, TimeZone: policy.TimeZone,
+			EgressPolicyID: contracts.EgressPolicyID(policy.EgressPolicyID),
 		},
 		NotBefore: now, Deadline: now.Add(policy.ExecutionWindow), FinishedAt: finishedAt,
 		ReasonCode: reason, CreatedAt: now, Candidates: slices.Clone(candidates),
@@ -614,6 +616,9 @@ func validatePolicyRuntime(policy Policy) (*time.Location, error) {
 		policy.MaximumInterval < policy.MinimumInterval ||
 		policy.ExecutionWindow <= 0 {
 		return nil, errors.New("policy runtime configuration is incomplete")
+	}
+	if err := contracts.RequireEgressPolicy(contracts.EgressPolicyID(policy.EgressPolicyID)); err != nil {
+		return nil, err
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(policy.TimeZone))
 	if err != nil {

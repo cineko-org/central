@@ -266,7 +266,8 @@ func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) 
 	}
 	assignment := ready.created[0]
 	if assignment.Priority != 95 || assignment.Task.Auditorium == nil ||
-		assignment.Task.Auditorium.ID != "auditorium" || len(assignment.Candidates) != 1 {
+		assignment.Task.Auditorium.ID != "auditorium" || len(assignment.Candidates) != 1 ||
+		assignment.Task.EgressPolicyID != contracts.EgressPolicyScanDefault {
 		t.Fatalf("seat-map assignment = %+v", assignment)
 	}
 }
@@ -507,6 +508,11 @@ func TestPolicyTargetDateValidation(t *testing.T) {
 		func() Policy {
 			policy := validPolicy("p", "b", now, "explicit")
 			policy.TimeZone = "invalid"
+			return policy
+		}(),
+		func() Policy {
+			policy := validPolicy("p", "b", now, "explicit")
+			policy.EgressPolicyID = "unknown"
 			return policy
 		}(),
 		func() Policy {
