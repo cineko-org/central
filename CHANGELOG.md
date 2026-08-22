@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/cineko-org/central/compare/v2.7.0...v2.7.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* migrate legacy app event tones ([#26](https://github.com/cineko-org/central/issues/26)) ([1f67d6c](https://github.com/cineko-org/central/commit/1f67d6c8ae7a4d0adcc4c560ed50e541e54dee2f))
+
 ## [2.7.0](https://github.com/cineko-org/central/compare/v2.6.2...v2.7.0) (2026-08-22)
 
 
