@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.6.2](https://github.com/cineko-org/central/compare/v2.6.1...v2.6.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* enforce protobuf service boundaries ([#21](https://github.com/cineko-org/central/issues/21)) ([4c4cf6f](https://github.com/cineko-org/central/commit/4c4cf6f0700ab5d224cf916820dbd6a6c5871e76))
+* enqueue seat map backfills without stored showtimes ([#23](https://github.com/cineko-org/central/issues/23)) ([b0bf790](https://github.com/cineko-org/central/commit/b0bf7901cf9dfd9c20e43f8c2f2ef550985f1552))
+
 ## [2.6.1](https://github.com/cineko-org/central/compare/v2.6.0...v2.6.1) (2026-08-21)
 
 
