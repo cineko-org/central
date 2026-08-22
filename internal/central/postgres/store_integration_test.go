@@ -877,7 +877,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	rearmedMonitor.GetMonitor().SetState(rearmedState)
 	rearmedMonitor.GetMonitor().SetUpdatedAt(timestamppb.Now())
 	terminalRevision := terminalMonitor.GetIdentity().GetRevision()
-	rearmedMonitor, err = service.PutResource(
+	_, err = service.PutResource(
 		ctx, principal, "monitors", monitor.GetId(), rearmedMonitor,
 		&terminalRevision, "rearm_monitor_for_lease_loss_test",
 	)

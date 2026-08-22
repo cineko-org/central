@@ -12,6 +12,7 @@ import (
 	"github.com/cineko-org/central/internal/central"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
+	"github.com/cineko-org/central/internal/support/numeric"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
@@ -615,7 +616,7 @@ func adminObservationMode(value string) (*adminpb.ObservationMode, error) {
 }
 
 func seconds32(value time.Duration) int32 {
-	return int32(value / time.Second)
+	return numeric.ClampInt64ToInt32(int64(value / time.Second))
 }
 
 //nolint:dupl // Mode and outcome populate different generated Proto oneofs; keeping branches explicit preserves exhaustiveness.

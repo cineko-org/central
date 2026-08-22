@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cineko-org/central/internal/support/numeric"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
@@ -490,9 +491,9 @@ func migration000028Showtime(id, providerID, theaterID, movieID, auditoriumID st
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
 	scheduleDate := &commonpb.LocalDate{}
-	scheduleDate.SetYear(int32(startsAt.Year()))
-	scheduleDate.SetMonth(int32(startsAt.Month()))
-	scheduleDate.SetDay(int32(startsAt.Day()))
+	scheduleDate.SetYear(numeric.ClampInt32(startsAt.Year()))
+	scheduleDate.SetMonth(numeric.ClampInt32(int(startsAt.Month())))
+	scheduleDate.SetDay(numeric.ClampInt32(startsAt.Day()))
 	showtime.SetScheduleDate(scheduleDate)
 	showtime.SetStartsAt(timestamppb.New(startsAt))
 	showtime.SetEndsAt(timestamppb.New(startsAt.Add(2 * time.Hour)))

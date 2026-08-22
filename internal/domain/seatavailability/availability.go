@@ -98,22 +98,54 @@ func Evaluate(
 	preset *clientpb.Preset,
 	snapshot *seatmappb.AvailabilitySnapshot,
 ) Match {
-	if preset == nil || snapshot == nil || preset.GetSeatCount() < 1 ||
-		preset.GetSeatPreference() == nil || !preset.GetSeatPreference().GetTogether() {
+	if !requiresAdjacentGroup(preset, snapshot) {
 		return Match{Exact: layout != nil}
 	}
-	available := make(map[string]struct{}, len(snapshot.GetAvailableSeats()))
-	for _, seat := range snapshot.GetAvailableSeats() {
-		available[seat.GetSeatId()] = struct{}{}
-	}
+	available := availableSeatIDs(snapshot)
 	if layout == nil || len(layout.GetSeats()) == 0 {
 		return Match{Available: len(available) >= int(preset.GetSeatCount())}
 	}
 
+	rows, exact := availableSeatRows(layout, available, explicitSeatLabels(preset))
+	if !exact {
+		return Match{Available: len(available) >= int(preset.GetSeatCount())}
+	}
+	if rowsHaveAdjacentGroup(rows, int(preset.GetSeatCount())) {
+		return Match{Available: true, Exact: true}
+	}
+	return Match{Exact: true}
+}
+
+// requiresAdjacentGroup reports whether the preset needs layout-aware matching.
+func requiresAdjacentGroup(preset *clientpb.Preset, snapshot *seatmappb.AvailabilitySnapshot) bool {
+	return preset != nil && snapshot != nil && preset.GetSeatCount() > 0 &&
+		preset.GetSeatPreference() != nil && preset.GetSeatPreference().GetTogether()
+}
+
+// availableSeatIDs indexes the normalized live seats by provider identity.
+func availableSeatIDs(snapshot *seatmappb.AvailabilitySnapshot) map[string]struct{} {
+	available := make(map[string]struct{}, len(snapshot.GetAvailableSeats()))
+	for _, seat := range snapshot.GetAvailableSeats() {
+		available[seat.GetSeatId()] = struct{}{}
+	}
+	return available
+}
+
+// explicitSeatLabels indexes the user's optional exact-seat filter.
+func explicitSeatLabels(preset *clientpb.Preset) map[string]struct{} {
 	explicit := make(map[string]struct{}, len(preset.GetSeatPreference().GetExplicitSeats()))
 	for _, label := range preset.GetSeatPreference().GetExplicitSeats() {
 		explicit[strings.TrimSpace(label)] = struct{}{}
 	}
+	return explicit
+}
+
+// availableSeatRows groups known live seats by row and reports identity coverage.
+func availableSeatRows(
+	layout *seatmappb.Layout,
+	available map[string]struct{},
+	explicit map[string]struct{},
+) (map[string][]*seatmappb.Seat, bool) {
 	rows := make(map[string][]*seatmappb.Seat)
 	known := 0
 	for _, seat := range layout.GetSeats() {
@@ -131,18 +163,20 @@ func Evaluate(
 		}
 		rows[seat.GetRow()] = append(rows[seat.GetRow()], seat)
 	}
-	if known != len(available) {
-		return Match{Available: len(available) >= int(preset.GetSeatCount())}
-	}
+	return rows, known == len(available)
+}
+
+// rowsHaveAdjacentGroup checks each row after sorting seats by physical number.
+func rowsHaveAdjacentGroup(rows map[string][]*seatmappb.Seat, count int) bool {
 	for _, row := range rows {
 		slices.SortFunc(row, func(left, right *seatmappb.Seat) int {
 			return int(left.GetNumber() - right.GetNumber())
 		})
-		if hasAdjacentGroup(row, int(preset.GetSeatCount())) {
-			return Match{Available: true, Exact: true}
+		if hasAdjacentGroup(row, count) {
+			return true
 		}
 	}
-	return Match{Exact: true}
+	return false
 }
 
 func hasAdjacentGroup(row []*seatmappb.Seat, count int) bool {

@@ -258,18 +258,25 @@ func normalizeLayout(layout *seatmappb.Layout, auditoriumID string) error {
 	}
 	sort.Slice(layout.GetSeats(), func(i, j int) bool { return layout.GetSeats()[i].GetLabel() < layout.GetSeats()[j].GetLabel() })
 	sort.Slice(layout.GetZones(), func(i, j int) bool {
-		if layout.GetZones()[i].GetCode() == layout.GetZones()[j].GetCode() {
-			return layout.GetZones()[i].GetName() < layout.GetZones()[j].GetName()
-		}
-		return layout.GetZones()[i].GetCode() < layout.GetZones()[j].GetCode()
+		return lessCatalogLabel(
+			layout.GetZones()[i].GetCode(), layout.GetZones()[i].GetName(),
+			layout.GetZones()[j].GetCode(), layout.GetZones()[j].GetName(),
+		)
 	})
 	sort.Slice(layout.GetBlocks(), func(i, j int) bool {
-		if layout.GetBlocks()[i].GetCode() == layout.GetBlocks()[j].GetCode() {
-			return layout.GetBlocks()[i].GetName() < layout.GetBlocks()[j].GetName()
-		}
-		return layout.GetBlocks()[i].GetCode() < layout.GetBlocks()[j].GetCode()
+		return lessCatalogLabel(
+			layout.GetBlocks()[i].GetCode(), layout.GetBlocks()[i].GetName(),
+			layout.GetBlocks()[j].GetCode(), layout.GetBlocks()[j].GetName(),
+		)
 	})
 	return nil
+}
+
+func lessCatalogLabel(leftCode, leftName, rightCode, rightName string) bool {
+	if leftCode == rightCode {
+		return leftName < rightName
+	}
+	return leftCode < rightCode
 }
 
 func rememberID(seen map[string]struct{}, id string) error {

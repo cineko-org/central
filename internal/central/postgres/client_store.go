@@ -566,10 +566,8 @@ func (store *Store) mutateClientResource(
 	if err != nil {
 		return nil, err
 	}
-	if deleting && mutation.Kind == "monitors" {
-		if err := invalidateMonitorExecutions(ctx, tx, mutation); err != nil {
-			return nil, err
-		}
+	if err := invalidateDeletedMonitorExecutions(ctx, tx, mutation, deleting); err != nil {
+		return nil, err
 	}
 	resource, create, err := applyClientResourceMutation(ctx, tx, mutation, operation, deleting)
 	if err != nil {
@@ -587,6 +585,20 @@ func (store *Store) mutateClientResource(
 		return nil, fmt.Errorf("commit client resource mutation: %w", err)
 	}
 	return resource.proto()
+}
+
+// invalidateDeletedMonitorExecutions keeps non-Monitor mutations out of the
+// execution lifecycle while preserving the command-before-resource lock order.
+func invalidateDeletedMonitorExecutions(
+	ctx context.Context,
+	tx pgx.Tx,
+	mutation central.ResourceMutation,
+	deleting bool,
+) error {
+	if !deleting || mutation.Kind != "monitors" {
+		return nil
+	}
+	return invalidateMonitorExecutions(ctx, tx, mutation)
 }
 
 // prepareMonitorExecutionRearm locks the execution command before the Monitor

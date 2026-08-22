@@ -10,6 +10,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	"github.com/cineko-org/central/internal/support/numeric"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
@@ -576,8 +577,8 @@ func (store *Store) listShowtimes(ctx context.Context) ([]*catalogpb.Showtime, e
 
 func catalogLocalDate(value time.Time) *commonpb.LocalDate {
 	date := &commonpb.LocalDate{}
-	date.SetYear(int32(value.Year()))
-	date.SetMonth(int32(value.Month()))
-	date.SetDay(int32(value.Day()))
+	date.SetYear(numeric.ClampInt32(value.Year()))
+	date.SetMonth(numeric.ClampInt32(int(value.Month())))
+	date.SetDay(numeric.ClampInt32(value.Day()))
 	return date
 }

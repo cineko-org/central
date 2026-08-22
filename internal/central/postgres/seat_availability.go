@@ -115,33 +115,16 @@ func applySeatAvailability(
 		return err
 	}
 	requestLayoutValidation := layout == nil
+	observedAt := snapshot.GetObservedAt().AsTime()
 	for _, target := range targets {
-		if !executionTargetMatches(target, task.GetShowtime(), now, location) {
-			continue
-		}
-		match := seatavailabilitydomain.Evaluate(layout, target.preset, snapshot)
-		if !match.Exact {
-			requestLayoutValidation = true
-		}
-		previous, exists, err := previousSeatAvailabilityMatch(
-			ctx, tx, target.userID, target.monitor.GetId(), snapshot.GetShowtimeId(), snapshot.GetObservedAt().AsTime(),
+		needsValidation, err := applySeatAvailabilityTarget(
+			ctx, tx, task, target, layout, snapshot, snapshotID, observedAt, now, location,
 		)
 		if err != nil {
 			return err
 		}
-		if err := writeSeatAvailabilityMatch(
-			ctx, tx, target, snapshot.GetShowtimeId(), snapshotID, match.Available,
-			snapshot.GetObservedAt().AsTime(), now,
-		); err != nil {
-			return err
-		}
-		if !match.Available || (exists && previous) {
-			continue
-		}
-		if err := insertExecutionCommand(
-			ctx, tx, target, task.GetShowtime(), snapshot.GetObservedAt().AsTime(), now, exists && !previous,
-		); err != nil {
-			return err
+		if needsValidation {
+			requestLayoutValidation = true
 		}
 	}
 	if requestLayoutValidation {
@@ -154,6 +137,46 @@ func applySeatAvailability(
 		}
 	}
 	return nil
+}
+
+// applySeatAvailabilityTarget updates one eligible Monitor and emits only a
+// newly positive execution edge.
+func applySeatAvailabilityTarget(
+	ctx context.Context,
+	tx pgx.Tx,
+	task *observationpb.SeatAvailabilityTask,
+	target executionTarget,
+	layout *seatmappb.Layout,
+	snapshot *seatmappb.AvailabilitySnapshot,
+	snapshotID string,
+	observedAt time.Time,
+	now time.Time,
+	location *time.Location,
+) (bool, error) {
+	if !executionTargetMatches(target, task.GetShowtime(), now, location) {
+		return false, nil
+	}
+	match := seatavailabilitydomain.Evaluate(layout, target.preset, snapshot)
+	previous, exists, err := previousSeatAvailabilityMatch(
+		ctx, tx, target.userID, target.monitor.GetId(), snapshot.GetShowtimeId(), observedAt,
+	)
+	if err != nil {
+		return false, err
+	}
+	if err := writeSeatAvailabilityMatch(
+		ctx, tx, target, snapshot.GetShowtimeId(), snapshotID, match.Available, observedAt, now,
+	); err != nil {
+		return false, err
+	}
+	if !match.Available || (exists && previous) {
+		return !match.Exact, nil
+	}
+	if err := insertExecutionCommand(
+		ctx, tx, target, task.GetShowtime(), observedAt, now, exists && !previous,
+	); err != nil {
+		return false, err
+	}
+	return !match.Exact, nil
 }
 
 func loadExactSeatLayout(
