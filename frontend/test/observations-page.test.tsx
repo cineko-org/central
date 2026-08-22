@@ -3,12 +3,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { create } from '@bufbuild/protobuf';
 import { CatalogRefreshStatusSchema, ObservationPolicyInputSchema, ObservationPolicySchema, type CatalogRefreshStatus, type ObservationPolicy } from '@cineko/contracts/gen/ts/cineko/admin/admin_pb';
-import { TheaterSchema } from '@cineko/contracts/gen/ts/cineko/catalog/catalog_pb';
+import { CgvTheaterIdentitySchema, TheaterIdentitySchema, TheaterSchema } from '@cineko/contracts/gen/ts/cineko/catalog/catalog_pb';
 import { ObservationsPageView } from '../src/central/ui/ObservationsPageView';
 
 const noOp = () => undefined;
 const theaters = [
-  create(TheaterSchema, { id: 'internal-theater-id', providerId: 'cgv', sourceKey: '서울/용산아이파크몰', region: '서울', name: '용산아이파크몰' }),
+  create(TheaterSchema, { id: 'internal-theater-id', providerId: 'cgv', identity: create(TheaterIdentitySchema, { provider: { case: 'cgv', value: create(CgvTheaterIdentitySchema, { siteNo: '0013' }) } }), region: '서울', name: '용산아이파크몰' }),
 ];
 const draft = create(ObservationPolicyInputSchema, { theaterId: '', enabled: true, horizonDays: 14 });
 
@@ -65,7 +65,7 @@ describe('Observation policy presentation', () => {
   });
 
   it('labels cancellation monitoring separately from baseline collection', () => {
-    const policy = create(ObservationPolicySchema, { id: 'policy', revision: 1n, theater: theaters[0], input: create(ObservationPolicyInputSchema, { ...draft, theaterId: theaters[0].id, enabled: true }), effectiveMode: { mode: { case: 'cancellation', value: {} } }, effectivePriority: 44, effectiveMinSeconds: 30, effectiveMaxSeconds: 45, demandActive: true });
+    const policy = create(ObservationPolicySchema, { id: 'policy', revision: 1n, theater: theaters[0], input: create(ObservationPolicyInputSchema, { ...draft, theaterId: theaters[0].id, enabled: true }), effectiveMode: { mode: { case: 'seatAvailability', value: {} } }, effectivePriority: 44, effectiveMinSeconds: 30, effectiveMaxSeconds: 45, demandActive: true });
     expect(render(policy)).toContain('취소표 관측');
   });
 
