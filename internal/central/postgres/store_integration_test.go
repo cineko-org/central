@@ -694,6 +694,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 		preset.GetAuditoriumId(),
 		showtimeStart,
 	)
+	showtime.SetScheduleDate(targetDateMessage)
 	seedClientResourceCatalog(t, store, providerID, theaterID, auditoriumID, movieID, showtime)
 	capture := &observationpb.Capture{}
 	capture.SetTargetDate(targetDateMessage)
@@ -2095,7 +2096,9 @@ func TestPostgresCatalogRetainsMovieHistoryOutsideClientProjection(t *testing.T)
 	pastShowtime.SetTheaterId(theater.GetId())
 	pastShowtime.SetMovie(pastMovie)
 	pastShowtime.SetAuditorium(auditorium)
-	pastShowtime.SetStartsAt(timestamppb.New(now.Add(-2 * time.Hour)))
+	pastStartsAt := now.Add(-2 * time.Hour)
+	pastShowtime.SetScheduleDate(localDateMessage(pastStartsAt.Format(time.DateOnly)))
+	pastShowtime.SetStartsAt(timestamppb.New(pastStartsAt))
 	pastShowtime.SetEndsAt(timestamppb.New(now.Add(-time.Hour)))
 	futureShowtime := &catalogpb.Showtime{}
 	futureShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", "future"))
@@ -2104,7 +2107,9 @@ func TestPostgresCatalogRetainsMovieHistoryOutsideClientProjection(t *testing.T)
 	futureShowtime.SetTheaterId(theater.GetId())
 	futureShowtime.SetMovie(futureMovie)
 	futureShowtime.SetAuditorium(auditorium)
-	futureShowtime.SetStartsAt(timestamppb.New(now.Add(time.Hour)))
+	futureStartsAt := now.Add(time.Hour)
+	futureShowtime.SetScheduleDate(localDateMessage(futureStartsAt.Format(time.DateOnly)))
+	futureShowtime.SetStartsAt(timestamppb.New(futureStartsAt))
 	futureShowtime.SetEndsAt(timestamppb.New(now.Add(2 * time.Hour)))
 	provider := &catalogpb.Provider{}
 	provider.SetId(providerID)
@@ -2607,7 +2612,9 @@ func integrationAssignmentResult(theater *catalogpb.Theater, targetDate string, 
 	capture.SetTargetDate(localDateMessage(targetDate))
 	capture.SetComplete(true)
 	capture.SetObservedAt(timestamppb.New(now.Add(-time.Second)))
-	capture.SetShowtimes([]*catalogpb.Showtime{integrationShowtime(theater, now)})
+	showtime := integrationShowtime(theater, now)
+	showtime.SetScheduleDate(localDateMessage(targetDate))
+	capture.SetShowtimes([]*catalogpb.Showtime{showtime})
 	completed := &observationpb.Completed{}
 	completed.SetCaptures([]*observationpb.Capture{capture})
 	result := &observationpb.AssignmentResult{}

@@ -345,9 +345,9 @@ func TestSeatAvailabilityTargetRestrictsToCGVProvider(t *testing.T) {
 		showtimeID: cgvShowtimeID,
 	}} {
 		if _, err := store.pool.Exec(ctx, `
-			INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
-			VALUES ($1, 'presets', $2, 1, '{}'::jsonb, $3, $3),
-			       ($1, 'monitors', $4, 1, '{}'::jsonb, $3, $3)
+			INSERT INTO client_resources (user_id, kind, id, revision, created_at, updated_at)
+			VALUES ($1, 'presets', $2, 1, $3, $3),
+			       ($1, 'monitors', $4, 1, $3, $3)
 		`, userID, target.presetID, now, target.monitorID); err != nil {
 			t.Fatal(err)
 		}

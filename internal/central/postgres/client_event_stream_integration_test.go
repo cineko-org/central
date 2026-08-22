@@ -205,6 +205,7 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 	monitor.SetUserId(userID)
 	monitor.SetPresetId("event_wake_preset")
 	monitor.SetMovieId(movie.GetId())
+	monitor.SetSearchHorizonDays(14)
 	monitor.SetState(&clientpb.MonitorState{})
 	monitor.GetState().SetPending(&clientpb.MonitorPending{})
 	monitorIdentity := &commonpb.ResourceIdentity{}
