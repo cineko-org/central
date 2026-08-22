@@ -10,16 +10,21 @@ import (
 	"github.com/cineko-org/central/internal/central/reconcile"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
+	"github.com/cineko-org/central/internal/support/numeric"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const reconcilerLockKey int64 = 0x43494E454B4F52
+const (
+	reconcilerLockKey          int64 = 0x43494E454B4F52
+	seatMapBackfillHorizonDays int   = 14
+)
+
+var seatMapBackfillLocation = time.FixedZone("KST", 9*60*60)
 
 type cycleStore struct {
 	tx pgx.Tx
@@ -639,42 +644,39 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	var auditoriumID, auditoriumTheaterID, auditoriumSourceKey, auditoriumName string
 	var auditoriumScreenTypes []string
 	var auditoriumCapacity int32
-	var showtimeID, showtimeProviderID, showtimeSourceKey string
-	var movieID, movieProviderID, movieSourceKey, movieTitle, moviePosterURL string
-	var startsAt, endsAt time.Time
 	err := store.tx.QueryRow(ctx, `
 		SELECT theater.id, theater.provider_id, theater.source_key, theater.region, theater.name,
 			auditorium.id, auditorium.theater_id, auditorium.source_key, auditorium.name,
 			auditorium.screen_types, auditorium.capacity,
-			showtime.id, showtime.provider_id, showtime.source_key, showtime.starts_at, showtime.ends_at,
-			movie.id, movie.provider_id, movie.source_key, movie.title, movie.poster_url,
 			auditorium.seat_map_requested_at IS NOT NULL
 		FROM auditoriums AS auditorium
 		JOIN theaters AS theater ON theater.id = auditorium.theater_id AND theater.active
-		JOIN LATERAL (
-			SELECT candidate.* FROM showtimes AS candidate
-			WHERE candidate.auditorium_id = auditorium.id AND candidate.active AND candidate.starts_at > $1
-			ORDER BY candidate.starts_at LIMIT 1
-		) AS showtime ON true
-		JOIN movies AS movie ON movie.id = showtime.movie_id AND movie.active
 		WHERE auditorium.active
-			AND (auditorium.current_seat_map_version_id IS NULL OR auditorium.seat_map_requested_at IS NOT NULL)
+			AND (
+				auditorium.seat_map_requested_at IS NOT NULL
+				OR (
+					auditorium.current_seat_map_version_id IS NULL
+					AND EXISTS (
+						SELECT 1 FROM showtimes AS candidate
+						WHERE candidate.auditorium_id = auditorium.id
+							AND candidate.active AND candidate.starts_at > $1
+					)
+				)
+			)
 			AND NOT EXISTS (
 				SELECT 1 FROM observation_assignments AS assignment
 				WHERE assignment.task_kind = $2
 					AND assignment.status IN ('queued', 'leased', 'retry_pending')
 					AND assignment.task_data->'seatMap'->'auditorium'->>'id' = auditorium.id
 			)
-		ORDER BY auditorium.seat_map_requested_at DESC NULLS LAST, auditorium.updated_at, showtime.starts_at
+		ORDER BY auditorium.seat_map_requested_at DESC NULLS LAST, auditorium.updated_at
 		FOR UPDATE OF auditorium SKIP LOCKED
 		LIMIT 1
 	`, now, probedomain.CapabilityCGVSeatMapCapture).Scan(
 		&theaterID, &theaterProviderID, &theaterSourceKey, &theaterRegion, &theaterName,
 		&auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName,
 		&auditoriumScreenTypes, &auditoriumCapacity,
-		&showtimeID, &showtimeProviderID, &showtimeSourceKey, &startsAt, &endsAt,
-		&movieID, &movieProviderID, &movieSourceKey,
-		&movieTitle, &moviePosterURL, &target.Requested,
+		&target.Requested,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -695,26 +697,10 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	auditorium.SetName(auditoriumName)
 	auditorium.SetScreenTypes(auditoriumScreenTypes)
 	auditorium.SetCapacity(auditoriumCapacity)
-	movie := &catalogpb.Movie{}
-	movie.SetId(movieID)
-	movie.SetProviderId(movieProviderID)
-	movie.SetSourceKey(movieSourceKey)
-	movie.SetTitle(movieTitle)
-	movie.SetPosterUrl(moviePosterURL)
-	showtime := &catalogpb.Showtime{}
-	showtime.SetId(showtimeID)
-	showtime.SetProviderId(showtimeProviderID)
-	showtime.SetSourceKey(showtimeSourceKey)
-	showtime.SetTheaterId(theaterID)
-	showtime.SetAuditorium(auditorium)
-	showtime.SetMovie(movie)
-	showtime.SetCapacity(auditoriumCapacity)
-	showtime.SetStartsAt(timestamppb.New(startsAt))
-	showtime.SetEndsAt(timestamppb.New(endsAt))
 	seatMap := &observationpb.SeatMapTask{}
 	seatMap.SetTheater(theater)
 	seatMap.SetAuditorium(auditorium)
-	seatMap.SetShowtime(showtime)
+	seatMap.SetTargetDates(seatMapBackfillDates(now))
 	seatMap.SetLocale("ko-KR")
 	seatMap.SetTimeZone("Asia/Seoul")
 	task := &observationpb.AssignmentTask{}
@@ -998,12 +984,7 @@ func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, err
 	case task.GetCatalog() != nil:
 		values = task.GetCatalog().GetTargetDates()
 	case task.GetSeatMap() != nil:
-		location, err := time.LoadLocation(task.GetSeatMap().GetTimeZone())
-		if err != nil {
-			return nil, fmt.Errorf("load assignment time zone: %w", err)
-		}
-		startsAt := task.GetSeatMap().GetShowtime().GetStartsAt().AsTime().In(location)
-		return []time.Time{time.Date(startsAt.Year(), startsAt.Month(), startsAt.Day(), 0, 0, 0, 0, time.UTC)}, nil
+		values = task.GetSeatMap().GetTargetDates()
 	}
 	dates := make([]time.Time, 0, len(values))
 	for _, value := range values {
@@ -1014,6 +995,22 @@ func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, err
 		dates = append(dates, date)
 	}
 	return dates, nil
+}
+
+// seatMapBackfillDates returns the bounded provider window used to find any
+// currently bookable showtime for a missing auditorium layout.
+func seatMapBackfillDates(now time.Time) []*commonpb.LocalDate {
+	start := now.In(seatMapBackfillLocation)
+	dates := make([]*commonpb.LocalDate, 0, seatMapBackfillHorizonDays)
+	for offset := range seatMapBackfillHorizonDays {
+		value := start.AddDate(0, 0, offset)
+		date := &commonpb.LocalDate{}
+		date.SetYear(numeric.ClampInt32(value.Year()))
+		date.SetMonth(numeric.ClampInt32(int(value.Month())))
+		date.SetDay(numeric.ClampInt32(value.Day()))
+		dates = append(dates, date)
+	}
+	return dates
 }
 
 func expectOneRow(affected int64, operation string) error {
