@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.2](https://github.com/cineko-org/central/compare/v2.7.1...v2.7.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* enforce client event hard cutover ([#28](https://github.com/cineko-org/central/issues/28)) ([43a1c13](https://github.com/cineko-org/central/commit/43a1c13022888a78e081fa51f2d98cb4d2dc8b52))
+
 ## [2.7.1](https://github.com/cineko-org/central/compare/v2.7.0...v2.7.1) (2026-08-22)
 
 
