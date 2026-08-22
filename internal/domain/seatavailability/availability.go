@@ -98,10 +98,13 @@ func Evaluate(
 	preset *clientpb.Preset,
 	snapshot *seatmappb.AvailabilitySnapshot,
 ) Match {
-	if !requiresAdjacentGroup(preset, snapshot) {
-		return Match{Exact: layout != nil}
-	}
 	available := availableSeatIDs(snapshot)
+	if !requiresAdjacentGroup(preset, snapshot) {
+		return Match{
+			Available: preset != nil && preset.GetSeatCount() > 0 && len(available) >= int(preset.GetSeatCount()),
+			Exact:     true,
+		}
+	}
 	if layout == nil || len(layout.GetSeats()) == 0 {
 		return Match{Available: len(available) >= int(preset.GetSeatCount())}
 	}

@@ -75,6 +75,22 @@ func TestEvaluateFallsBackToCoarseWakeWithoutMatchingLayout(t *testing.T) {
 	}
 }
 
+func TestEvaluateCountsAvailableSeatsWithoutAdjacencyRequirement(t *testing.T) {
+	t.Parallel()
+	preset := &clientpb.Preset{}
+	preset.SetSeatCount(2)
+	preset.SetSeatPreference(&clientpb.SeatPreference{})
+
+	matched := Evaluate(nil, preset, availabilitySnapshot(time.Now().UTC(), "seat-a1", "seat-a2"))
+	if !matched.Exact || !matched.Available {
+		t.Fatalf("Evaluate(enough seats) = %+v", matched)
+	}
+	notMatched := Evaluate(nil, preset, availabilitySnapshot(time.Now().UTC(), "seat-a1"))
+	if !notMatched.Exact || notMatched.Available {
+		t.Fatalf("Evaluate(insufficient seats) = %+v", notMatched)
+	}
+}
+
 func availabilitySnapshot(observedAt time.Time, seats ...string) *seatmappb.AvailabilitySnapshot {
 	snapshot := &seatmappb.AvailabilitySnapshot{}
 	snapshot.SetShowtimeId("showtime-1")

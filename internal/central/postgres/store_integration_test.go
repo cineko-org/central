@@ -27,6 +27,7 @@ import (
 	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -799,16 +800,43 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	if err != nil || emptyResponse.GetNoCommand() == nil {
 		t.Fatalf("availability cooldown claim = %+v, %v", emptyResponse, err)
 	}
-	commit.CommittedAt = commit.CommittedAt.Add(31 * time.Second)
-	commit.Result.GetCompleted().GetCaptures()[0].SetObservedAt(timestamppb.New(commit.CommittedAt))
-	for _, value := range commit.Result.GetCompleted().GetCaptures()[0].GetShowtimes() {
-		value.SetAvailableSeats(1)
-	}
+	availabilityObservedAt := commit.CommittedAt.Add(31 * time.Second)
+	availabilityTheater := &catalogpb.Theater{}
+	availabilityTheater.SetId(theaterID)
+	availabilityTheater.SetProviderId(providerID)
+	availabilityTheater.SetSourceKey(theaterID)
+	availabilityTheater.SetRegion("Seoul")
+	availabilityTheater.SetName("Integration theater")
+	availabilityTask := &observationpb.SeatAvailabilityTask{}
+	availabilityTask.SetTheater(availabilityTheater)
+	availabilityTask.SetAuditorium(proto.CloneOf(showtime.GetAuditorium()))
+	availabilityTask.SetShowtime(proto.CloneOf(showtime))
+	availabilityTask.SetLocale("ko-KR")
+	availabilityTask.SetTimeZone("Asia/Seoul")
+	assignmentTask := &observationpb.AssignmentTask{}
+	assignmentTask.SetSeatAvailability(availabilityTask)
+	seatA := &seatmappb.AvailableSeat{}
+	seatA.SetSeatId("seat-a1")
+	seatB := &seatmappb.AvailableSeat{}
+	seatB.SetSeatId("seat-a2")
+	availabilitySnapshot := &seatmappb.AvailabilitySnapshot{}
+	availabilitySnapshot.SetShowtimeId(showtime.GetId())
+	availabilitySnapshot.SetAuditoriumId(auditoriumID)
+	availabilitySnapshot.SetLayoutHash(strings.Repeat("a", 64))
+	availabilitySnapshot.SetAvailableSeats([]*seatmappb.AvailableSeat{seatA, seatB})
+	availabilitySnapshot.SetObservedAt(timestamppb.New(availabilityObservedAt))
+	availabilityCompleted := &observationpb.Completed{}
+	availabilityCompleted.SetSeatAvailability(availabilitySnapshot)
+	availabilityResult := &observationpb.AssignmentResult{}
+	availabilityResult.SetCompleted(availabilityCompleted)
 	tx, beginErr = store.pool.Begin(ctx)
 	if beginErr != nil {
 		t.Fatal(beginErr)
 	}
-	if err := enqueueClientExecutions(ctx, tx, commit, preset.GetTheaterId(), "Asia/Seoul"); err != nil {
+	if err := storeSeatAvailabilityResult(ctx, tx, central.ResultCommit{
+		CommittedAt: availabilityObservedAt,
+		Result:      availabilityResult,
+	}, assignmentTask); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
