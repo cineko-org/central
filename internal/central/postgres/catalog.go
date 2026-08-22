@@ -14,7 +14,6 @@ import (
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"github.com/jackc/pgx/v5"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -212,18 +211,33 @@ func putSeatMapTx(ctx context.Context, tx pgx.Tx, snapshot *seatmappb.Snapshot) 
 	if err != nil {
 		return 0, fmt.Errorf("lock seat map auditorium: %w", err)
 	}
-	layout, err := protojson.Marshal(snapshot.GetLayout())
-	if err != nil {
-		return 0, fmt.Errorf("marshal seat map layout: %w", err)
-	}
 	observedAt := snapshot.GetObservedAt().AsTime()
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO seat_map_versions (id, auditorium_id, layout_hash, capacity, layout, observed_at, first_seen_at, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6, $6)
-		ON CONFLICT (auditorium_id, layout_hash) DO UPDATE SET
-			last_seen_at = GREATEST(seat_map_versions.last_seen_at, EXCLUDED.last_seen_at)
-	`, snapshot.GetId(), snapshot.GetAuditoriumId(), snapshot.GetLayoutHash(), snapshot.GetCapacity(), layout, observedAt); err != nil {
-		return 0, fmt.Errorf("upsert seat map: %w", err)
+	var storedID string
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM seat_map_versions WHERE auditorium_id = $1 AND layout_hash = $2
+	`, snapshot.GetAuditoriumId(), snapshot.GetLayoutHash()).Scan(&storedID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO seat_map_versions (
+				id, auditorium_id, layout_hash, capacity, observed_at, first_seen_at, last_seen_at
+			) VALUES ($1, $2, $3, $4, $5, $5, $5)
+		`, snapshot.GetId(), snapshot.GetAuditoriumId(), snapshot.GetLayoutHash(), snapshot.GetCapacity(), observedAt); err != nil {
+			return 0, fmt.Errorf("insert seat-map version: %w", err)
+		}
+		if err := storeSeatMapLayout(ctx, tx, snapshot); err != nil {
+			return 0, err
+		}
+	case err != nil:
+		return 0, fmt.Errorf("read seat-map version: %w", err)
+	case storedID != snapshot.GetId():
+		return 0, errors.New("stored seat-map version identity is inconsistent")
+	default:
+		if _, err := tx.Exec(ctx, `
+			UPDATE seat_map_versions SET last_seen_at = GREATEST(last_seen_at, $2) WHERE id = $1
+		`, storedID, observedAt); err != nil {
+			return 0, fmt.Errorf("refresh seat-map version: %w", err)
+		}
 	}
 	if currentID == snapshot.GetId() {
 		_, err := tx.Exec(ctx, `UPDATE auditoriums SET seat_map_requested_at = NULL WHERE id = $1`, snapshot.GetAuditoriumId())
@@ -244,23 +258,22 @@ func putSeatMapTx(ctx context.Context, tx pgx.Tx, snapshot *seatmappb.Snapshot) 
 func (store *Store) SeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Snapshot, error) {
 	var id, storedAuditoriumID, layoutHash string
 	var capacity int32
-	var layoutJSON []byte
 	var observedAt time.Time
 	err := store.pool.QueryRow(ctx, `
-		SELECT version.id, version.auditorium_id, version.layout_hash, version.capacity, version.layout, version.observed_at
+		SELECT version.id, version.auditorium_id, version.layout_hash, version.capacity, version.observed_at
 		FROM auditoriums AS auditorium
 		JOIN seat_map_versions AS version ON version.id = auditorium.current_seat_map_version_id
 		WHERE auditorium.id = $1
-	`, auditoriumID).Scan(&id, &storedAuditoriumID, &layoutHash, &capacity, &layoutJSON, &observedAt)
+	`, auditoriumID).Scan(&id, &storedAuditoriumID, &layoutHash, &capacity, &observedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, central.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read seat map: %w", err)
 	}
-	layout := &seatmappb.Layout{}
-	if err := protojson.Unmarshal(layoutJSON, layout); err != nil {
-		return nil, fmt.Errorf("decode stored seat map: %w", err)
+	layout, err := readSeatMapLayout(ctx, store.pool, id, storedAuditoriumID)
+	if err != nil {
+		return nil, err
 	}
 	result := seatmappb.Snapshot_builder{Layout: layout, ObservedAt: timestamppb.New(observedAt)}.Build()
 	result.SetId(id)

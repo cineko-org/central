@@ -1013,7 +1013,7 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	payloadDigest := sha256.Sum256(payload)
 	commit := central.ResultCommit{
 		AssignmentID: assignmentID, ProbeID: probeID, LeaseHash: leaseHash,
-		PayloadHash: hex.EncodeToString(payloadDigest[:]), Payload: payload, Result: result,
+		PayloadHash: hex.EncodeToString(payloadDigest[:]), Result: result,
 		CommittedAt: now.Add(11 * time.Second),
 	}
 	receipt, err := store.CommitResult(ctx, commit)
@@ -2178,7 +2178,7 @@ func integrationResultCommit(
 	digest := sha256.Sum256(payload)
 	return central.ResultCommit{
 		AssignmentID: assignment.ID, ProbeID: probeID, LeaseHash: leaseHash,
-		PayloadHash: hex.EncodeToString(digest[:]), Payload: payload, Result: result, CommittedAt: now,
+		PayloadHash: hex.EncodeToString(digest[:]), Result: result, CommittedAt: now,
 	}
 }
 

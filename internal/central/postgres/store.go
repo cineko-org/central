@@ -460,6 +460,10 @@ func authorizeAssignmentHeartbeat(
 }
 
 func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommit) (*observationpb.ResultReceipt, error) {
+	resultPayload, err := protojson.Marshal(commit.Result)
+	if err != nil {
+		return nil, fmt.Errorf("encode assignment result for storage: %w", err)
+	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("begin result commit: %w", err)
@@ -479,10 +483,10 @@ func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommi
 	if err := authorizeResultCommit(state, commit); err != nil {
 		return nil, err
 	}
-	if err := writeAssignmentResult(ctx, tx, commit); err != nil {
+	if err := writeAssignmentResult(ctx, tx, commit, resultPayload); err != nil {
 		return nil, err
 	}
-	if err := finishAssignmentAttempt(ctx, tx, commit); err != nil {
+	if err := finishAssignmentAttempt(ctx, tx, commit, resultPayload); err != nil {
 		return nil, err
 	}
 	if commit.Result.GetCompleted() != nil {
@@ -702,7 +706,7 @@ func authorizeResultCommit(state assignmentResultState, commit central.ResultCom
 	return nil
 }
 
-func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.ResultCommit) error {
+func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.ResultCommit, resultPayload []byte) error {
 	status := assignmentResultStatus(commit.Result)
 	if status == "failed" {
 		_, err := tx.Exec(ctx, `
@@ -723,21 +727,21 @@ func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.Result
 			started_at = $7, finished_at = $8, updated_at = $9
 		WHERE id = $1
 	`, commit.AssignmentID, status, commit.ProbeID, commit.Result.GetRunId(), commit.PayloadHash,
-		string(commit.Payload), commit.Result.GetStartedAt().AsTime(), commit.Result.GetFinishedAt().AsTime(), commit.CommittedAt)
+		resultPayload, commit.Result.GetStartedAt().AsTime(), commit.Result.GetFinishedAt().AsTime(), commit.CommittedAt)
 	if err != nil {
 		return fmt.Errorf("store assignment result: %w", err)
 	}
 	return nil
 }
 
-func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.ResultCommit) error {
+func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.ResultCommit, resultPayload []byte) error {
 	status := assignmentResultStatus(commit.Result)
 	tag, err := tx.Exec(ctx, `
 		UPDATE assignment_attempts
 		SET status = $3, finished_at = $4, run_id = $5, result_hash = $6, result_payload = $7
 		WHERE assignment_id = $1 AND probe_id = $2 AND status = 'leased'
 	`, commit.AssignmentID, commit.ProbeID, status, commit.Result.GetFinishedAt().AsTime(),
-		commit.Result.GetRunId(), commit.PayloadHash, string(commit.Payload))
+		commit.Result.GetRunId(), commit.PayloadHash, resultPayload)
 	if err != nil {
 		return fmt.Errorf("finish assignment attempt: %w", err)
 	}

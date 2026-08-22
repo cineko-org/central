@@ -48,7 +48,6 @@ type ResultCommit struct {
 	ProbeID      string
 	LeaseHash    [32]byte
 	PayloadHash  string
-	Payload      []byte
 	Result       *observationpb.AssignmentResult
 	CommittedAt  time.Time
 }

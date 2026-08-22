@@ -265,6 +265,5 @@ func refreshCommitPayload(t *testing.T, commit *central.ResultCommit) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(payload)
-	commit.Payload = payload
 	commit.PayloadHash = hex.EncodeToString(digest[:])
 }

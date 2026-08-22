@@ -187,8 +187,20 @@ func normalizeLayout(layout *seatmappb.Layout, auditoriumID string) error {
 		seat.SetAuditoriumId(strings.TrimSpace(seat.GetAuditoriumId()))
 		seat.SetLabel(strings.TrimSpace(seat.GetLabel()))
 		seat.SetRow(strings.TrimSpace(seat.GetRow()))
+		seat.SetNumber(seat.GetNumber())
+		seat.SetX(seat.GetX())
+		seat.SetY(seat.GetY())
 		seat.SetType(strings.TrimSpace(seat.GetType()))
+		seat.SetZoneName(strings.TrimSpace(seat.GetZoneName()))
+		seat.SetZoneKind(strings.TrimSpace(seat.GetZoneKind()))
+		seat.SetSaleFormCode(strings.TrimSpace(seat.GetSaleFormCode()))
+		seat.SetSaleFormName(strings.TrimSpace(seat.GetSaleFormName()))
+		seat.SetLeftAisle(seat.GetLeftAisle())
+		seat.SetRightAisle(seat.GetRightAisle())
 		seat.SetFeatures(normalizedStrings(seat.GetFeatures()))
+		seat.SetSourceLabel(strings.TrimSpace(seat.GetSourceLabel()))
+		seat.SetSourceSeatKindCode(strings.TrimSpace(seat.GetSourceSeatKindCode()))
+		seat.SetSourceSeatKindName(strings.TrimSpace(seat.GetSourceSeatKindName()))
 		seat.SetSourceClasses(normalizedStrings(seat.GetSourceClasses()))
 		canonicalLabel := seat.GetRow() + strconv.Itoa(int(seat.GetNumber()))
 		if seat.GetAuditoriumId() != auditoriumID || seat.GetRow() == "" || seat.GetRow() != strings.ToUpper(seat.GetRow()) || seat.GetNumber() < 1 || seat.GetLabel() != canonicalLabel || seat.GetType() == "" || seat.GetId() != SeatID(auditoriumID, seat.GetLabel()) {
@@ -210,11 +222,28 @@ func normalizeLayout(layout *seatmappb.Layout, auditoriumID string) error {
 		if zone == nil || zone.GetCapacity() < 0 || !normalizedBounds(zone.GetMinX(), zone.GetMaxX(), zone.GetMinY(), zone.GetMaxY()) {
 			return errors.New("seat map contains an invalid zone")
 		}
+		zone.SetCode(strings.TrimSpace(zone.GetCode()))
+		zone.SetName(strings.TrimSpace(zone.GetName()))
+		zone.SetKindCode(strings.TrimSpace(zone.GetKindCode()))
+		zone.SetKindName(strings.TrimSpace(zone.GetKindName()))
+		zone.SetMinX(zone.GetMinX())
+		zone.SetMaxX(zone.GetMaxX())
+		zone.SetMinY(zone.GetMinY())
+		zone.SetMaxY(zone.GetMaxY())
+		zone.SetCapacity(zone.GetCapacity())
 	}
 	for _, block := range layout.GetBlocks() {
 		if block == nil || !normalizedBounds(block.GetMinX(), block.GetMaxX(), block.GetMinY(), block.GetMaxY()) {
 			return errors.New("seat map contains an invalid block")
 		}
+		block.SetCode(strings.TrimSpace(block.GetCode()))
+		block.SetName(strings.TrimSpace(block.GetName()))
+		block.SetKindCode(strings.TrimSpace(block.GetKindCode()))
+		block.SetKindName(strings.TrimSpace(block.GetKindName()))
+		block.SetMinX(block.GetMinX())
+		block.SetMaxX(block.GetMaxX())
+		block.SetMinY(block.GetMinY())
+		block.SetMaxY(block.GetMaxY())
 	}
 	sort.Slice(layout.GetSeats(), func(i, j int) bool { return layout.GetSeats()[i].GetLabel() < layout.GetSeats()[j].GetLabel() })
 	sort.Slice(layout.GetZones(), func(i, j int) bool { return layout.GetZones()[i].GetCode() < layout.GetZones()[j].GetCode() })

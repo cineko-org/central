@@ -147,6 +147,27 @@ func TestNormalizeSeatMapCanonicalizesLayout(t *testing.T) {
 	}
 }
 
+func TestNormalizeSeatMapCollapsesDefaultFieldPresence(t *testing.T) {
+	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
+	withoutDefaults := seatMapFixture("auditorium", 1, validSeatMapLayout(1), nil)
+	withDefaults := proto.CloneOf(withoutDefaults)
+	withDefaults.GetLayout().GetSeats()[0].SetLeftAisle(false)
+	withDefaults.GetLayout().GetSeats()[0].SetRightAisle(false)
+	withDefaults.GetLayout().GetSeats()[0].SetZoneName("")
+	withDefaults.GetLayout().GetSeats()[0].SetSaleFormCode("")
+
+	if err := NormalizeSeatMap(withoutDefaults, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeSeatMap(withDefaults, now); err != nil {
+		t.Fatal(err)
+	}
+	if withoutDefaults.GetLayoutHash() != withDefaults.GetLayoutHash() ||
+		!proto.Equal(withoutDefaults.GetLayout(), withDefaults.GetLayout()) {
+		t.Fatalf("default presence changed canonical layout: %s != %s", withoutDefaults.GetLayoutHash(), withDefaults.GetLayoutHash())
+	}
+}
+
 func TestNormalizeSeatMapRejectsInvalidInput(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	tests := map[string]*seatmappb.Snapshot{

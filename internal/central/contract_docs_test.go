@@ -163,12 +163,17 @@ func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 		"movies":                           {"id", "provider_id", "source_key", "title", "poster_url", "display_order", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
 		"auditoriums":                      {"id", "theater_id", "source_key", "name", "screen_types", "capacity", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at", "current_seat_map_version_id", "seat_map_requested_at"},
 		"showtimes":                        {"id", "provider_id", "source_key", "theater_id", "movie_id", "auditorium_id", "starts_at", "ends_at", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
-		"seat_map_versions":                {"id", "auditorium_id", "layout_hash", "capacity", "layout", "observed_at", "first_seen_at", "last_seen_at"},
+		"seat_map_versions":                {"id", "auditorium_id", "layout_hash", "capacity", "observed_at", "first_seen_at", "last_seen_at"},
+		"seat_map_seats":                   {"version_id", "position", "seat_id", "label", "row_label", "seat_number", "x", "y", "seat_type", "zone_name", "zone_kind", "sale_form_code", "sale_form_name", "left_aisle", "right_aisle", "source_label", "source_seat_kind_code", "source_seat_kind_name"},
+		"seat_map_seat_features":           {"version_id", "seat_id", "position", "feature"},
+		"seat_map_seat_source_classes":     {"version_id", "seat_id", "position", "source_class"},
+		"seat_map_zones":                   {"version_id", "position", "code", "name", "kind_code", "kind_name", "min_x", "max_x", "min_y", "max_y", "capacity"},
+		"seat_map_blocks":                  {"version_id", "position", "code", "name", "kind_code", "kind_name", "min_x", "max_x", "min_y", "max_y"},
 		"release_components":               {"kind", "channel", "platform", "architecture", "version", "payload", "published_at", "created_at"},
 		"desktop_release_registry_state":   {"singleton", "generation", "active_manifest_sha256", "updated_at"},
 	}
-	if len(currentSchema) != 33 {
-		t.Fatalf("current schema tables = %d, want 33", len(currentSchema))
+	if len(currentSchema) != 38 {
+		t.Fatalf("current schema tables = %d, want 38", len(currentSchema))
 	}
 	for table, columns := range currentSchema {
 		row := schemaContractRow(t, document, table)

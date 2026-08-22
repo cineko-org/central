@@ -369,7 +369,7 @@ func (service *Service) CommitResult(
 	return service.repository.CommitResult(ctx, ResultCommit{
 		AssignmentID: assignmentID, ProbeID: probe.ID,
 		LeaseHash: sha256.Sum256([]byte(leaseToken)), PayloadHash: hex.EncodeToString(digest[:]),
-		Payload: payload, Result: result, CommittedAt: service.clock().UTC(),
+		Result: result, CommittedAt: service.clock().UTC(),
 	})
 }
 
