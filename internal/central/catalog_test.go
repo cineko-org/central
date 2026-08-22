@@ -238,6 +238,104 @@ func TestCatalogServiceWatchSeatMapEmitsInitialAndChangedStates(t *testing.T) {
 	}
 }
 
+func TestCatalogServiceSeatMapResolutionErrorBoundaries(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC)
+	stateFailure := errors.New("seat-map state unavailable")
+	backfillFailure := errors.New("seat-map backfill unavailable")
+	stored := seatMapSnapshot("auditorium", 1)
+
+	repository := &catalogWatchRepository{catalogRepositoryFake: &catalogRepositoryFake{seatMap: stored}}
+	service, err := NewCatalogService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.clock = func() time.Time { return now }
+
+	if _, err := service.resolveSeatMap(t.Context(), " ", false); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("blank auditorium resolution error = %v", err)
+	}
+	resolution, err := service.resolveSeatMap(t.Context(), "auditorium", false)
+	if err != nil || resolution.GetState().GetIdle() == nil {
+		t.Fatalf("stored seat map without collection state = %+v, %v", resolution, err)
+	}
+	repository.stateErr = stateFailure
+	if _, err := service.resolveSeatMap(t.Context(), "auditorium", false); !errors.Is(err, stateFailure) {
+		t.Fatalf("stored seat-map state error = %v", err)
+	}
+
+	repository.seatMap = nil
+	repository.stateErr = ErrNotFound
+	if _, err := service.resolveSeatMap(t.Context(), "auditorium", false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("passive missing seat-map error = %v", err)
+	}
+	repository.stateErr = stateFailure
+	if _, err := service.resolveSeatMap(t.Context(), "auditorium", true); !errors.Is(err, stateFailure) {
+		t.Fatalf("queued seat-map state error = %v", err)
+	}
+	repository.stateErr = nil
+	repository.requestError = backfillFailure
+	request := &servicepb.ResolveSeatMapRequest{}
+	request.SetAuditoriumId("auditorium")
+	if _, err := service.ResolveSeatMap(t.Context(), request); !errors.Is(err, backfillFailure) {
+		t.Fatalf("seat-map backfill error = %v", err)
+	}
+	if _, err := service.ResolveSeatMap(t.Context(), nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("nil seat-map request error = %v", err)
+	}
+}
+
+func TestCatalogServiceWatchSeatMapErrorBoundaries(t *testing.T) {
+	t.Parallel()
+	request := &servicepb.WatchSeatMapRequest{}
+	request.SetAuditoriumId("auditorium")
+	nonWatcher, _ := NewCatalogService(&catalogRepositoryFake{})
+	if err := nonWatcher.WatchSeatMap(t.Context(), request, func(*servicepb.WatchSeatMapResponse) error { return nil }); err == nil {
+		t.Fatal("repository without seat-map watch capability was accepted")
+	}
+
+	repository := &catalogWatchRepository{catalogRepositoryFake: &catalogRepositoryFake{}}
+	service, err := NewCatalogService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.WatchSeatMap(t.Context(), nil, func(*servicepb.WatchSeatMapResponse) error { return nil }); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("nil watch request error = %v", err)
+	}
+	if err := service.WatchSeatMap(t.Context(), request, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("nil watch sender error = %v", err)
+	}
+	blank := &servicepb.WatchSeatMapRequest{}
+	if err := service.WatchSeatMap(t.Context(), blank, func(*servicepb.WatchSeatMapResponse) error { return nil }); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("blank watch auditorium error = %v", err)
+	}
+
+	repository.states = []*collectionpb.State{{}}
+	repository.stateErr = errors.New("watch state unavailable")
+	if err := service.WatchSeatMap(t.Context(), request, func(*servicepb.WatchSeatMapResponse) error { return nil }); !errors.Is(err, repository.stateErr) {
+		t.Fatalf("watch resolution error = %v", err)
+	}
+
+	queued := &collectionpb.State{}
+	queued.SetQueued((&collectionpb.Queued_builder{
+		QueuedAt: timestamppb.New(time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC)),
+		Trigger:  (&collectionpb.Trigger_builder{ClientRequest: (&collectionpb.ClientRequest_builder{}).Build()}).Build(),
+	}).Build())
+	repository.stateErr = nil
+	repository.states = []*collectionpb.State{queued, nil}
+	repository.stop = errors.New("watch stopped")
+	responses := 0
+	if err := service.WatchSeatMap(t.Context(), request, func(*servicepb.WatchSeatMapResponse) error {
+		responses++
+		return nil
+	}); !errors.Is(err, repository.stop) {
+		t.Fatalf("watch completion error = %v", err)
+	}
+	if responses != 1 {
+		t.Fatalf("watch responses = %d, want 1 before the state disappears", responses)
+	}
+}
+
 func validCatalogSnapshot(observedAt time.Time) *catalogpb.CatalogSnapshot {
 	provider := &catalogpb.Provider{}
 	provider.SetId(catalogdomain.ProviderCGV)
@@ -344,6 +442,7 @@ type catalogWatchRepository struct {
 	*catalogRepositoryFake
 	states       []*collectionpb.State
 	current      *collectionpb.State
+	stateErr     error
 	auditoriumID string
 	stop         error
 }
@@ -353,6 +452,9 @@ func (repository *catalogWatchRepository) SeatMapCollectionState(
 	auditoriumID string,
 ) (*collectionpb.State, error) {
 	repository.auditoriumID = auditoriumID
+	if repository.stateErr != nil {
+		return nil, repository.stateErr
+	}
 	if repository.current == nil {
 		return nil, ErrNotFound
 	}
