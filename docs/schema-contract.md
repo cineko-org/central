@@ -125,7 +125,7 @@ cannot merge without an intentional update to this inventory.
 000025_assignment_task_proto.sql baafb5a48e80c7c872b9c08a4386b7d4c095347931caa832e1c2a1d7635adf8b
 000026_release_proto_payloads.sql 5be6660eea7bc8bce5583c9c9156c8ae22a3f323a23bb583a3c5d208360bbc99
 000027_normalize_seat_maps.sql de8d5e5b77fb21cdaa55c070a6557a05dbbc1e567dcebb126a5c45a2cc4dad0f
-000028_normalize_client_resources.sql 33920f16e7ad35ddc81fc14de69fa3811fe83d05cb64890cef018db7f5fa9899
+000028_normalize_client_resources.sql 6df494dd605aa92afc7c390f08333c6047e3f60413435b95acadf4addf825b54
 000029_showtime_schedule_dates.sql adbcbeea805c098b593cf121f627fccbd44b84fab0ebbe9d30160faecc2c6256
 000030_seat_availability.sql a79b291109cc2044126d2a75213f93da1dd370b3e3093c90bd74eb83c3397f86
 000031_demand_observation_cadence.sql 6c7c761c269f83a21df2799d6ae47a0fcbd30916ea3e4e6b05cc3f7f89507917
@@ -138,11 +138,13 @@ Migration `000028` is the hard cutover for the six Client resource kinds: it str
 backfills the latest generated-ProtoJSON into the typed parents and ordered children,
 adds `observation_assignments.auditorium_id` and
 `client_execution_commands.observed_at`, then drops only the obsolete
-`client_resources.payload`. Historical Client resource events are validated against the
-same latest message shapes, deleted events become metadata-only tombstones, and
-`client_events.payload` plus execution command payloads remain durable event/audit
-envelopes. This is a forward-only migration and requires a successful read-only data
-preflight plus a recoverable database snapshot before it is applied.
+`client_resources.payload`. Before that backfill, AppEvent resources using the
+pre-cutover string `tone`, version-suffixed mutation events, and AppEvent mutation events
+carrying the pre-cutover payload are removed. Every retained Client resource event is
+validated against the same latest message shapes, deleted events become metadata-only
+tombstones, and `client_events.payload` plus execution command payloads remain durable
+event/audit envelopes. This is a forward-only migration and requires a successful
+read-only data preflight plus a recoverable database snapshot before it is applied.
 Migration `000029` makes the provider schedule date explicit on current and historical
 showtime snapshots, so extended-clock provider identity is never inferred from the civil
 start instant. Migration `000030` adds exact-showtime assignment identity and normalized

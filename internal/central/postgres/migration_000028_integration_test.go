@@ -154,61 +154,92 @@ func TestMigration000028NormalizesLatestClientResourceProtoJSON(t *testing.T) {
 	}
 }
 
-func TestMigration000028CanonicalizesLegacyAppEventTone(t *testing.T) {
-	connection, migration28 := newMigration000028Schema(t, "legacy_app_event_tone")
+func TestMigration000028DropsPreCutoverAppEvents(t *testing.T) {
+	connection, migration28 := newMigration000028Schema(t, "drops_pre_cutover_app_events")
 	ctx := t.Context()
 	now := time.Date(2026, time.August, 22, 5, 0, 0, 0, time.UTC)
 	const (
-		userID     = "user_migration_28_legacy_tone"
-		appEventID = "app_event_migration_28_legacy_tone"
+		userID            = "user_migration_28_app_events"
+		preCutoverEventID = "app_event_migration_28_pre_cutover"
+		currentEventID    = "app_event_migration_28_current"
 	)
-	legacyPayload := []byte(`{"id":"app_event_migration_28_legacy_tone","userId":"user_migration_28_legacy_tone","kind":"monitor.failed","message":"Monitor failed","createdAt":"2026-08-22T05:00:00Z","tone":"error"}`)
+	preCutoverPayload := []byte(`{"id":"app_event_migration_28_pre_cutover","userId":"user_migration_28_app_events","kind":"monitor.failed","message":"Monitor failed","createdAt":"2026-08-22T05:00:00Z","tone":"error"}`)
+	currentPayload := []byte(`{"id":"app_event_migration_28_current","userId":"user_migration_28_app_events","kind":"monitor.ready","message":"Monitor ready","createdAt":"2026-08-22T05:00:00Z","success":{}}`)
 	if _, err := connection.Exec(ctx, `
 		INSERT INTO client_users (id, display_name, created_at, updated_at)
-		VALUES ($1, 'Legacy Tone User', $2, $2)
+		VALUES ($1, 'App Event Migration User', $2, $2)
 	`, userID, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := connection.Exec(ctx, `
 		INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
-		VALUES ($1, 'app-events', $2, 1, $3::jsonb, $4, $4)
-	`, userID, appEventID, legacyPayload, now); err != nil {
+		VALUES
+			($1, 'app-events', $2, 1, $3::jsonb, $5, $5),
+			($1, 'app-events', $4, 1, $6::jsonb, $5, $5)
+	`, userID, preCutoverEventID, preCutoverPayload, currentEventID, now, currentPayload); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := connection.Exec(ctx, `
 		INSERT INTO client_events (
 			id, user_id, event_type, resource_kind, resource_id, resource_revision,
 			payload, occurred_at
-		) VALUES (
-			'client_event_migration_28_legacy_tone', $1, 'app-events.updated',
-			'app-events', $2, 1, $3::jsonb, $4
-		)
-	`, userID, appEventID, legacyPayload, now); err != nil {
+		) VALUES
+			(
+				'client_event_migration_28_pre_cutover_updated', $1, 'app-events.updated.v1',
+				'app-events', $2, 1, $3::jsonb, $4
+			),
+			(
+				'client_event_migration_28_pre_cutover_deleted', $1, 'app-events.deleted.v1',
+				'app-events', $2, 2, '{}'::jsonb, $4
+			),
+			(
+				'client_event_migration_28_pre_cutover_payload', $1, 'app-events.updated',
+				'app-events', $2, 3, $3::jsonb, $4
+			),
+			(
+				'client_event_migration_28_pre_cutover_settings', $1, 'settings.updated.v1',
+				'settings', 'settings', 1, '{}'::jsonb, $4
+			),
+			(
+				'client_event_migration_28_current', $1, 'app-events.updated',
+				'app-events', $5, 1, $6::jsonb, $4
+			)
+	`, userID, preCutoverEventID, preCutoverPayload, now, currentEventID, currentPayload); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := applyMigration(ctx, connection, migration28); err != nil {
 		t.Fatalf("apply migration 000028 (%s): %v", migration28.name, err)
 	}
-	var tone string
+	var preCutoverResources, preCutoverRows, preCutoverEvents int
 	if err := connection.QueryRow(ctx, `
-		SELECT tone FROM client_app_events WHERE user_id = $1 AND id = $2
-	`, userID, appEventID).Scan(&tone); err != nil {
+		SELECT
+			(SELECT count(*) FROM client_resources WHERE user_id = $1 AND id = $2),
+			(SELECT count(*) FROM client_app_events WHERE user_id = $1 AND id = $2),
+			(SELECT count(*) FROM client_events WHERE id LIKE 'client_event_migration_28_pre_cutover_%')
+	`, userID, preCutoverEventID).Scan(&preCutoverResources, &preCutoverRows, &preCutoverEvents); err != nil {
 		t.Fatal(err)
 	}
-	if tone != "error" {
-		t.Fatalf("normalized app event tone = %q, want error", tone)
+	if preCutoverResources != 0 || preCutoverRows != 0 || preCutoverEvents != 0 {
+		t.Fatalf("pre-cutover rows retained: resources=%d app_events=%d events=%d",
+			preCutoverResources, preCutoverRows, preCutoverEvents)
 	}
-	var hasLegacyTone, hasErrorMember, errorMemberIsEmpty bool
+
+	var tone, eventType string
+	var hasSuccessMember, successMemberIsEmpty bool
 	if err := connection.QueryRow(ctx, `
-		SELECT payload ? 'tone', payload ? 'error', payload->'error' = '{}'::jsonb
-		FROM client_events WHERE id = 'client_event_migration_28_legacy_tone'
-	`).Scan(&hasLegacyTone, &hasErrorMember, &errorMemberIsEmpty); err != nil {
+		SELECT app_event.tone, event.event_type,
+			event.payload ? 'success', event.payload->'success' = '{}'::jsonb
+		FROM client_app_events AS app_event
+		JOIN client_events AS event
+		  ON event.user_id = app_event.user_id AND event.resource_id = app_event.id
+		WHERE app_event.user_id = $1 AND app_event.id = $2
+	`, userID, currentEventID).Scan(&tone, &eventType, &hasSuccessMember, &successMemberIsEmpty); err != nil {
 		t.Fatal(err)
 	}
-	if hasLegacyTone || !hasErrorMember || !errorMemberIsEmpty {
-		t.Fatalf("canonical event payload tone fields = legacy:%t error:%t empty:%t",
-			hasLegacyTone, hasErrorMember, errorMemberIsEmpty)
+	if tone != "success" || eventType != "app-events.updated" || !hasSuccessMember || !successMemberIsEmpty {
+		t.Fatalf("retained current app event = tone:%q type:%q success:%t empty:%t",
+			tone, eventType, hasSuccessMember, successMemberIsEmpty)
 	}
 }
 
