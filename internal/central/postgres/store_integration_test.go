@@ -740,6 +740,10 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	if err != nil || first == nil || first.GetMonitorId() != monitor.GetId() || first.GetPayload().GetShowtime().GetId() != showtime.GetId() {
 		t.Fatalf("first execution claim = %+v, %v", first, err)
 	}
+	// Claiming from the immutable command payload must survive catalog retirement.
+	// Restore the same canonical showtime before exercising availability state,
+	// whose normalized row intentionally retains a showtimes foreign key.
+	seedClientResourceCatalog(t, store, providerID, theaterID, auditoriumID, movieID, showtime)
 	claimB := &executionpb.ClaimRequest{}
 	claimB.SetInstallationId("execution_install_b")
 	emptyResponse, err := service.ClaimExecution(ctx, principal, claimB)
@@ -1869,28 +1873,37 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 	if len(due) != 4 {
 		t.Fatalf("due policies = %d, want 4", len(due))
 	}
-	if due[0].ID != policyIDs[0] || due[0].Priority != 90 {
-		t.Fatalf("booking demand policy = %+v", due[0])
+	dueByID := make(map[string]reconcile.Policy, len(due))
+	for _, policy := range due {
+		dueByID[policy.ID] = policy
 	}
-	if due[1].ID != policyIDs[1] || due[1].Priority != 60 {
-		t.Fatalf("change burst policy = %+v", due[1])
+	if due[0].Priority != 90 || due[1].Priority != 90 ||
+		due[2].ID != policyIDs[1] || due[3].ID != policyIDs[3] {
+		t.Fatalf("due policy order = %+v", due)
 	}
-	if due[2].ID != policyIDs[2] || due[2].Priority != 40 {
-		t.Fatalf("cancellation demand policy = %+v", due[2])
+	// Both pending monitors still need schedule discovery. Cancellation-seat
+	// observation starts only after an exact showtime is known in the P1 lane.
+	for _, demandPolicyID := range []string{policyIDs[0], policyIDs[2]} {
+		policy := dueByID[demandPolicyID]
+		if policy.Priority != 90 || policy.MinimumInterval != 2*time.Second ||
+			policy.MaximumInterval != 5*time.Second {
+			t.Fatalf("booking demand policy = %+v", policy)
+		}
 	}
-	if due[3].ID != policyIDs[3] || due[3].Priority != 10 {
-		t.Fatalf("baseline policy = %+v", due[3])
+	burstPolicy := dueByID[policyIDs[1]]
+	if burstPolicy.Priority != 60 || burstPolicy.MinimumInterval != 15*time.Second ||
+		burstPolicy.MaximumInterval != 30*time.Second {
+		t.Fatalf("change burst policy = %+v", burstPolicy)
 	}
-	if due[0].MinimumInterval != 2*time.Second || due[0].MaximumInterval != 5*time.Second ||
-		due[1].MinimumInterval != 15*time.Second || due[1].MaximumInterval != 30*time.Second ||
-		due[2].MinimumInterval != 30*time.Second || due[2].MaximumInterval != 45*time.Second ||
-		due[3].MinimumInterval != 5*time.Minute || due[3].MaximumInterval != 15*time.Minute ||
-		due[3].HorizonDays != 14 {
-		t.Fatalf("automatic observation cadence = %+v", due[:3])
+	baselinePolicy := dueByID[policyIDs[3]]
+	if baselinePolicy.Priority != 10 || baselinePolicy.MinimumInterval != 5*time.Minute ||
+		baselinePolicy.MaximumInterval != 15*time.Minute || baselinePolicy.HorizonDays != 14 {
+		t.Fatalf("baseline policy = %+v", baselinePolicy)
 	}
-	if due[0].Theater.GetId() != demandTheaterID || due[1].Theater.GetId() != burstTheaterID ||
-		due[2].Theater.GetId() != cancellationTheaterID {
-		t.Fatalf("unexpected lane theaters: demand=%q burst=%q", due[0].Theater.GetId(), due[1].Theater.GetId())
+	if dueByID[policyIDs[0]].Theater.GetId() != demandTheaterID ||
+		dueByID[policyIDs[1]].Theater.GetId() != burstTheaterID ||
+		dueByID[policyIDs[2]].Theater.GetId() != cancellationTheaterID {
+		t.Fatalf("unexpected lane theaters: %+v", dueByID)
 	}
 }
 

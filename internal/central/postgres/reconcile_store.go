@@ -792,12 +792,31 @@ func (store *cycleStore) SeatAvailabilityTarget(
 		return nil, fmt.Errorf("query exact-showtime availability targets: %w", err)
 	}
 	defer rows.Close()
-	targetsByTheater := make(map[string][]executionTarget)
+	type seatAvailabilityCandidate struct {
+		theater  *catalogpb.Theater
+		showtime *catalogpb.Showtime
+	}
+	candidates := make([]seatAvailabilityCandidate, 0)
 	for rows.Next() {
 		theater, showtime, err := scanSeatAvailabilityTarget(rows)
 		if err != nil {
 			return nil, err
 		}
+		candidates = append(candidates, seatAvailabilityCandidate{theater: theater, showtime: showtime})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate exact-showtime availability targets: %w", err)
+	}
+	rows.Close()
+
+	location, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		return nil, fmt.Errorf("load exact-showtime matching location: %w", err)
+	}
+	targetsByTheater := make(map[string][]executionTarget)
+	for _, candidate := range candidates {
+		theater := candidate.theater
+		showtime := candidate.showtime
 		targets, loaded := targetsByTheater[theater.GetId()]
 		if !loaded {
 			targets, err = loadExecutionTargets(ctx, store.tx, theater.GetId())
@@ -805,10 +824,6 @@ func (store *cycleStore) SeatAvailabilityTarget(
 				return nil, err
 			}
 			targetsByTheater[theater.GetId()] = targets
-		}
-		location, err := time.LoadLocation("Asia/Seoul")
-		if err != nil {
-			return nil, fmt.Errorf("load exact-showtime matching location: %w", err)
 		}
 		matched := false
 		for _, target := range targets {
@@ -830,9 +845,6 @@ func (store *cycleStore) SeatAvailabilityTarget(
 		task.SetEgress(managedAssignmentEgress())
 		task.SetSeatAvailability(availability)
 		return &reconcile.SeatAvailabilityTarget{Task: task}, nil
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate exact-showtime availability targets: %w", err)
 	}
 	return nil, nil
 }
