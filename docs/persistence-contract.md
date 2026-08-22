@@ -28,20 +28,24 @@ the same transaction as the common revision and event.
 
 The migration is a hard cutover: resource identity and every retained field must validate
 against the latest generated message shape, and an invalid or unknown field aborts the
-transaction. Legacy monitor `mode` and polling fields are accepted only as migration
-inputs and are discarded; historical update events are canonicalized the same way. The
-normalized rows retain the generated message's presence and ordering semantics, including
-`has_seat_preference`, webhook/event-kind positions, hyphenated terminal states, and the
-complete reservation showtime snapshot. User deletion removes the common identity and cascades typed rows;
+transaction. Monitor `mode` and polling fields removed by the latest contract are
+discarded during the typed backfill. AppEvent resources using the pre-cutover string
+`tone`, version-suffixed mutation events, and AppEvent mutation events carrying that old
+payload are deleted instead of converted. Every retained event must already use the
+latest unversioned generated message shape. The normalized rows retain the generated
+message's presence and ordering semantics, including `has_seat_preference`,
+webhook/event-kind positions, hyphenated terminal states, and the complete reservation
+showtime snapshot. User deletion removes the common identity and cascades typed rows;
 `client_events.payload` remains the durable event envelope, while execution command
 payloads remain the terminal execution audit envelope.
 
 Migration `000028` is forward-only because it drops `client_resources.payload`. Before
-applying it, run a read-only validation of every Client resource and historical event
-against the latest generated Proto shape and take a recoverable database snapshot. Any
-missing required resource identity, missing reservation showtime snapshot, unknown field, or
-incompatible event aborts deployment. After the migration commits, only a binary that
-uses the normalized tables may run; restoring the database snapshot is the rollback.
+applying it, inventory the explicitly deleted pre-cutover AppEvent rows, validate every
+retained Client resource and event against the latest generated Proto shape, and take a
+recoverable database snapshot. Any missing required resource identity, missing reservation
+showtime snapshot, unknown field, or incompatible retained event aborts deployment. After
+the migration commits, only a binary that uses the normalized tables may run; restoring
+the database snapshot is the rollback.
 
 | Operation | Database effect and transaction | Idempotency |
 | --- | --- | --- |

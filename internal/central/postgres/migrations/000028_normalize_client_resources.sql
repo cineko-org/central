@@ -1,6 +1,6 @@
--- The client resource body is the latest generated ProtoJSON contract.  This
--- migration performs a hard cutover: every legacy body is checked before it is
--- removed, and any malformed/unknown field aborts the migration transaction.
+-- The client resource body is the latest generated ProtoJSON contract. This
+-- migration performs a hard cutover: known pre-cutover records are removed,
+-- and every retained body must satisfy the latest contract.
 
 CREATE TABLE client_settings (
     user_id text NOT NULL,
@@ -697,43 +697,6 @@ BEGIN
 END;
 $$;
 
--- Releases before the protobuf-only cutover persisted AppEvent.tone as a
--- string. Canonicalize that finite legacy shape into the latest ProtoJSON
--- oneof so retained events remain decodable after the migration.
-CREATE OR REPLACE FUNCTION cineko_normalize_app_event_payload(value jsonb, context text)
-RETURNS jsonb
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    tone_value text;
-    oneof_member_count integer;
-BEGIN
-    PERFORM cineko_require_keys(value, context,
-        ARRAY['id', 'userId', 'kind', 'message', 'createdAt', 'readAt',
-              'tone', 'info', 'success', 'warning', 'error']);
-    IF value ? 'tone' THEN
-        SELECT count(*) INTO oneof_member_count
-        FROM unnest(ARRAY['info', 'success', 'warning', 'error']) AS candidate
-        WHERE value ? candidate;
-        IF oneof_member_count <> 0 THEN
-            RAISE EXCEPTION '% cannot contain both legacy tone and protobuf tone members', context;
-        END IF;
-        tone_value := cineko_json_text(value->'tone', context || '.tone', true);
-        IF NOT (tone_value = ANY (ARRAY['info', 'success', 'warning', 'error'])) THEN
-            RAISE EXCEPTION '% contains invalid legacy tone %', context, tone_value;
-        END IF;
-        RETURN (value - 'tone') || jsonb_build_object(tone_value, '{}'::jsonb);
-    END IF;
-    tone_value := cineko_json_oneof_fields(
-        value,
-        context || '.tone',
-        ARRAY['info', 'success', 'warning', 'error']
-    );
-    PERFORM cineko_require_keys(value->tone_value, context || '.' || tone_value, ARRAY[]::text[]);
-    RETURN value;
-END;
-$$;
-
 CREATE OR REPLACE FUNCTION cineko_validate_theater(value jsonb, context text)
 RETURNS void
 LANGUAGE plpgsql
@@ -896,7 +859,7 @@ BEGIN
 END;
 $$;
 
--- Historical client_events are decoded with the latest generated ProtoJSON
+-- Retained client_events are decoded with the latest generated ProtoJSON
 -- contract at runtime. Validate their resource bodies during the same hard
 -- cutover that normalizes client_resources. Deleted events are metadata-only
 -- tombstones: the runtime reconstructs DeletedResource from the event row, so
@@ -1470,6 +1433,16 @@ $$;
 
 SELECT cineko_backfill_external_operations();
 
+-- The hard cutover does not retain prior AppEvent encodings. The old resource
+-- body used a string `tone`, and the old event stream used versioned mutation
+-- names. Remove those records before backfilling and validating retained data.
+DELETE FROM client_events
+WHERE event_type IN (resource_kind || '.updated.v1', resource_kind || '.deleted.v1')
+   OR (resource_kind = 'app-events' AND payload ? 'tone');
+
+DELETE FROM client_resources
+WHERE kind = 'app-events' AND payload ? 'tone';
+
 CREATE OR REPLACE FUNCTION cineko_backfill_app_events()
 RETURNS void
 LANGUAGE plpgsql
@@ -1486,13 +1459,17 @@ DECLARE
     tone text;
 BEGIN
     FOR resource_row IN
-        SELECT user_id, id, payload
+        SELECT user_id, id, revision, payload
         FROM client_resources
         WHERE kind = 'app-events'
     LOOP
-        body := cineko_normalize_app_event_payload(
-            resource_row.payload,
-            'client app event ' || resource_row.id
+        body := resource_row.payload;
+        PERFORM cineko_validate_client_event_resource(
+            body,
+            'app-events',
+            resource_row.user_id,
+            resource_row.id,
+            resource_row.revision
         );
         payload_id := cineko_json_text(body->'id', 'client app event.id', true);
         user_id_value := cineko_json_text(body->'userId', 'client app event.userId', true);
@@ -1715,7 +1692,7 @@ BEGIN
                 RAISE EXCEPTION 'deleted client event metadata is incomplete at sequence %', event_row.sequence;
             END IF;
             -- DeletedResource is rebuilt from event metadata by the runtime;
-            -- discard any legacy body while preserving the event itself.
+            -- discard the body while preserving the event metadata.
             UPDATE client_events
             SET payload = '{}'::jsonb
             WHERE sequence = event_row.sequence;
@@ -1732,14 +1709,6 @@ BEGIN
                         14
                     )))),
                     true
-                );
-                UPDATE client_events
-                SET payload = canonical_payload
-                WHERE sequence = event_row.sequence;
-            ELSIF event_row.resource_kind = 'app-events' THEN
-                canonical_payload := cineko_normalize_app_event_payload(
-                    canonical_payload,
-                    'client app event at sequence ' || event_row.sequence
                 );
                 UPDATE client_events
                 SET payload = canonical_payload
@@ -1770,7 +1739,6 @@ DROP FUNCTION cineko_validate_showtime(jsonb, text);
 DROP FUNCTION cineko_validate_auditorium(jsonb, text);
 DROP FUNCTION cineko_validate_movie(jsonb, text);
 DROP FUNCTION cineko_validate_theater(jsonb, text);
-DROP FUNCTION cineko_normalize_app_event_payload(jsonb, text);
 DROP FUNCTION cineko_json_oneof_fields(jsonb, text, text[]);
 DROP FUNCTION cineko_json_oneof(jsonb, text, text[]);
 DROP FUNCTION cineko_json_local_minutes(jsonb, text);
