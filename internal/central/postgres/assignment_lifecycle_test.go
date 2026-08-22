@@ -13,6 +13,7 @@ import (
 	"github.com/cineko-org/central/internal/central/reconcile"
 	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestAssignmentAuthorityEndsAtTargetDeadline(t *testing.T) {
@@ -62,6 +63,94 @@ func TestResultAuthorityEndsAtTargetDeadline(t *testing.T) {
 }
 
 func timePointer(value time.Time) *time.Time { return &value }
+
+func TestPostgresClaimRejectsInvalidStoredTaskBeforeReservingLease(t *testing.T) {
+	if testDatabaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	const (
+		policyID = "policy_invalid_stored_claim"
+		probeID  = "probe_invalid_stored_claim"
+	)
+	cleanupReconcileRows(t, store, []string{policyID}, []string{probeID})
+	t.Cleanup(func() { cleanupReconcileRows(t, store, []string{policyID}, []string{probeID}) })
+	now := time.Now().UTC()
+	registerIntegrationProbe(t, store, probeID, "install_"+probeID, now)
+	seedIntegrationPolicy(t, store, policyID, "9100", now.Add(-time.Second))
+	engine, err := newAssignmentTestReconciler(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assignment := assignmentForPolicy(t, store, policyID)
+	keepOnlyAssignmentCandidates(t, store, assignment.ID, []string{probeID})
+	validTaskData, err := protojson.Marshal(assignment.Task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE observation_assignments SET task_data = '{}'::jsonb WHERE id = $1
+	`, assignment.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	claimNow := time.Now().UTC()
+	leaseHash := sha256.Sum256([]byte("lease_invalid_stored_claim"))
+	if _, err := store.ClaimAssignment(
+		ctx, probeID, leaseHash, claimNow, claimNow.Add(time.Minute), claimNow.Add(-time.Minute),
+	); err == nil {
+		t.Fatal("invalid stored task was leased")
+	}
+	var status, claimedProbe string
+	var leaseExpiresAt *time.Time
+	var attempts, availableSlots int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT assignment.status, COALESCE(assignment.probe_id, ''), assignment.lease_expires_at,
+			(SELECT count(*) FROM assignment_attempts WHERE assignment_id = assignment.id),
+			probe.available_slots
+		FROM observation_assignments AS assignment
+		JOIN probe_runtimes AS probe ON probe.id = $2
+		WHERE assignment.id = $1
+	`, assignment.ID, probeID).Scan(
+		&status, &claimedProbe, &leaseExpiresAt, &attempts, &availableSlots,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if status != "queued" || claimedProbe != "" || leaseExpiresAt != nil || attempts != 0 || availableSlots != 1 {
+		t.Fatalf("invalid claim mutated state: status=%q probe=%q lease=%v attempts=%d slots=%d",
+			status, claimedProbe, leaseExpiresAt, attempts, availableSlots)
+	}
+
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE observation_assignments SET task_data = $2::jsonb WHERE id = $1
+	`, assignment.ID, validTaskData); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimAssignment(
+		ctx, probeID, leaseHash, claimNow, claimNow.Add(time.Minute), claimNow.Add(-time.Minute),
+	)
+	if err != nil || claimed.ID != assignment.ID {
+		t.Fatalf("valid claim = %+v, %v", claimed, err)
+	}
+	if err := store.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM assignment_attempts WHERE assignment_id = $1), available_slots
+		FROM probe_runtimes WHERE id = $2
+	`, assignment.ID, probeID).Scan(&attempts, &availableSlots); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || availableSlots != 0 {
+		t.Fatalf("valid claim state: attempts=%d slots=%d", attempts, availableSlots)
+	}
+}
 
 func TestPostgresFailedResultIsReassignedBeforeTerminalFailure(t *testing.T) {
 	if testDatabaseURL == "" {

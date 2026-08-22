@@ -33,15 +33,19 @@ frontend-check:
 	$(NPM) --prefix frontend run check
 
 contract-check:
-	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3\.5\.1$$' go.mod
-	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3\.5\.1$$' vendor/modules.txt
+	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3\.5\.3$$' go.mod
+	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3\.5\.3$$' vendor/modules.txt
+	@grep -Fq 'contracts/archive/refs/tags/v3.5.3.tar.gz' frontend/package.json
+	@grep -Fq 'contracts/archive/refs/tags/v3.5.3.tar.gz' frontend/package-lock.json
 	@! grep -Eq 'github.com/cineko-org/contracts([[:space:]]|$$)' go.mod go.sum vendor/modules.txt
 
 contract-release-check:
 	@! grep -Eq '^[[:space:]]*replace([[:space:]]|\()' go.mod
-	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3\.5\.1$$' go.mod
-	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3\.5\.1$$' vendor/modules.txt
-	@grep -Eq '^github.com/cineko-org/contracts/v3 v3\.5\.1 h1:' go.sum
+	@grep -Eq '^[[:space:]]*github.com/cineko-org/contracts/v3 v3\.5\.3$$' go.mod
+	@grep -Eq '^# github.com/cineko-org/contracts/v3 v3\.5\.3$$' vendor/modules.txt
+	@grep -Eq '^github.com/cineko-org/contracts/v3 v3\.5\.3 h1:' go.sum
+	@grep -Fq 'contracts/archive/refs/tags/v3.5.3.tar.gz' frontend/package.json
+	@grep -Fq 'contracts/archive/refs/tags/v3.5.3.tar.gz' frontend/package-lock.json
 	@! grep -Eq 'github.com/cineko-org/contracts([[:space:]]|$$)' go.mod go.sum vendor/modules.txt
 
 workflow-check:

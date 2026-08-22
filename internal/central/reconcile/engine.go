@@ -363,17 +363,10 @@ func (engine *Engine) scheduleCatalogRefresh(
 	if err != nil {
 		return fmt.Errorf("generate catalog refresh assignment id: %w", err)
 	}
-	sourceKey := "__catalog__"
-	theater := &catalogpb.Theater{}
-	theater.SetId(contracts.CatalogID(contracts.ProviderCGV, "theater", sourceKey))
-	theater.SetProviderId(contracts.ProviderCGV)
-	contracts.SetTheaterSourceKey(theater, sourceKey)
-	theater.SetRegion("system")
-	theater.SetName("CGV catalog")
 	assignment := NewAssignment{
 		ID: id, Priority: planning.PriorityCatalogRefresh, Status: "queued", NotBefore: now,
 		Deadline: now.Add(catalogRefreshWindow), CreatedAt: now, Candidates: slices.Clone(candidates),
-		Task: catalogAssignmentTask(theater, nil, "ko-KR", "Asia/Seoul"),
+		Task: catalogAssignmentTask(contracts.ProviderCGV, "ko-KR", "Asia/Seoul"),
 	}
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 		if errors.Is(err, ErrTargetBusy) {
@@ -654,15 +647,13 @@ func scheduleAssignmentTask(
 }
 
 func catalogAssignmentTask(
-	theater *catalogpb.Theater,
-	targetDates []string,
+	providerID string,
 	locale string,
 	timeZone string,
 ) *observationpb.AssignmentTask {
 	return observationAssignmentTask(func(task *observationpb.AssignmentTask) {
 		catalog := &observationpb.CatalogTask{}
-		catalog.SetTheater(theater)
-		catalog.SetTargetDates(protoLocalDates(targetDates))
+		catalog.SetProviderId(providerID)
 		catalog.SetLocale(locale)
 		catalog.SetTimeZone(timeZone)
 		task.SetCatalog(catalog)

@@ -35,6 +35,9 @@ stateDiagram-v2
 - Catalog-refresh and seat-map-backfill assignments are system work and do not need
   an observation policy. Their assignment window is ten minutes. A failed catalog
   refresh becomes eligible again after one minute.
+- Catalog-refresh tasks are provider-global and date-independent. Their contract carries
+  provider identity, locale, time zone, and egress only; theater and date bounds belong to
+  narrower capture tasks.
 
 ## Policy cadence
 

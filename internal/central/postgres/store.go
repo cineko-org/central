@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"buf.build/go/protovalidate"
 	"github.com/cineko-org/central/internal/central"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
@@ -254,6 +255,9 @@ func (store *Store) ClaimAssignment(
 	if err != nil {
 		return central.Assignment{}, err
 	}
+	if err := validateClaimedAssignmentTask(assignment.Task); err != nil {
+		return central.Assignment{}, err
+	}
 	if err := recordAssignmentAttempt(ctx, tx, assignment.ID, probeID, leaseHash, now); err != nil {
 		return central.Assignment{}, err
 	}
@@ -264,6 +268,18 @@ func (store *Store) ClaimAssignment(
 		return central.Assignment{}, fmt.Errorf("commit assignment claim: %w", err)
 	}
 	return assignment, nil
+}
+
+// validateClaimedAssignmentTask prevents invalid persisted work from crossing
+// the lease boundary or consuming Probe capacity.
+func validateClaimedAssignmentTask(task *observationpb.AssignmentTask) error {
+	if task == nil {
+		return errors.New("claimed assignment task is missing")
+	}
+	if err := protovalidate.Validate(task); err != nil {
+		return fmt.Errorf("validate claimed assignment task: %w", err)
+	}
+	return nil
 }
 
 func lockEligibleClaimingProbe(
@@ -329,6 +345,7 @@ func claimQueuedAssignment(
 				AND NOT EXISTS (
 					SELECT 1 FROM observation_assignments AS active
 					WHERE active.task_kind = assignment.task_kind
+						AND active.theater_provider_id = assignment.theater_provider_id
 						AND active.theater_id = assignment.theater_id
 						AND active.status = 'leased'
 				)

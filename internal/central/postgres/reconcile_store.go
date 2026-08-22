@@ -986,6 +986,7 @@ func (store *cycleStore) insertAssignment(
 	targetDates []time.Time,
 	taskData []byte,
 ) error {
+	target := assignmentTaskTarget(assignment.Task)
 	var insertedID string
 	err := store.tx.QueryRow(ctx, `
 		INSERT INTO observation_assignments (
@@ -998,9 +999,8 @@ func (store *cycleStore) insertAssignment(
 		)
 		ON CONFLICT DO NOTHING
 		RETURNING id
-	`, assignment.ID, assignment.PolicyID, assignmentTaskKind(assignment.Task), assignmentTaskAuditoriumID(assignment.Task), assignmentTaskShowtimeID(assignment.Task), assignmentTaskTheater(assignment.Task).GetId(),
-		assignmentTaskTheater(assignment.Task).GetProviderId(), catalogTheaterSourceKey(assignmentTaskTheater(assignment.Task)),
-		assignmentTaskTheater(assignment.Task).GetRegion(), assignmentTaskTheater(assignment.Task).GetName(), targetDates, assignmentTaskLocale(assignment.Task),
+	`, assignment.ID, assignment.PolicyID, assignmentTaskKind(assignment.Task), assignmentTaskAuditoriumID(assignment.Task), assignmentTaskShowtimeID(assignment.Task), target.TheaterID,
+		target.ProviderID, target.TheaterSourceKey, target.TheaterRegion, target.TheaterName, targetDates, assignmentTaskLocale(assignment.Task),
 		assignmentTaskTimeZone(assignment.Task), string(central.EgressPolicyScanDefault), assignment.Priority, assignment.Status,
 		assignment.NotBefore, assignment.Deadline, assignment.ReasonCode, nullableTime(assignment.FinishedAt),
 		assignment.CreatedAt, taskData, assignment.Lane, assignment.HotTargetFingerprint).Scan(&insertedID)
@@ -1273,13 +1273,40 @@ func assignmentTaskTheater(task *observationpb.AssignmentTask) *catalogpb.Theate
 	if task.GetSchedule() != nil {
 		return task.GetSchedule().GetTheater()
 	}
-	if task.GetCatalog() != nil {
-		return task.GetCatalog().GetTheater()
-	}
 	if task.GetSeatMap() != nil {
 		return task.GetSeatMap().GetTheater()
 	}
-	return task.GetSeatAvailability().GetTheater()
+	if task.GetSeatAvailability() != nil {
+		return task.GetSeatAvailability().GetTheater()
+	}
+	return nil
+}
+
+type assignmentTarget struct {
+	ProviderID       string
+	TheaterID        string
+	TheaterSourceKey string
+	TheaterRegion    string
+	TheaterName      string
+}
+
+// assignmentTaskTarget projects the typed task target into normalized assignment columns.
+// Catalog capture is provider-global, so its theater columns deliberately remain empty.
+func assignmentTaskTarget(task *observationpb.AssignmentTask) assignmentTarget {
+	if catalog := task.GetCatalog(); catalog != nil {
+		return assignmentTarget{ProviderID: catalog.GetProviderId()}
+	}
+	theater := assignmentTaskTheater(task)
+	if theater == nil {
+		return assignmentTarget{}
+	}
+	return assignmentTarget{
+		ProviderID:       theater.GetProviderId(),
+		TheaterID:        theater.GetId(),
+		TheaterSourceKey: catalogTheaterSourceKey(theater),
+		TheaterRegion:    theater.GetRegion(),
+		TheaterName:      theater.GetName(),
+	}
 }
 
 func assignmentTaskAuditoriumID(task *observationpb.AssignmentTask) string {
@@ -1330,8 +1357,6 @@ func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, err
 	switch {
 	case task.GetSchedule() != nil:
 		values = task.GetSchedule().GetTargetDates()
-	case task.GetCatalog() != nil:
-		values = task.GetCatalog().GetTargetDates()
 	case task.GetSeatMap() != nil:
 		values = task.GetSeatMap().GetTargetDates()
 	case task.GetSeatAvailability() != nil && task.GetSeatAvailability().GetShowtime() != nil:

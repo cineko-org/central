@@ -8,28 +8,29 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	"github.com/cineko-org/central/internal/support/numeric"
 	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestClaimAssignmentWaitsForRepositoryWakeupBeforeRetry(t *testing.T) {
 	const accessToken = "probe-access-token"
+	now := time.Now().UTC()
 	base := &apiRepository{probe: central.Probe{
 		ID:             "probe_wait",
 		TokenHash:      sha256.Sum256([]byte(accessToken)),
-		TokenExpiresAt: time.Now().Add(time.Hour),
+		TokenExpiresAt: now.Add(time.Hour),
 	}}
 	repository := &delayedClaimRepository{
 		apiRepository: base,
 		waitStarted:   make(chan struct{}),
 		release:       make(chan struct{}),
 		assignment: central.Assignment{
-			ID: "assignment_wait", Status: "leased", LeaseExpiresAt: time.Now().Add(time.Minute),
-			Task: observationpb.AssignmentTask_builder{
-				Schedule: observationpb.ScheduleTask_builder{
-					Theater: catalogpb.Theater_builder{Id: stringPointer("cgv:theater:0056")}.Build(),
-				}.Build(),
-			}.Build(),
+			ID: "assignment_wait", Status: "leased", NotBefore: now.Add(-time.Minute),
+			Deadline: now.Add(time.Hour), LeaseExpiresAt: now.Add(time.Minute),
+			Task: validAPIClaimTask(now),
 		},
 	}
 	service, err := central.NewService(repository, central.Config{EnrollmentToken: "enroll"})
@@ -65,6 +66,30 @@ func TestClaimAssignmentWaitsForRepositoryWakeupBeforeRetry(t *testing.T) {
 	if repository.claimCalls != 2 {
 		t.Fatalf("claim calls = %d, want durable recheck before and after wait", repository.claimCalls)
 	}
+}
+
+func validAPIClaimTask(now time.Time) *observationpb.AssignmentTask {
+	theater := &catalogpb.Theater{}
+	theater.SetId(catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", "0056"))
+	theater.SetProviderId(catalogdomain.ProviderCGV)
+	catalogdomain.SetTheaterSourceKey(theater, "0056")
+	theater.SetRegion("서울")
+	theater.SetName("용산아이파크몰")
+	targetDate := &commonpb.LocalDate{}
+	targetDate.SetYear(numeric.ClampInt32(now.Year()))
+	targetDate.SetMonth(numeric.ClampInt32(int(now.Month())))
+	targetDate.SetDay(numeric.ClampInt32(now.Day()))
+	schedule := &observationpb.ScheduleTask{}
+	schedule.SetTheater(theater)
+	schedule.SetTargetDates([]*commonpb.LocalDate{targetDate})
+	schedule.SetLocale("ko-KR")
+	schedule.SetTimeZone("Asia/Seoul")
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	task := &observationpb.AssignmentTask{}
+	task.SetSchedule(schedule)
+	task.SetEgress(egress)
+	return task
 }
 
 type delayedClaimRepository struct {

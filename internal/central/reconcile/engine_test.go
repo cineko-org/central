@@ -207,8 +207,7 @@ func TestCatalogRefreshWaitsForProbeAndCreatesOneSystemAssignment(t *testing.T) 
 	assignment := ready.created[0]
 	catalogTask := assignment.Task.GetCatalog()
 	if assignment.Priority != planning.PriorityCatalogRefresh || assignment.PolicyID != "" ||
-		catalogTask == nil || catalogTask.GetTheater() == nil ||
-		func() string { key, _ := catalogdomain.TheaterSourceKey(catalogTask.GetTheater()); return key }() != "__catalog__" || len(catalogTask.GetTargetDates()) != 0 ||
+		catalogTask == nil || catalogTask.GetProviderId() != catalogdomain.ProviderCGV ||
 		len(assignment.Candidates) != 1 {
 		t.Fatalf("catalog assignment = %+v", assignment)
 	}

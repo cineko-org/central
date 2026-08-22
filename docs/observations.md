@@ -19,6 +19,8 @@ flowchart LR
   scans.
 - A pending or running booking monitor raises the matching theater to the demand range. A triggered monitor no longer
   raises discovery priority because its exact showtime is already known.
+- Full catalog capture is date-independent. Central sends no fabricated target dates; the Probe discovers the
+  provider-visible catalog horizon and returns the complete snapshot owned by that capture.
 - Unknown-showtime demand is rechecked after a randomized 2-5 second delay, subject to the duration of the previous
   scan. Once the exact showtime is known, its shared live-seat snapshot is also due after 2-5 seconds. Both always
   outrank recent-change and ordinary collection work.
