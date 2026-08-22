@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	buf.build/go/protovalidate v1.3.0
-	github.com/cineko-org/contracts/v3 v3.5.1
+	github.com/cineko-org/contracts/v3 v3.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0

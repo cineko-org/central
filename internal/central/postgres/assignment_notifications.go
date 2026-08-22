@@ -40,6 +40,7 @@ const (
 					SELECT 1
 					FROM observation_assignments AS active
 					WHERE active.task_kind = assignment.task_kind
+						AND active.theater_provider_id = assignment.theater_provider_id
 						AND active.theater_id = assignment.theater_id
 						AND active.status = 'leased'
 				)

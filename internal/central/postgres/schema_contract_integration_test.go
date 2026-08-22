@@ -148,13 +148,15 @@ func TestSeatMapCollectionStateMigrationEnforcesLifecycleShape(t *testing.T) {
 	}
 	if _, err := tx.Exec(t.Context(), `
 		INSERT INTO observation_assignments (
-			id, task_kind, theater_id, theater_region, theater_name, target_dates,
+			id, task_kind, theater_id, theater_provider_id, theater_source_key,
+			theater_region, theater_name, target_dates,
 			locale, time_zone, egress_policy_id, status, not_before, deadline,
 			created_at, updated_at, auditorium_id, showtime_id
-		) VALUES ($1, 'cgv.seat-map.capture', '', '', '', '{}', 'ko-KR', 'Asia/Seoul',
+		) VALUES ($1, 'cgv.seat-map.capture', $5, $6, '9999', '서울', '계약 검증 극장',
+			'{}', 'ko-KR', 'Asia/Seoul',
 			'', 'queued', $2::timestamptz, $2::timestamptz + interval '10 minutes',
 			$2::timestamptz, $2::timestamptz, $3, $4)
-	`, assignmentID, now, auditoriumID, showtimeID); err != nil {
+	`, assignmentID, now, auditoriumID, showtimeID, theaterID, providerID); err != nil {
 		t.Fatal(err)
 	}
 	insert := func(state, reason string, assignmentID, stateShowtimeID string, nextAttempt any) {

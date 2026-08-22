@@ -71,9 +71,24 @@ func TestClientCatalogAPI(t *testing.T) {
 	}
 
 	auditoriumID := snapshot.GetAuditoriums()[0].GetId()
+	seat := &seatmappb.Seat{}
+	seat.SetId(catalogdomain.SeatID(auditoriumID, "A1"))
+	seat.SetAuditoriumId(auditoriumID)
+	seat.SetLabel("A1")
+	seat.SetRow("A")
+	seat.SetNumber(1)
+	seat.SetX(0.5)
+	seat.SetY(0.5)
+	seat.SetType("standard")
+	layout := &seatmappb.Layout{}
+	layout.SetSeats([]*seatmappb.Seat{seat})
 	repository.seatMap = &seatmappb.Snapshot{}
-	repository.seatMap.SetId("stored-version")
 	repository.seatMap.SetAuditoriumId(auditoriumID)
+	repository.seatMap.SetCapacity(1)
+	repository.seatMap.SetLayout(layout)
+	if err := catalogdomain.NormalizeSeatMap(repository.seatMap, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	current := request(t, server.Handler(), http.MethodGet,
 		"/v1/catalog/auditoriums/"+auditoriumID+"/seat-map", nil, getHeaders)
 	if current.Code != http.StatusOK {

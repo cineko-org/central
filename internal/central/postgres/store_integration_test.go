@@ -2001,15 +2001,8 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 	t.Cleanup(cleanup)
 	now := time.Now().UTC()
 	leader, err := store.RunLeaderCycle(ctx, func(repository reconcile.CycleRepository) error {
-		theater := &catalogpb.Theater{}
-		theater.SetId("system-catalog")
-		theater.SetProviderId(catalogdomain.ProviderCGV)
-		catalogdomain.SetTheaterSourceKey(theater, "0000")
-		theater.SetRegion("system")
-		theater.SetName("CGV catalog")
 		catalogTask := &observationpb.CatalogTask{}
-		catalogTask.SetTheater(theater)
-		catalogTask.SetTargetDates([]*commonpb.LocalDate{localDateMessage(now.Format(time.DateOnly))})
+		catalogTask.SetProviderId(catalogdomain.ProviderCGV)
 		catalogTask.SetLocale("ko-KR")
 		catalogTask.SetTimeZone("Asia/Seoul")
 		egress := &commonpb.EgressPolicy{}
@@ -2027,12 +2020,21 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 		t.Fatalf("create system assignment: leader=%t error=%v", leader, err)
 	}
 	var policyID *string
+	var providerID, theaterID, theaterSourceKey, theaterRegion, theaterName string
 	if err := store.pool.QueryRow(ctx,
-		`SELECT policy_id FROM observation_assignments WHERE id = $1`, assignmentID).Scan(&policyID); err != nil {
+		`SELECT policy_id, theater_provider_id, theater_id, theater_source_key, theater_region, theater_name
+		 FROM observation_assignments WHERE id = $1`, assignmentID).Scan(
+		&policyID, &providerID, &theaterID, &theaterSourceKey, &theaterRegion, &theaterName,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if policyID != nil {
 		t.Fatalf("system assignment policy = %q", *policyID)
+	}
+	if providerID != catalogdomain.ProviderCGV || theaterID != "" || theaterSourceKey != "" ||
+		theaterRegion != "" || theaterName != "" {
+		t.Fatalf("system assignment target = provider %q theater %q/%q region %q name %q",
+			providerID, theaterID, theaterSourceKey, theaterRegion, theaterName)
 	}
 }
 

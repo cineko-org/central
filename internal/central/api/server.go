@@ -445,6 +445,16 @@ func (server *Server) decodeProtoJSON(writer http.ResponseWriter, request *http.
 }
 
 func (server *Server) writeProtoJSON(writer http.ResponseWriter, status int, value proto.Message) {
+	if value == nil {
+		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		if err := protovalidate.Validate(value); err != nil {
+			http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	}
 	payload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(value)
 	if err != nil {
 		http.Error(writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)

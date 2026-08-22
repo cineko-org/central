@@ -146,6 +146,18 @@ func TestWriteErrorExposesOnlyExplicitPublicValidationMessages(t *testing.T) {
 	}
 }
 
+func TestWriteProtoJSONRejectsInvalidOutboundContract(t *testing.T) {
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+
+	server.writeProtoJSON(recorder, http.StatusOK, &probepb.ClaimAssignmentResponse{})
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("invalid outbound response status = %d, want %d; body = %s",
+			recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+}
+
 func TestRequestBodyIsStrict(t *testing.T) {
 	service, err := central.NewService(&apiRepository{}, central.Config{EnrollmentToken: "enroll"})
 	if err != nil {
