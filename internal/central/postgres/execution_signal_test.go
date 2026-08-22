@@ -56,9 +56,10 @@ func TestExecutionTargetMatchesCanonicalProbeShowtime(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		mutate func(*catalogpb.Showtime)
-		want   bool
+		name          string
+		mutateMonitor func(*clientpb.Monitor)
+		mutate        func(*catalogpb.Showtime)
+		want          bool
 	}{
 		{name: "auditorium", mutate: func(value *catalogpb.Showtime) { value.GetAuditorium().SetId("other") }, want: false},
 		{name: "movie title snapshot", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetTitle("다른 영화") }, want: true},
@@ -71,18 +72,31 @@ func TestExecutionTargetMatchesCanonicalProbeShowtime(t *testing.T) {
 			date.SetDay(13)
 			value.SetScheduleDate(date)
 		}, want: false},
-		{name: "provider schedule date survives after-midnight start", mutate: func(value *catalogpb.Showtime) {
-			value.SetStartsAt(timestamppb.New(time.Date(2026, 8, 13, 1, 45, 0, 0, location)))
-		}, want: true},
+		{
+			name: "provider schedule date survives after-midnight start",
+			mutateMonitor: func(value *clientpb.Monitor) {
+				value.GetEarliestTime().SetHour(1)
+				value.GetLatestTime().SetHour(2)
+			},
+			mutate: func(value *catalogpb.Showtime) {
+				value.SetStartsAt(timestamppb.New(time.Date(2026, 8, 13, 1, 45, 0, 0, location)))
+			},
+			want: true,
+		},
 		{name: "time", mutate: func(value *catalogpb.Showtime) {
 			value.SetStartsAt(timestamppb.New(value.GetStartsAt().AsTime().Add(2 * time.Hour)))
 		}, want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			candidateTarget := target
+			candidateTarget.monitor = proto.CloneOf(target.monitor)
+			if test.mutateMonitor != nil {
+				test.mutateMonitor(candidateTarget.monitor)
+			}
 			value := proto.CloneOf(showtime)
 			test.mutate(value)
-			if got := executionTargetMatches(target, value, now, location); got != test.want {
+			if got := executionTargetMatches(candidateTarget, value, now, location); got != test.want {
 				t.Fatalf("executionTargetMatches() = %t, want %t", got, test.want)
 			}
 		})

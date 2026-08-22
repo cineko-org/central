@@ -7,6 +7,7 @@ import (
 
 	"github.com/cineko-org/central/internal/support/numeric"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -383,7 +384,13 @@ func catalogSnapshotFixture(observedAt time.Time) *catalogpb.CatalogSnapshot {
 	showtime.SetTheaterId(theater.GetId())
 	showtime.SetMovie(proto.CloneOf(movie))
 	showtime.SetAuditorium(proto.CloneOf(auditorium))
-	showtime.SetStartsAt(timestamppb.New(observedAt.Add(time.Hour)))
+	startsAt := observedAt.Add(time.Hour)
+	scheduleDate := &commonpb.LocalDate{}
+	scheduleDate.SetYear(numeric.ClampInt32(startsAt.Year()))
+	scheduleDate.SetMonth(numeric.ClampInt32(int(startsAt.Month())))
+	scheduleDate.SetDay(numeric.ClampInt32(startsAt.Day()))
+	showtime.SetScheduleDate(scheduleDate)
+	showtime.SetStartsAt(timestamppb.New(startsAt))
 	showtime.SetEndsAt(timestamppb.New(observedAt.Add(3 * time.Hour)))
 	showtime.SetCapacity(624)
 	showtime.SetId(CatalogID(provider.GetId(), "showtime", showtime.GetSourceKey()))
