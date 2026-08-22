@@ -20,14 +20,14 @@ import (
 	"github.com/cineko-org/central/internal/central/reconcile"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	"github.com/cineko-org/central/internal/support/numeric"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -693,17 +693,19 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 		preset.GetTheaterId(),
 		monitor.GetMovieId(),
 		preset.GetAuditoriumId(),
+		targetDate,
 		showtimeStart,
 	)
-	showtime.SetScheduleDate(targetDateMessage)
 	seedClientResourceCatalog(t, store, providerID, theaterID, auditoriumID, movieID, showtime)
 	capture := &observationpb.Capture{}
 	capture.SetTargetDate(targetDateMessage)
 	capture.SetComplete(true)
 	capture.SetObservedAt(timestamppb.New(observedAt))
 	capture.SetShowtimes([]*catalogpb.Showtime{showtime})
+	scheduleCaptures := &observationpb.ScheduleCaptures{}
+	scheduleCaptures.SetCaptures([]*observationpb.Capture{capture})
 	completed := &observationpb.Completed{}
-	completed.SetCaptures([]*observationpb.Capture{capture})
+	completed.SetSchedule(scheduleCaptures)
 	result := &observationpb.AssignmentResult{}
 	result.SetCompleted(completed)
 	commit := central.ResultCommit{
@@ -784,7 +786,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 		t.Fatalf("replayed execution completion error = %v", err)
 	}
 	commit.CommittedAt = time.Now().UTC()
-	commit.Result.GetCompleted().GetCaptures()[0].SetObservedAt(timestamppb.New(commit.CommittedAt))
+	commit.Result.GetCompleted().GetSchedule().GetCaptures()[0].SetObservedAt(timestamppb.New(commit.CommittedAt))
 	tx, beginErr := store.pool.Begin(ctx)
 	if beginErr != nil {
 		t.Fatal(beginErr)
@@ -804,7 +806,8 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	availabilityTheater := &catalogpb.Theater{}
 	availabilityTheater.SetId(theaterID)
 	availabilityTheater.SetProviderId(providerID)
-	availabilityTheater.SetSourceKey(theaterID)
+	siteNo, _ := clientResourceCatalogSourceKeys(providerID)
+	catalogdomain.SetTheaterSourceKey(availabilityTheater, siteNo)
 	availabilityTheater.SetRegion("Seoul")
 	availabilityTheater.SetName("Integration theater")
 	availabilityTask := &observationpb.SeatAvailabilityTask{}
@@ -815,25 +818,56 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	availabilityTask.SetTimeZone("Asia/Seoul")
 	assignmentTask := &observationpb.AssignmentTask{}
 	assignmentTask.SetSeatAvailability(availabilityTask)
+	layoutSeatA := &seatmappb.Seat{}
+	layoutSeatA.SetId(catalogdomain.SeatID(auditoriumID, "A1"))
+	layoutSeatA.SetAuditoriumId(auditoriumID)
+	layoutSeatA.SetLabel("A1")
+	layoutSeatA.SetRow("A")
+	layoutSeatA.SetNumber(1)
+	layoutSeatA.SetX(0.4)
+	layoutSeatA.SetY(0.5)
+	layoutSeatA.SetType("standard")
+	layoutSeatB := &seatmappb.Seat{}
+	layoutSeatB.SetId(catalogdomain.SeatID(auditoriumID, "A2"))
+	layoutSeatB.SetAuditoriumId(auditoriumID)
+	layoutSeatB.SetLabel("A2")
+	layoutSeatB.SetRow("A")
+	layoutSeatB.SetNumber(2)
+	layoutSeatB.SetX(0.6)
+	layoutSeatB.SetY(0.5)
+	layoutSeatB.SetType("standard")
+	layout := &seatmappb.Layout{}
+	layout.SetSeats([]*seatmappb.Seat{layoutSeatA, layoutSeatB})
+	layoutSnapshot := &seatmappb.Snapshot{}
+	layoutSnapshot.SetAuditoriumId(auditoriumID)
+	layoutSnapshot.SetCapacity(2)
+	layoutSnapshot.SetLayout(layout)
+	layoutSnapshot.SetObservedAt(timestamppb.New(availabilityObservedAt))
+	if err := catalogdomain.NormalizeSeatMap(layoutSnapshot, availabilityObservedAt); err != nil {
+		t.Fatal(err)
+	}
 	seatA := &seatmappb.AvailableSeat{}
-	seatA.SetSeatId("seat-a1")
+	seatA.SetSeatId(layoutSeatA.GetId())
 	seatB := &seatmappb.AvailableSeat{}
-	seatB.SetSeatId("seat-a2")
+	seatB.SetSeatId(layoutSeatB.GetId())
 	availabilitySnapshot := &seatmappb.AvailabilitySnapshot{}
 	availabilitySnapshot.SetShowtimeId(showtime.GetId())
 	availabilitySnapshot.SetAuditoriumId(auditoriumID)
-	availabilitySnapshot.SetLayoutHash(strings.Repeat("a", 64))
+	availabilitySnapshot.SetLayoutHash(layoutSnapshot.GetLayoutHash())
 	availabilitySnapshot.SetAvailableSeats([]*seatmappb.AvailableSeat{seatA, seatB})
 	availabilitySnapshot.SetObservedAt(timestamppb.New(availabilityObservedAt))
+	liveSeat := &seatmappb.LiveSeatObservation{}
+	liveSeat.SetLayout(layoutSnapshot)
+	liveSeat.SetAvailability(availabilitySnapshot)
 	availabilityCompleted := &observationpb.Completed{}
-	availabilityCompleted.SetSeatAvailability(availabilitySnapshot)
+	availabilityCompleted.SetLiveSeat(liveSeat)
 	availabilityResult := &observationpb.AssignmentResult{}
 	availabilityResult.SetCompleted(availabilityCompleted)
 	tx, beginErr = store.pool.Begin(ctx)
 	if beginErr != nil {
 		t.Fatal(beginErr)
 	}
-	if err := storeSeatAvailabilityResult(ctx, tx, central.ResultCommit{
+	if err := storeLiveSeatResult(ctx, tx, central.ResultCommit{
 		CommittedAt: availabilityObservedAt,
 		Result:      availabilityResult,
 	}, assignmentTask); err != nil {
@@ -858,7 +892,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 
 	terminalShowtime := proto.CloneOf(showtime)
 	terminalShowtime.SetId("show_execution_terminal")
-	terminalShowtime.SetSourceKey("show_execution_terminal")
+	catalogdomain.SetShowtimeSourceKey(terminalShowtime, siteNo+"/"+targetDate+"/0001/0002")
 	terminalStart := showtimeStart.Add(10 * time.Minute)
 	terminalShowtime.SetStartsAt(timestamppb.New(terminalStart))
 	terminalShowtime.SetEndsAt(timestamppb.New(terminalStart.Add(150 * time.Minute)))
@@ -868,8 +902,10 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	terminalCapture.SetComplete(true)
 	terminalCapture.SetObservedAt(timestamppb.New(availabilityObservedAt.Add(time.Second)))
 	terminalCapture.SetShowtimes([]*catalogpb.Showtime{terminalShowtime})
+	terminalSchedule := &observationpb.ScheduleCaptures{}
+	terminalSchedule.SetCaptures([]*observationpb.Capture{terminalCapture})
 	terminalCompleted := &observationpb.Completed{}
-	terminalCompleted.SetCaptures([]*observationpb.Capture{terminalCapture})
+	terminalCompleted.SetSchedule(terminalSchedule)
 	terminalResult := &observationpb.AssignmentResult{}
 	terminalResult.SetCompleted(terminalCompleted)
 	tx, beginErr = store.pool.Begin(ctx)
@@ -919,7 +955,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	leaseLossShowtime := proto.CloneOf(terminalShowtime)
 	leaseLossShowtime.SetId("show_execution_lease_loss")
-	leaseLossShowtime.SetSourceKey("show_execution_lease_loss")
+	catalogdomain.SetShowtimeSourceKey(leaseLossShowtime, siteNo+"/"+targetDate+"/0001/0003")
 	leaseLossStart := terminalStart.Add(5 * time.Minute)
 	leaseLossShowtime.SetStartsAt(timestamppb.New(leaseLossStart))
 	leaseLossShowtime.SetEndsAt(timestamppb.New(leaseLossStart.Add(150 * time.Minute)))
@@ -929,8 +965,10 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	leaseLossCapture.SetComplete(true)
 	leaseLossCapture.SetObservedAt(timestamppb.New(terminalCapture.GetObservedAt().AsTime().Add(time.Second)))
 	leaseLossCapture.SetShowtimes([]*catalogpb.Showtime{leaseLossShowtime})
+	leaseLossSchedule := &observationpb.ScheduleCaptures{}
+	leaseLossSchedule.SetCaptures([]*observationpb.Capture{leaseLossCapture})
 	leaseLossCompleted := &observationpb.Completed{}
-	leaseLossCompleted.SetCaptures([]*observationpb.Capture{leaseLossCapture})
+	leaseLossCompleted.SetSchedule(leaseLossSchedule)
 	leaseLossResult := &observationpb.AssignmentResult{}
 	leaseLossResult.SetCompleted(leaseLossCompleted)
 	tx, beginErr = store.pool.Begin(ctx)
@@ -988,7 +1026,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	deleteShowtime := proto.CloneOf(terminalShowtime)
 	deleteShowtime.SetId("show_execution_delete")
-	deleteShowtime.SetSourceKey("show_execution_delete")
+	catalogdomain.SetShowtimeSourceKey(deleteShowtime, siteNo+"/"+targetDate+"/0001/0004")
 	deleteStart := terminalStart.Add(10 * time.Minute)
 	deleteShowtime.SetStartsAt(timestamppb.New(deleteStart))
 	deleteShowtime.SetEndsAt(timestamppb.New(deleteStart.Add(150 * time.Minute)))
@@ -998,8 +1036,10 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	deleteCapture.SetComplete(true)
 	deleteCapture.SetObservedAt(timestamppb.New(leaseLossCapture.GetObservedAt().AsTime().Add(time.Second)))
 	deleteCapture.SetShowtimes([]*catalogpb.Showtime{deleteShowtime})
+	deleteSchedule := &observationpb.ScheduleCaptures{}
+	deleteSchedule.SetCaptures([]*observationpb.Capture{deleteCapture})
 	deleteCompleted := &observationpb.Completed{}
-	deleteCompleted.SetCaptures([]*observationpb.Capture{deleteCapture})
+	deleteCompleted.SetSchedule(deleteSchedule)
 	deleteResult := &observationpb.AssignmentResult{}
 	deleteResult.SetCompleted(deleteCompleted)
 	tx, beginErr = store.pool.Begin(ctx)
@@ -1165,7 +1205,7 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	accessHash := sha256.Sum256([]byte(accessToken))
 	leaseToken := "lease_integration"
 	leaseHash := sha256.Sum256([]byte(leaseToken))
-	theaterSourceKey := "theater_integration"
+	theaterSourceKey := "9901"
 	theaterID := catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", theaterSourceKey)
 
 	cleanupIntegrationRows(t, store, probeID, assignmentID)
@@ -1197,7 +1237,7 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId(catalogdomain.ProviderCGV)
-	theater.SetSourceKey(theaterSourceKey)
+	catalogdomain.SetTheaterSourceKey(theater, theaterSourceKey)
 	theater.SetRegion("서울")
 	theater.SetName("통합 시험관")
 	task := storeIntegrationScheduleTask(theater, "2026-08-20", "ko-KR", "Asia/Seoul")
@@ -1282,7 +1322,7 @@ func TestPostgresProbeLifecycle(t *testing.T) {
 	`, assignmentID).Scan(&observedMovieID); err != nil {
 		t.Fatal(err)
 	}
-	if expected := result.GetCompleted().GetCaptures()[0].GetShowtimes()[0].GetMovie().GetId(); observedMovieID != expected {
+	if expected := result.GetCompleted().GetSchedule().GetCaptures()[0].GetShowtimes()[0].GetMovie().GetId(); observedMovieID != expected {
 		t.Fatalf("observation movie ID = %q, want %q", observedMovieID, expected)
 	}
 }
@@ -1314,7 +1354,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seedIntegrationPolicy(t, store, policyIDs[0], "theater_retry", now.Add(-time.Minute))
+	seedIntegrationPolicy(t, store, policyIDs[0], "0101", now.Add(-time.Minute))
 	report, err := engine.RunOnce(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1381,7 +1421,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], storeIntegrationHeartbeat(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	seedIntegrationPolicy(t, store, policyIDs[1], "theater_failed", time.Now().UTC().Add(-time.Minute))
+	seedIntegrationPolicy(t, store, policyIDs[1], "0102", time.Now().UTC().Add(-time.Minute))
 	if _, err := engine.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1406,7 +1446,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 	if err := store.DisconnectProbe(ctx, probeIDs[1], time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	seedIntegrationPolicy(t, store, policyIDs[2], "theater_missed", time.Now().UTC().Add(-time.Minute))
+	seedIntegrationPolicy(t, store, policyIDs[2], "0103", time.Now().UTC().Add(-time.Minute))
 	if _, err := engine.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1419,7 +1459,7 @@ func TestPostgresReconcilerLifecycle(t *testing.T) {
 	if _, err := store.HeartbeatProbe(ctx, probeIDs[0], storeIntegrationHeartbeat(), time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	seedIntegrationPolicy(t, store, policyIDs[3], "theater_returned", time.Now().UTC().Add(-time.Minute))
+	seedIntegrationPolicy(t, store, policyIDs[3], "0104", time.Now().UTC().Add(-time.Minute))
 	if _, err := engine.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1449,7 +1489,7 @@ func TestPostgresScheduleIntelligenceProjection(t *testing.T) {
 	t.Cleanup(store.Close)
 	const (
 		policyID         = "policy_intelligence_integration"
-		theaterSourceKey = "theater_intelligence_integration"
+		theaterSourceKey = "0105"
 	)
 	assignmentIDs := []string{
 		"assignment_intelligence_0", "assignment_intelligence_1",
@@ -1633,8 +1673,8 @@ func TestPostgresConcurrentClaimRespectsProbeCapacity(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	registerIntegrationProbe(t, store, probeIDs[0], "install_capacity", now)
-	seedIntegrationPolicy(t, store, policyIDs[0], "theater_capacity_1", now.Add(-time.Minute))
-	seedIntegrationPolicy(t, store, policyIDs[1], "theater_capacity_2", now.Add(-time.Minute))
+	seedIntegrationPolicy(t, store, policyIDs[0], "0106", now.Add(-time.Minute))
+	seedIntegrationPolicy(t, store, policyIDs[1], "0107", now.Add(-time.Minute))
 	engine, err := reconcile.New(store, reconcile.Config{
 		TickInterval: time.Second, ProbeHeartbeatTTL: time.Minute, OfflineRetention: 24 * time.Hour,
 		RetryMinimum: time.Millisecond, RetryMaximum: time.Millisecond, BatchSize: 100,
@@ -1766,10 +1806,10 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	demandTheaterID := seedIntegrationPolicy(t, store, policyIDs[0], "theater_lane_demand", now.Add(-time.Minute))
-	burstTheaterID := seedIntegrationPolicy(t, store, policyIDs[1], "theater_lane_burst", now.Add(-time.Minute))
-	cancellationTheaterID := seedIntegrationPolicy(t, store, policyIDs[2], "theater_lane_cancellation", now.Add(-time.Minute))
-	baselineTheaterID := seedIntegrationPolicy(t, store, policyIDs[3], "theater_lane_baseline", now.Add(-time.Minute))
+	demandTheaterID := seedIntegrationPolicy(t, store, policyIDs[0], "0108", now.Add(-time.Minute))
+	burstTheaterID := seedIntegrationPolicy(t, store, policyIDs[1], "0109", now.Add(-time.Minute))
+	cancellationTheaterID := seedIntegrationPolicy(t, store, policyIDs[2], "0110", now.Add(-time.Minute))
+	baselineTheaterID := seedIntegrationPolicy(t, store, policyIDs[3], "0111", now.Add(-time.Minute))
 	if _, err := store.pool.Exec(ctx, `
 		UPDATE observation_policies
 		SET priority = CASE id
@@ -1791,13 +1831,15 @@ func TestPostgresDuePoliciesKeepBookingDemandAheadOfChangeBurst(t *testing.T) {
 		t.Fatal(err)
 	}
 	for index, theaterID := range []string{demandTheaterID, cancellationTheaterID, baselineTheaterID} {
-		seedClientResourceCatalog(
+		seedClientResourceCatalogWithSourceKeys(
 			t,
 			store,
 			catalogdomain.ProviderCGV,
 			theaterID,
 			auditoriumIDs[index],
 			movieID,
+			[]string{"0108", "0110", "0111"}[index],
+			"92000001",
 		)
 	}
 	clientService, err := central.NewClientService(store, time.Hour)
@@ -1962,7 +2004,7 @@ func TestPostgresSystemAssignmentDoesNotRequirePolicy(t *testing.T) {
 		theater := &catalogpb.Theater{}
 		theater.SetId("system-catalog")
 		theater.SetProviderId(catalogdomain.ProviderCGV)
-		theater.SetSourceKey("__catalog__")
+		catalogdomain.SetTheaterSourceKey(theater, "0000")
 		theater.SetRegion("system")
 		theater.SetName("CGV catalog")
 		catalogTask := &observationpb.CatalogTask{}
@@ -2008,14 +2050,14 @@ func TestPostgresCatalogRefreshRequiresCatalogAssignmentCompletion(t *testing.T)
 
 	fixtureID := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
 	providerID := "catalog_refresh_integration_" + fixtureID
-	sourceKey := "catalog-refresh-theater-" + fixtureID
+	sourceKey := "9902"
 	provider := &catalogpb.Provider{}
 	provider.SetId(providerID)
 	provider.SetName("Catalog refresh integration")
 	theater := &catalogpb.Theater{}
 	theater.SetId(catalogdomain.CatalogID(providerID, "theater", sourceKey))
 	theater.SetProviderId(providerID)
-	theater.SetSourceKey(sourceKey)
+	catalogdomain.SetTheaterSourceKey(theater, sourceKey)
 	theater.SetRegion("Seoul")
 	theater.SetName("Catalog refresh theater")
 	snapshot := &catalogpb.CatalogSnapshot{}
@@ -2109,49 +2151,51 @@ func TestPostgresCatalogRetainsMovieHistoryOutsideClientProjection(t *testing.T)
 	now := time.Now().UTC()
 	fixtureID := fmt.Sprintf("%d", now.UnixNano())
 	providerID := "catalog_history_integration_" + fixtureID
+	const siteNo = "0001"
+	auditoriumSourceKey := siteNo + "/0001"
+	pastStartsAt := now.Add(-2 * time.Hour)
+	futureStartsAt := now.Add(time.Hour)
+	pastShowtimeSourceKey := siteNo + "/" + pastStartsAt.Format(time.DateOnly) + "/0001/0001"
+	futureShowtimeSourceKey := siteNo + "/" + futureStartsAt.Format(time.DateOnly) + "/0001/0002"
 	theater := &catalogpb.Theater{}
-	theater.SetId(catalogdomain.CatalogID(providerID, "theater", "theater"))
+	theater.SetId(catalogdomain.CatalogID(providerID, "theater", siteNo))
 	theater.SetProviderId(providerID)
-	theater.SetSourceKey("theater")
+	catalogdomain.SetTheaterSourceKey(theater, siteNo)
 	theater.SetRegion("Seoul")
 	theater.SetName("History theater")
 	auditorium := &catalogpb.Auditorium{}
-	auditorium.SetId(catalogdomain.CatalogID(providerID, "auditorium", "auditorium"))
+	auditorium.SetId(catalogdomain.CatalogID(providerID, "auditorium", auditoriumSourceKey))
 	auditorium.SetTheaterId(theater.GetId())
-	auditorium.SetSourceKey("auditorium")
+	catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSourceKey)
 	auditorium.SetName("History auditorium")
 	auditorium.SetScreenTypes([]string{"STANDARD"})
 	auditorium.SetCapacity(100)
 	pastMovie := &catalogpb.Movie{}
-	pastMovie.SetId(catalogdomain.CatalogID(providerID, "movie", "past"))
+	pastMovie.SetId(catalogdomain.CatalogID(providerID, "movie", "00000001"))
 	pastMovie.SetProviderId(providerID)
-	pastMovie.SetSourceKey("past")
+	catalogdomain.SetMovieSourceKey(pastMovie, "00000001")
 	pastMovie.SetTitle("Past movie")
 	futureMovie := &catalogpb.Movie{}
-	futureMovie.SetId(catalogdomain.CatalogID(providerID, "movie", "future"))
+	futureMovie.SetId(catalogdomain.CatalogID(providerID, "movie", "00000002"))
 	futureMovie.SetProviderId(providerID)
-	futureMovie.SetSourceKey("future")
+	catalogdomain.SetMovieSourceKey(futureMovie, "00000002")
 	futureMovie.SetTitle("Future movie")
 	pastShowtime := &catalogpb.Showtime{}
-	pastShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", "past"))
+	pastShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", pastShowtimeSourceKey))
 	pastShowtime.SetProviderId(providerID)
-	pastShowtime.SetSourceKey("past")
+	catalogdomain.SetShowtimeSourceKey(pastShowtime, pastShowtimeSourceKey)
 	pastShowtime.SetTheaterId(theater.GetId())
 	pastShowtime.SetMovie(pastMovie)
 	pastShowtime.SetAuditorium(auditorium)
-	pastStartsAt := now.Add(-2 * time.Hour)
-	pastShowtime.SetScheduleDate(localDateMessage(pastStartsAt.Format(time.DateOnly)))
 	pastShowtime.SetStartsAt(timestamppb.New(pastStartsAt))
 	pastShowtime.SetEndsAt(timestamppb.New(now.Add(-time.Hour)))
 	futureShowtime := &catalogpb.Showtime{}
-	futureShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", "future"))
+	futureShowtime.SetId(catalogdomain.CatalogID(providerID, "showtime", futureShowtimeSourceKey))
 	futureShowtime.SetProviderId(providerID)
-	futureShowtime.SetSourceKey("future")
+	catalogdomain.SetShowtimeSourceKey(futureShowtime, futureShowtimeSourceKey)
 	futureShowtime.SetTheaterId(theater.GetId())
 	futureShowtime.SetMovie(futureMovie)
 	futureShowtime.SetAuditorium(auditorium)
-	futureStartsAt := now.Add(time.Hour)
-	futureShowtime.SetScheduleDate(localDateMessage(futureStartsAt.Format(time.DateOnly)))
 	futureShowtime.SetStartsAt(timestamppb.New(futureStartsAt))
 	futureShowtime.SetEndsAt(timestamppb.New(now.Add(2 * time.Hour)))
 	provider := &catalogpb.Provider{}
@@ -2210,7 +2254,7 @@ func TestPostgresReconcilerCycleRollsBackAtomically(t *testing.T) {
 	policyIDs := []string{"policy_rollback"}
 	cleanupReconcileRows(t, store, policyIDs, nil)
 	t.Cleanup(func() { cleanupReconcileRows(t, store, policyIDs, nil) })
-	seedIntegrationPolicy(t, store, policyIDs[0], "theater_rollback", time.Now().UTC().Add(time.Hour))
+	seedIntegrationPolicy(t, store, policyIDs[0], "0112", time.Now().UTC().Add(time.Hour))
 
 	wantErr := errors.New("rollback integration cycle")
 	leader, err := store.RunLeaderCycle(ctx, func(repository reconcile.CycleRepository) error {
@@ -2453,7 +2497,36 @@ func seedClientResourceCatalog(
 	movieID string,
 	showtimes ...*catalogpb.Showtime,
 ) {
+	seedClientResourceCatalogWithSourceKeys(
+		t, store, providerID, theaterID, auditoriumID, movieID, "", "", showtimes...,
+	)
+}
+
+func seedClientResourceCatalogWithSourceKeys(
+	t *testing.T,
+	store *Store,
+	providerID string,
+	theaterID string,
+	auditoriumID string,
+	movieID string,
+	theaterSourceKey string,
+	movieSourceKey string,
+	showtimes ...*catalogpb.Showtime,
+) {
 	t.Helper()
+	siteNo, movieNo := clientResourceCatalogSourceKeys(providerID)
+	if movieSourceKey != "" {
+		movieNo = movieSourceKey
+	}
+	if theaterSourceKey == "" {
+		if err := store.pool.QueryRow(context.Background(), `
+			SELECT COALESCE((SELECT source_key FROM theaters WHERE id = $1), $2)
+		`, theaterID, siteNo).Scan(&siteNo); err != nil {
+			t.Fatalf("resolve Client resource theater identity: %v", err)
+		}
+	} else {
+		siteNo = theaterSourceKey
+	}
 	provider := &catalogpb.Provider{}
 	provider.SetId(providerID)
 	providerName := "Integration provider"
@@ -2464,20 +2537,20 @@ func seedClientResourceCatalog(
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId(providerID)
-	theater.SetSourceKey(theaterID)
+	catalogdomain.SetTheaterSourceKey(theater, siteNo)
 	theater.SetRegion("Seoul")
 	theater.SetName("Integration theater")
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(theaterID)
-	auditorium.SetSourceKey(auditoriumID)
+	catalogdomain.SetAuditoriumSourceKey(auditorium, siteNo+"/0001")
 	auditorium.SetName("Integration auditorium")
 	auditorium.SetScreenTypes([]string{"STANDARD"})
 	auditorium.SetCapacity(100)
 	movie := &catalogpb.Movie{}
 	movie.SetId(movieID)
 	movie.SetProviderId(providerID)
-	movie.SetSourceKey(movieID)
+	catalogdomain.SetMovieSourceKey(movie, movieNo)
 	movie.SetTitle("Integration movie")
 	snapshot := &catalogpb.CatalogSnapshot{}
 	snapshot.SetProvider(provider)
@@ -2489,6 +2562,13 @@ func seedClientResourceCatalog(
 	if _, err := store.UpsertCatalogSnapshot(context.Background(), snapshot); err != nil {
 		t.Fatalf("seed Client resource catalog: %v", err)
 	}
+}
+
+func clientResourceCatalogSourceKeys(providerID string) (string, string) {
+	if providerID == catalogdomain.ProviderCGV {
+		return "0056", "00001234"
+	}
+	return "1056", "10001234"
 }
 
 func cleanupClientResourceCatalog(
@@ -2512,6 +2592,8 @@ func cleanupClientResourceCatalog(
 			SELECT id FROM showtimes WHERE theater_id = ANY($1)
 		)`, theaterIDs},
 		{`DELETE FROM showtimes WHERE theater_id = ANY($1)`, theaterIDs},
+		{`UPDATE auditoriums SET current_seat_map_version_id = NULL WHERE id = ANY($1)`, auditoriumIDs},
+		{`DELETE FROM seat_map_versions WHERE auditorium_id = ANY($1)`, auditoriumIDs},
 		{`DELETE FROM auditoriums WHERE id = ANY($1)`, auditoriumIDs},
 		{`DELETE FROM movies WHERE id = ANY($1)`, movieIDs},
 		{`DELETE FROM theaters WHERE id = ANY($1)`, theaterIDs},
@@ -2567,24 +2649,26 @@ func executionIntegrationShowtime(
 	theaterID string,
 	movieID string,
 	auditoriumID string,
+	targetDate string,
 	startsAt time.Time,
 ) *catalogpb.Showtime {
+	siteNo, movieNo := clientResourceCatalogSourceKeys(providerID)
 	movie := &catalogpb.Movie{}
 	movie.SetId(movieID)
 	movie.SetProviderId(providerID)
-	movie.SetSourceKey(movieID)
+	catalogdomain.SetMovieSourceKey(movie, movieNo)
 	movie.SetTitle("Execution Movie")
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(theaterID)
-	auditorium.SetSourceKey(auditoriumID)
+	catalogdomain.SetAuditoriumSourceKey(auditorium, siteNo+"/0001")
 	auditorium.SetName("IMAX관")
 	auditorium.SetScreenTypes([]string{"IMAX"})
 	auditorium.SetCapacity(624)
 	showtime := &catalogpb.Showtime{}
 	showtime.SetId("show_execution")
 	showtime.SetProviderId(providerID)
-	showtime.SetSourceKey("show_execution")
+	catalogdomain.SetShowtimeSourceKey(showtime, siteNo+"/"+targetDate+"/0001/0001")
 	showtime.SetTheaterId(theaterID)
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
@@ -2661,36 +2745,38 @@ func integrationAssignmentResult(theater *catalogpb.Theater, targetDate string, 
 	capture.SetTargetDate(localDateMessage(targetDate))
 	capture.SetComplete(true)
 	capture.SetObservedAt(timestamppb.New(now.Add(-time.Second)))
-	showtime := integrationShowtime(theater, now)
-	showtime.SetScheduleDate(localDateMessage(targetDate))
+	showtime := integrationShowtime(theater, targetDate, now)
 	capture.SetShowtimes([]*catalogpb.Showtime{showtime})
+	schedule := &observationpb.ScheduleCaptures{}
+	schedule.SetCaptures([]*observationpb.Capture{capture})
 	completed := &observationpb.Completed{}
-	completed.SetCaptures([]*observationpb.Capture{capture})
+	completed.SetSchedule(schedule)
 	result := &observationpb.AssignmentResult{}
 	result.SetCompleted(completed)
 	return result
 }
 
-func integrationShowtime(theater *catalogpb.Theater, now time.Time) *catalogpb.Showtime {
+func integrationShowtime(theater *catalogpb.Theater, targetDate string, now time.Time) *catalogpb.Showtime {
 	movieSourceKey := "00001234"
 	movie := &catalogpb.Movie{}
 	movie.SetId(catalogdomain.CatalogID(theater.GetProviderId(), "movie", movieSourceKey))
 	movie.SetProviderId(theater.GetProviderId())
-	movie.SetSourceKey(movieSourceKey)
+	catalogdomain.SetMovieSourceKey(movie, movieSourceKey)
 	movie.SetTitle("통합 시험 영화")
-	auditoriumSourceKey := theater.GetSourceKey() + "/0007"
+	theaterSourceKey, _ := catalogdomain.TheaterSourceKey(theater)
+	auditoriumSourceKey := theaterSourceKey + "/0007"
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(catalogdomain.CatalogID(theater.GetProviderId(), "auditorium", auditoriumSourceKey))
 	auditorium.SetTheaterId(theater.GetId())
-	auditorium.SetSourceKey(auditoriumSourceKey)
+	catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSourceKey)
 	auditorium.SetName("IMAX관")
 	auditorium.SetScreenTypes([]string{"IMAX"})
 	auditorium.SetCapacity(624)
-	showtimeSourceKey := theater.GetSourceKey() + "/2026-08-20/0007/0003"
+	showtimeSourceKey := theaterSourceKey + "/" + targetDate + "/0007/0003"
 	showtime := &catalogpb.Showtime{}
 	showtime.SetId(catalogdomain.CatalogID(theater.GetProviderId(), "showtime", showtimeSourceKey))
 	showtime.SetProviderId(theater.GetProviderId())
-	showtime.SetSourceKey(showtimeSourceKey)
+	catalogdomain.SetShowtimeSourceKey(showtime, showtimeSourceKey)
 	showtime.SetTheaterId(theater.GetId())
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)

@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -49,7 +50,7 @@ func TestExecutionTargetMatchesCanonicalProbeShowtime(t *testing.T) {
 	showtime.SetId("9238317d2a1589ed7c5d3241")
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
-	showtime.SetScheduleDate(date)
+	catalogdomain.SetShowtimeSourceKey(showtime, "0056/2026-08-12/0007/0001")
 	showtime.SetStartsAt(timestamppb.New(time.Date(2026, 8, 12, 19, 45, 0, 0, location)))
 	if !executionTargetMatches(target, showtime, now, location) {
 		t.Fatal("canonical Probe showtime did not match the stored Client target")
@@ -70,7 +71,7 @@ func TestExecutionTargetMatchesCanonicalProbeShowtime(t *testing.T) {
 			date.SetYear(2026)
 			date.SetMonth(8)
 			date.SetDay(13)
-			value.SetScheduleDate(date)
+			value.GetIdentity().GetCgv().SetScheduleDate(date)
 		}, want: false},
 		{
 			name: "provider schedule date survives after-midnight start",

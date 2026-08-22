@@ -1,13 +1,13 @@
 # Source inventory
 
 This inventory is based on the reviewed source snapshot for this branch. The snapshot
-contains 3,223 tracked files after this change:
+contains 3,237 tracked files after this change:
 
 | Surface | Files | Review boundary |
 | --- | ---: | --- |
-| First-party Go | 127 | command/configuration, domain, services, HTTP, PostgreSQL, reconciler, telemetry, and tests reviewed semantically |
+| First-party Go | 137 | command/configuration, domain, services, HTTP, PostgreSQL, reconciler, telemetry, and tests reviewed semantically |
 | First-party TypeScript/TSX | 36 | admin application, pure views, API adapter, Storybook, and tests reviewed semantically |
-| SQL migrations | 30 | replayed as one effective schema; every current table/column/check/FK/index and each deliberate drop inventoried |
+| SQL migrations | 32 | replayed as one effective schema; every current table/column/check/FK/index and each deliberate drop inventoried |
 | GitHub workflows | 3 | CI, image publication, and release triggers/permissions reviewed |
 | Other YAML | 2 | dependency automation and lint configuration reviewed |
 | Manifests and lock files | 6 | Go/npm module identity and locked dependency provenance reviewed |
@@ -15,7 +15,7 @@ contains 3,223 tracked files after this change:
 | Other first-party configuration/assets | 17 | container/build/release configuration, HTML, embedded font, and generated web bundle reviewed |
 | Vendored dependencies | 2,995 | provenance checked through `go.mod`, `go.sum`, and `vendor/modules.txt`; third-party source was not rewritten |
 
-The first-party boundary is 228 tracked files. Generated embedded assets are treated as
+The first-party boundary is 242 tracked files. Generated embedded assets are treated as
 build products: their HTML references resolve to the tracked hashed CSS/JavaScript and
 their source bundle is owned by `frontend/`. Minified output, the font binary, npm lock,
 Go checksums, and vendored code are reviewed for provenance and drift, not hand-edited.
@@ -29,14 +29,14 @@ Go checksums, and vendored code are reviewed for provenance and drift, not hand-
   durable idempotency boundary, and database effect.
 - `state-contract.md`: every persisted state set, transition, retry/lease rule, terminal
   state, and retention owner.
-- `schema-contract.md`: all 59 current tables and the effective columns, null/default
+- `schema-contract.md`: all 60 current tables and the effective columns, null/default
   behavior, checks, foreign keys, indexes, and retention ownership. The six Client
   resource kinds use typed parents and ordered child tables; historical dropped tables
   remain represented by migration fingerprints.
 
 Focused tests derive the router inventory from source and verify all migration SHA-256
 fingerprints, including migrations `000028_normalize_client_resources.sql` through
-`000030_seat_availability.sql`. The PostgreSQL integration suite also replays the migrations and compares all 59 resulting
+`000030_seat_availability.sql` and `000032_seat_map_collection_state.sql`. The PostgreSQL integration suite also replays the migrations and compares all 60 resulting
 tables and columns with the schema contract, including the removal of
 `client_resources.payload`, the normalized Client resource tables,
 `observation_assignments.auditorium_id` and `showtime_id`,

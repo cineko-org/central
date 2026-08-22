@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"

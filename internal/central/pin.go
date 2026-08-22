@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

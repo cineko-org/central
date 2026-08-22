@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestClaimAssignmentWaitsForRepositoryWakeupBeforeRetry(t *testing.T) {

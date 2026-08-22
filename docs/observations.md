@@ -28,8 +28,11 @@ flowchart LR
 - Every range is additive random jitter: maximum must be greater than minimum. Exact fixed polling is rejected.
 - The first-ever capture is left-censored and cannot prove when a showtime opened.
 - Holds and cancellations can increase availability, so the analysis does not label depletion as confirmed ticket sales.
-- A seat layout is not required for matching or execution. Once matched, the Client opens the exact showtime and
-  applies the preset to CGV's current live seats.
+- A seat layout is a reusable immutable snapshot, while collection/validation is a separate Central-owned state
+  machine. A live exact-showtime result may carry both availability and layout; Central stores both atomically and
+  evaluates the exact preset before scheduling any follow-up. A missing or changed layout queues one state row, never
+  a timestamp-only request. Once an exact layout is available, the Client opens the exact showtime and applies the
+  preset to CGV's current live seats.
 - Monitor time windows use the theater's local time as a half-open interval: the start is included and the end is
   excluded. If the end is earlier than the start, the window crosses midnight; a Saturday 01:00 showtime remains a
   Saturday target.
@@ -91,7 +94,16 @@ Only a `completed` assignment advances lane progress. `partial`, `failed`, and
 `missed` assignments do not unlock recurring hot work or advance the baseline
 date cursor; the same demand or date remains eligible for a retry. A newer
 non-completed hot attempt also blocks an older successful hot timestamp from
-unlocking baseline work until hot demand completes again.
+unlocking baseline work until hot demand completes again. Seat-map collection is
+governed by its durable state row: due queued/retry states are selected only when
+a matching future showtime exists (and that showtime is copied into the task when
+known), a collecting row points at exactly one assignment, and waiting/blocked
+rows are not recreated by a five-second maintenance tick. Only typed Probe deferred
+outcomes (`no_bookable_showtime` or `target_date_unavailable`) can enter waiting;
+Central derives `showtime_not_discovered` when its catalog has no future candidate.
+Provider blocking/throttling, browser start, provider transport/server, and timeout
+failures use Central retry/backoff. Probe selection considers `available_slots` and
+active assignment backlog before a collection is created.
 
 Probe claim keeps the immediate durable claim attempt, then waits on PostgreSQL
 `LISTEN/NOTIFY` for up to 5 seconds. The repository rechecks eligibility after

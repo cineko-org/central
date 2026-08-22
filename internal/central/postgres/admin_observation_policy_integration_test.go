@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
 )
 
 // TestPostgresUpdatesObservationPolicy exercises the production UPDATE

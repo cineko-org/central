@@ -8,9 +8,9 @@ package client
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	catalog "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	common "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observation "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalog "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	common "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observation "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	_ "google.golang.org/protobuf/types/known/durationpb"
@@ -9715,49 +9715,6 @@ func (b0 SessionExchangeRequest_builder) Build() *SessionExchangeRequest {
 	return m0
 }
 
-type CatalogRequest struct {
-	state         protoimpl.MessageState `protogen:"opaque.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CatalogRequest) Reset() {
-	*x = CatalogRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[66]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CatalogRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CatalogRequest) ProtoMessage() {}
-
-func (x *CatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[66]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-type CatalogRequest_builder struct {
-	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
-
-}
-
-func (b0 CatalogRequest_builder) Build() *CatalogRequest {
-	m0 := &CatalogRequest{}
-	b, x := &b0, m0
-	_, _ = b, x
-	return m0
-}
-
 type SeatMapRequest struct {
 	state                   protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_AuditoriumId *string                `protobuf:"bytes,1,opt,name=auditorium_id,json=auditoriumId"`
@@ -9769,7 +9726,7 @@ type SeatMapRequest struct {
 
 func (x *SeatMapRequest) Reset() {
 	*x = SeatMapRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[67]
+	mi := &file_cineko_client_client_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9781,7 +9738,7 @@ func (x *SeatMapRequest) String() string {
 func (*SeatMapRequest) ProtoMessage() {}
 
 func (x *SeatMapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[67]
+	mi := &file_cineko_client_client_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9836,84 +9793,6 @@ func (b0 SeatMapRequest_builder) Build() *SeatMapRequest {
 	return m0
 }
 
-type AuditoriumRequest struct {
-	state                  protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_TheaterId   *string                `protobuf:"bytes,1,opt,name=theater_id,json=theaterId"`
-	XXX_raceDetectHookData protoimpl.RaceDetectHookData
-	XXX_presence           [1]uint32
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
-}
-
-func (x *AuditoriumRequest) Reset() {
-	*x = AuditoriumRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[68]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AuditoriumRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AuditoriumRequest) ProtoMessage() {}
-
-func (x *AuditoriumRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[68]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-func (x *AuditoriumRequest) GetTheaterId() string {
-	if x != nil {
-		if x.xxx_hidden_TheaterId != nil {
-			return *x.xxx_hidden_TheaterId
-		}
-		return ""
-	}
-	return ""
-}
-
-func (x *AuditoriumRequest) SetTheaterId(v string) {
-	x.xxx_hidden_TheaterId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
-}
-
-func (x *AuditoriumRequest) HasTheaterId() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 0)
-}
-
-func (x *AuditoriumRequest) ClearTheaterId() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
-	x.xxx_hidden_TheaterId = nil
-}
-
-type AuditoriumRequest_builder struct {
-	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
-
-	TheaterId *string
-}
-
-func (b0 AuditoriumRequest_builder) Build() *AuditoriumRequest {
-	m0 := &AuditoriumRequest{}
-	b, x := &b0, m0
-	_, _ = b, x
-	if b.TheaterId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
-		x.xxx_hidden_TheaterId = b.TheaterId
-	}
-	return m0
-}
-
 type AuditoriumResponse struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Auditoriums *[]*catalog.Auditorium `protobuf:"bytes,1,rep,name=auditoriums"`
@@ -9923,7 +9802,7 @@ type AuditoriumResponse struct {
 
 func (x *AuditoriumResponse) Reset() {
 	*x = AuditoriumResponse{}
-	mi := &file_cineko_client_client_proto_msgTypes[69]
+	mi := &file_cineko_client_client_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9935,7 +9814,7 @@ func (x *AuditoriumResponse) String() string {
 func (*AuditoriumResponse) ProtoMessage() {}
 
 func (x *AuditoriumResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[69]
+	mi := &file_cineko_client_client_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10307,19 +10186,14 @@ const file_cineko_client_client_proto_rawDesc = "" +
 	"\rlaunch_ticket\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\flaunchTicket\x12-\n" +
 	"\fclient_nonce\x18\x02 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vclientNonce\"\x10\n" +
-	"\x0eCatalogRequest\"A\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\vclientNonce\"A\n" +
 	"\x0eSeatMapRequest\x12/\n" +
 	"\rauditorium_id\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\fauditoriumId\">\n" +
-	"\x11AuditoriumRequest\x12)\n" +
-	"\n" +
-	"theater_id\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\ttheaterId\"R\n" +
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\fauditoriumId\"R\n" +
 	"\x12AuditoriumResponse\x12<\n" +
-	"\vauditoriums\x18\x01 \x03(\v2\x1a.cineko.catalog.AuditoriumR\vauditoriumsB=Z;github.com/cineko-org/contracts/gen/go/cineko/client;clientb\beditionsp\xe9\a"
+	"\vauditoriums\x18\x01 \x03(\v2\x1a.cineko.catalog.AuditoriumR\vauditoriumsB@Z>github.com/cineko-org/contracts/v3/gen/go/cineko/client;clientb\beditionsp\xe9\a"
 
-var file_cineko_client_client_proto_msgTypes = make([]protoimpl.MessageInfo, 72)
+var file_cineko_client_client_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
 var file_cineko_client_client_proto_goTypes = []any{
 	(*User)(nil),                              // 0: cineko.client.User
 	(*Device)(nil),                            // 1: cineko.client.Device
@@ -10387,35 +10261,33 @@ var file_cineko_client_client_proto_goTypes = []any{
 	(*ProbeBootstrapTicketRequest)(nil),       // 63: cineko.client.ProbeBootstrapTicketRequest
 	(*ProbeBootstrapTicketResponse)(nil),      // 64: cineko.client.ProbeBootstrapTicketResponse
 	(*SessionExchangeRequest)(nil),            // 65: cineko.client.SessionExchangeRequest
-	(*CatalogRequest)(nil),                    // 66: cineko.client.CatalogRequest
-	(*SeatMapRequest)(nil),                    // 67: cineko.client.SeatMapRequest
-	(*AuditoriumRequest)(nil),                 // 68: cineko.client.AuditoriumRequest
-	(*AuditoriumResponse)(nil),                // 69: cineko.client.AuditoriumResponse
-	nil,                                       // 70: cineko.client.Bootstrap.RevisionsEntry
-	nil,                                       // 71: cineko.client.Bootstrap.FeaturesEntry
-	(*timestamppb.Timestamp)(nil),             // 72: google.protobuf.Timestamp
-	(*common.LocalDate)(nil),                  // 73: cineko.common.LocalDate
-	(*common.LocalTime)(nil),                  // 74: cineko.common.LocalTime
-	(*catalog.Showtime)(nil),                  // 75: cineko.catalog.Showtime
-	(*common.ResourceIdentity)(nil),           // 76: cineko.common.ResourceIdentity
-	(*observation.Capability)(nil),            // 77: cineko.observation.Capability
-	(*common.Runtime)(nil),                    // 78: cineko.common.Runtime
-	(*catalog.Auditorium)(nil),                // 79: cineko.catalog.Auditorium
+	(*SeatMapRequest)(nil),                    // 66: cineko.client.SeatMapRequest
+	(*AuditoriumResponse)(nil),                // 67: cineko.client.AuditoriumResponse
+	nil,                                       // 68: cineko.client.Bootstrap.RevisionsEntry
+	nil,                                       // 69: cineko.client.Bootstrap.FeaturesEntry
+	(*timestamppb.Timestamp)(nil),             // 70: google.protobuf.Timestamp
+	(*common.LocalDate)(nil),                  // 71: cineko.common.LocalDate
+	(*common.LocalTime)(nil),                  // 72: cineko.common.LocalTime
+	(*catalog.Showtime)(nil),                  // 73: cineko.catalog.Showtime
+	(*common.ResourceIdentity)(nil),           // 74: cineko.common.ResourceIdentity
+	(*observation.Capability)(nil),            // 75: cineko.observation.Capability
+	(*common.Runtime)(nil),                    // 76: cineko.common.Runtime
+	(*catalog.Auditorium)(nil),                // 77: cineko.catalog.Auditorium
 }
 var file_cineko_client_client_proto_depIdxs = []int32{
-	72, // 0: cineko.client.User.created_at:type_name -> google.protobuf.Timestamp
-	72, // 1: cineko.client.User.updated_at:type_name -> google.protobuf.Timestamp
-	72, // 2: cineko.client.Device.last_seen_at:type_name -> google.protobuf.Timestamp
-	72, // 3: cineko.client.Device.created_at:type_name -> google.protobuf.Timestamp
-	72, // 4: cineko.client.Device.updated_at:type_name -> google.protobuf.Timestamp
+	70, // 0: cineko.client.User.created_at:type_name -> google.protobuf.Timestamp
+	70, // 1: cineko.client.User.updated_at:type_name -> google.protobuf.Timestamp
+	70, // 2: cineko.client.Device.last_seen_at:type_name -> google.protobuf.Timestamp
+	70, // 3: cineko.client.Device.created_at:type_name -> google.protobuf.Timestamp
+	70, // 4: cineko.client.Device.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 5: cineko.client.NetworkSettings.direct:type_name -> cineko.client.DirectNetwork
 	3,  // 6: cineko.client.NetworkSettings.proxy:type_name -> cineko.client.ProxyNetwork
 	4,  // 7: cineko.client.Settings.network:type_name -> cineko.client.NetworkSettings
 	5,  // 8: cineko.client.Settings.webhooks:type_name -> cineko.client.WebhookTarget
 	7,  // 9: cineko.client.SeatPreference.preferred_zones:type_name -> cineko.client.SeatZone
 	8,  // 10: cineko.client.Preset.seat_preference:type_name -> cineko.client.SeatPreference
-	72, // 11: cineko.client.Preset.created_at:type_name -> google.protobuf.Timestamp
-	72, // 12: cineko.client.Preset.updated_at:type_name -> google.protobuf.Timestamp
+	70, // 11: cineko.client.Preset.created_at:type_name -> google.protobuf.Timestamp
+	70, // 12: cineko.client.Preset.updated_at:type_name -> google.protobuf.Timestamp
 	10, // 13: cineko.client.MonitorState.pending:type_name -> cineko.client.MonitorPending
 	11, // 14: cineko.client.MonitorState.running:type_name -> cineko.client.MonitorRunning
 	12, // 15: cineko.client.MonitorState.triggered:type_name -> cineko.client.MonitorTriggered
@@ -10423,36 +10295,36 @@ var file_cineko_client_client_proto_depIdxs = []int32{
 	15, // 17: cineko.client.MonitorState.failed:type_name -> cineko.client.MonitorFailed
 	16, // 18: cineko.client.MonitorState.stopped:type_name -> cineko.client.MonitorStopped
 	13, // 19: cineko.client.MonitorState.payment_unknown:type_name -> cineko.client.MonitorPaymentUnknown
-	73, // 20: cineko.client.Monitor.target_dates:type_name -> cineko.common.LocalDate
-	74, // 21: cineko.client.Monitor.earliest_time:type_name -> cineko.common.LocalTime
-	74, // 22: cineko.client.Monitor.latest_time:type_name -> cineko.common.LocalTime
+	71, // 20: cineko.client.Monitor.target_dates:type_name -> cineko.common.LocalDate
+	72, // 21: cineko.client.Monitor.earliest_time:type_name -> cineko.common.LocalTime
+	72, // 22: cineko.client.Monitor.latest_time:type_name -> cineko.common.LocalTime
 	17, // 23: cineko.client.Monitor.state:type_name -> cineko.client.MonitorState
-	72, // 24: cineko.client.Monitor.last_checked_at:type_name -> google.protobuf.Timestamp
-	72, // 25: cineko.client.Monitor.created_at:type_name -> google.protobuf.Timestamp
-	72, // 26: cineko.client.Monitor.updated_at:type_name -> google.protobuf.Timestamp
-	72, // 27: cineko.client.Reservation.booked_at:type_name -> google.protobuf.Timestamp
-	72, // 28: cineko.client.Reservation.cancelled_at:type_name -> google.protobuf.Timestamp
+	70, // 24: cineko.client.Monitor.last_checked_at:type_name -> google.protobuf.Timestamp
+	70, // 25: cineko.client.Monitor.created_at:type_name -> google.protobuf.Timestamp
+	70, // 26: cineko.client.Monitor.updated_at:type_name -> google.protobuf.Timestamp
+	70, // 27: cineko.client.Reservation.booked_at:type_name -> google.protobuf.Timestamp
+	70, // 28: cineko.client.Reservation.cancelled_at:type_name -> google.protobuf.Timestamp
 	20, // 29: cineko.client.Reservation.prepared:type_name -> cineko.client.ReservationPrepared
 	21, // 30: cineko.client.Reservation.booked:type_name -> cineko.client.ReservationBooked
 	22, // 31: cineko.client.Reservation.cancellation_committing:type_name -> cineko.client.ReservationCancellationCommitting
 	23, // 32: cineko.client.Reservation.cancellation_unknown:type_name -> cineko.client.ReservationCancellationUnknown
 	24, // 33: cineko.client.Reservation.cancelled:type_name -> cineko.client.ReservationCancelled
-	75, // 34: cineko.client.Reservation.showtime:type_name -> cineko.catalog.Showtime
-	72, // 35: cineko.client.ExternalOperation.created_at:type_name -> google.protobuf.Timestamp
-	72, // 36: cineko.client.ExternalOperation.updated_at:type_name -> google.protobuf.Timestamp
+	73, // 34: cineko.client.Reservation.showtime:type_name -> cineko.catalog.Showtime
+	70, // 35: cineko.client.ExternalOperation.created_at:type_name -> google.protobuf.Timestamp
+	70, // 36: cineko.client.ExternalOperation.updated_at:type_name -> google.protobuf.Timestamp
 	26, // 37: cineko.client.ExternalOperation.cancellation:type_name -> cineko.client.CancellationOperation
 	27, // 38: cineko.client.ExternalOperation.prepared:type_name -> cineko.client.OperationPrepared
 	28, // 39: cineko.client.ExternalOperation.unknown:type_name -> cineko.client.OperationUnknown
 	29, // 40: cineko.client.ExternalOperation.attention_required:type_name -> cineko.client.OperationAttentionRequired
 	30, // 41: cineko.client.ExternalOperation.confirmed:type_name -> cineko.client.OperationConfirmed
 	31, // 42: cineko.client.ExternalOperation.reconciled:type_name -> cineko.client.OperationReconciled
-	72, // 43: cineko.client.AppEvent.created_at:type_name -> google.protobuf.Timestamp
-	72, // 44: cineko.client.AppEvent.read_at:type_name -> google.protobuf.Timestamp
+	70, // 43: cineko.client.AppEvent.created_at:type_name -> google.protobuf.Timestamp
+	70, // 44: cineko.client.AppEvent.read_at:type_name -> google.protobuf.Timestamp
 	33, // 45: cineko.client.AppEvent.info:type_name -> cineko.client.EventInfo
 	34, // 46: cineko.client.AppEvent.success:type_name -> cineko.client.EventSuccess
 	35, // 47: cineko.client.AppEvent.warning:type_name -> cineko.client.EventWarning
 	36, // 48: cineko.client.AppEvent.error:type_name -> cineko.client.EventError
-	76, // 49: cineko.client.Resource.identity:type_name -> cineko.common.ResourceIdentity
+	74, // 49: cineko.client.Resource.identity:type_name -> cineko.common.ResourceIdentity
 	6,  // 50: cineko.client.Resource.settings:type_name -> cineko.client.Settings
 	9,  // 51: cineko.client.Resource.preset:type_name -> cineko.client.Preset
 	18, // 52: cineko.client.Resource.monitor:type_name -> cineko.client.Monitor
@@ -10466,8 +10338,8 @@ var file_cineko_client_client_proto_depIdxs = []int32{
 	42, // 60: cineko.client.ResourceKind.external_operation:type_name -> cineko.client.ExternalOperationResource
 	43, // 61: cineko.client.ResourceKind.app_event:type_name -> cineko.client.AppEventResource
 	0,  // 62: cineko.client.Bootstrap.user:type_name -> cineko.client.User
-	70, // 63: cineko.client.Bootstrap.revisions:type_name -> cineko.client.Bootstrap.RevisionsEntry
-	71, // 64: cineko.client.Bootstrap.features:type_name -> cineko.client.Bootstrap.FeaturesEntry
+	68, // 63: cineko.client.Bootstrap.revisions:type_name -> cineko.client.Bootstrap.RevisionsEntry
+	69, // 64: cineko.client.Bootstrap.features:type_name -> cineko.client.Bootstrap.FeaturesEntry
 	1,  // 65: cineko.client.Bootstrap.device:type_name -> cineko.client.Device
 	6,  // 66: cineko.client.EventResource.settings:type_name -> cineko.client.Settings
 	9,  // 67: cineko.client.EventResource.preset:type_name -> cineko.client.Preset
@@ -10475,7 +10347,7 @@ var file_cineko_client_client_proto_depIdxs = []int32{
 	19, // 69: cineko.client.EventResource.reservation:type_name -> cineko.client.Reservation
 	25, // 70: cineko.client.EventResource.external_operation:type_name -> cineko.client.ExternalOperation
 	32, // 71: cineko.client.EventResource.app_event:type_name -> cineko.client.AppEvent
-	72, // 72: cineko.client.ClientEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	70, // 72: cineko.client.ClientEvent.occurred_at:type_name -> google.protobuf.Timestamp
 	46, // 73: cineko.client.ClientEvent.upserted:type_name -> cineko.client.EventResource
 	49, // 74: cineko.client.ClientEvent.deleted:type_name -> cineko.client.DeletedResource
 	48, // 75: cineko.client.ClientEvent.execution_ready:type_name -> cineko.client.ExecutionReady
@@ -10485,16 +10357,16 @@ var file_cineko_client_client_proto_depIdxs = []int32{
 	52, // 79: cineko.client.StreamControl.retention_gap:type_name -> cineko.client.RetentionGap
 	53, // 80: cineko.client.StreamControl.invalid_cursor:type_name -> cineko.client.InvalidCursor
 	55, // 81: cineko.client.LaunchEnvelope.context:type_name -> cineko.client.LaunchContext
-	72, // 82: cineko.client.AuthenticationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	72, // 83: cineko.client.AuthenticationResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
+	70, // 82: cineko.client.AuthenticationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	70, // 83: cineko.client.AuthenticationResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 84: cineko.client.AuthenticationResponse.user:type_name -> cineko.client.User
 	55, // 85: cineko.client.AuthenticationResponse.launch:type_name -> cineko.client.LaunchContext
 	55, // 86: cineko.client.LaunchTicketRequest.context:type_name -> cineko.client.LaunchContext
-	72, // 87: cineko.client.LaunchTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
-	77, // 88: cineko.client.ProbeBootstrapTicketRequest.capabilities:type_name -> cineko.observation.Capability
-	78, // 89: cineko.client.ProbeBootstrapTicketRequest.runtime:type_name -> cineko.common.Runtime
-	72, // 90: cineko.client.ProbeBootstrapTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
-	79, // 91: cineko.client.AuditoriumResponse.auditoriums:type_name -> cineko.catalog.Auditorium
+	70, // 87: cineko.client.LaunchTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
+	75, // 88: cineko.client.ProbeBootstrapTicketRequest.capabilities:type_name -> cineko.observation.Capability
+	76, // 89: cineko.client.ProbeBootstrapTicketRequest.runtime:type_name -> cineko.common.Runtime
+	70, // 90: cineko.client.ProbeBootstrapTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
+	77, // 91: cineko.client.AuditoriumResponse.auditoriums:type_name -> cineko.catalog.Auditorium
 	92, // [92:92] is the sub-list for method output_type
 	92, // [92:92] is the sub-list for method input_type
 	92, // [92:92] is the sub-list for extension type_name
@@ -10582,7 +10454,7 @@ func file_cineko_client_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cineko_client_client_proto_rawDesc), len(file_cineko_client_client_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   72,
+			NumMessages:   70,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

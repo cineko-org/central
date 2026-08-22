@@ -16,11 +16,12 @@ import (
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
+	seatavailabilitydomain "github.com/cineko-org/central/internal/domain/seatavailability"
 	"github.com/cineko-org/central/internal/support/numeric"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 
 	"golang.org/x/mod/semver"
 	"google.golang.org/protobuf/proto"
@@ -347,8 +348,14 @@ func (service *Service) CommitResult(
 	result *observationpb.AssignmentResult,
 ) (*observationpb.ResultReceipt, error) {
 	if completed := result.GetCompleted(); completed != nil {
-		if completed.GetSeatMap() != nil {
-			if err := catalogdomain.NormalizeSeatMap(completed.GetSeatMap(), service.clock().UTC()); err != nil {
+		if liveSeat := completed.GetLiveSeat(); liveSeat != nil {
+			if liveSeat.GetLayout() == nil || liveSeat.GetAvailability() == nil {
+				return nil, fmt.Errorf("%w: live seat observation requires layout and availability", ErrInvalid)
+			}
+			if err := catalogdomain.NormalizeSeatMap(liveSeat.GetLayout(), service.clock().UTC()); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+			if err := seatavailabilitydomain.Normalize(liveSeat.GetAvailability(), service.clock().UTC()); err != nil {
 				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 		}
@@ -426,33 +433,46 @@ func validateResult(result *observationpb.AssignmentResult) error {
 	if result.GetStartedAt() == nil || result.GetFinishedAt() == nil || result.GetStartedAt().CheckValid() != nil || result.GetFinishedAt().CheckValid() != nil || result.GetFinishedAt().AsTime().Before(result.GetStartedAt().AsTime()) {
 		return fmt.Errorf("%w: invalid result time range", ErrInvalid)
 	}
-	completed, failed := result.GetCompleted(), result.GetFailed()
-	if (completed == nil) == (failed == nil) {
+	completed, deferred, failed := result.GetCompleted(), result.GetDeferred(), result.GetFailed()
+	outcomes := 0
+	if completed != nil {
+		outcomes++
+	}
+	if deferred != nil {
+		outcomes++
+	}
+	if failed != nil {
+		outcomes++
+	}
+	if outcomes != 1 {
 		return fmt.Errorf("%w: assignment result outcome is required", ErrInvalid)
 	}
+	if deferred != nil {
+		if deferred.GetReason() == nil || deferred.GetReason().GetNoBookableShowtime() == nil && deferred.GetReason().GetTargetDateUnavailable() == nil {
+			return fmt.Errorf("%w: deferred result reason is required", ErrInvalid)
+		}
+		return nil
+	}
 	if completed == nil {
-		if strings.TrimSpace(failed.GetReasonCode()) == "" {
+		if failed.GetReason() == nil {
 			return fmt.Errorf("%w: failed result reason is required", ErrInvalid)
 		}
 		return nil
 	}
-	typedResults := 0
+	payloads := 0
+	if completed.GetSchedule() != nil {
+		payloads++
+	}
 	if completed.GetCatalog() != nil {
-		typedResults++
+		payloads++
 	}
-	if completed.GetSeatMap() != nil {
-		typedResults++
+	if completed.GetLiveSeat() != nil {
+		payloads++
 	}
-	if completed.GetSeatAvailability() != nil {
-		typedResults++
+	if payloads != 1 {
+		return fmt.Errorf("%w: completed assignment result payload is required", ErrInvalid)
 	}
-	if typedResults > 1 {
-		return fmt.Errorf("%w: assignment result contains multiple typed payloads", ErrInvalid)
-	}
-	if typedResults > 0 && len(completed.GetCaptures()) != 0 {
-		return fmt.Errorf("%w: typed assignment results cannot include schedule captures", ErrInvalid)
-	}
-	for _, capture := range completed.GetCaptures() {
+	for _, capture := range completed.GetSchedule().GetCaptures() {
 		if err := validateCapture(capture); err != nil {
 			return err
 		}
@@ -468,7 +488,7 @@ func validateCapture(capture *observationpb.Capture) error {
 		return fmt.Errorf("%w: complete capture cannot include errorCode", ErrInvalid)
 	}
 	for _, showtime := range capture.GetShowtimes() {
-		if err := validateShowtime(showtime); err != nil || !proto.Equal(showtime.GetScheduleDate(), capture.GetTargetDate()) {
+		if err := validateShowtime(showtime); err != nil || !proto.Equal(showtime.GetIdentity().GetCgv().GetScheduleDate(), capture.GetTargetDate()) {
 			if err == nil {
 				err = errors.New("showtime schedule date does not match capture target date")
 			}
@@ -480,7 +500,6 @@ func validateCapture(capture *observationpb.Capture) error {
 
 func validateShowtime(showtime *catalogpb.Showtime) error {
 	if !showtimeIdentityComplete(showtime) || !showtimeIdentityCanonical(showtime) ||
-		!validLocalDate(showtime.GetScheduleDate()) ||
 		showtime.GetStartsAt() == nil || showtime.GetEndsAt() == nil ||
 		!showtime.GetEndsAt().AsTime().After(showtime.GetStartsAt().AsTime()) ||
 		showtime.GetAvailableSeats() < 0 || showtime.GetCapacity() < showtime.GetAvailableSeats() {
@@ -501,25 +520,32 @@ func showtimeIdentityComplete(showtime *catalogpb.Showtime) bool {
 	if showtime == nil || showtime.GetMovie() == nil || showtime.GetAuditorium() == nil {
 		return false
 	}
+	showtimeKey, showtimeKeyOK := catalogdomain.ShowtimeSourceKey(showtime)
+	movieKey, movieKeyOK := catalogdomain.MovieSourceKey(showtime.GetMovie())
+	auditoriumKey, auditoriumKeyOK := catalogdomain.AuditoriumSourceKey(showtime.GetAuditorium())
 	values := []string{
-		showtime.GetId(), showtime.GetProviderId(), showtime.GetSourceKey(), showtime.GetTheaterId(),
-		showtime.GetMovie().GetId(), showtime.GetMovie().GetSourceKey(), showtime.GetMovie().GetTitle(),
-		showtime.GetAuditorium().GetId(), showtime.GetAuditorium().GetSourceKey(), showtime.GetAuditorium().GetName(),
+		showtime.GetId(), showtime.GetProviderId(), showtimeKey, showtime.GetTheaterId(),
+		showtime.GetMovie().GetId(), movieKey, showtime.GetMovie().GetTitle(),
+		showtime.GetAuditorium().GetId(), auditoriumKey, showtime.GetAuditorium().GetName(),
 	}
 	for _, value := range values {
 		if strings.TrimSpace(value) == "" {
 			return false
 		}
 	}
-	return showtime.GetMovie().GetProviderId() == showtime.GetProviderId() &&
+	return showtimeKeyOK && movieKeyOK && auditoriumKeyOK && showtime.GetMovie().GetProviderId() == showtime.GetProviderId() &&
 		showtime.GetAuditorium().GetTheaterId() == showtime.GetTheaterId()
 }
 
 func showtimeIdentityCanonical(showtime *catalogpb.Showtime) bool {
 	providerID := strings.TrimSpace(showtime.GetProviderId())
-	return showtime.GetId() == catalogdomain.CatalogID(providerID, "showtime", showtime.GetSourceKey()) &&
-		showtime.GetMovie().GetId() == catalogdomain.CatalogID(providerID, "movie", showtime.GetMovie().GetSourceKey()) &&
-		showtime.GetAuditorium().GetId() == catalogdomain.CatalogID(providerID, "auditorium", showtime.GetAuditorium().GetSourceKey())
+	showtimeKey, showtimeOK := catalogdomain.ShowtimeSourceKey(showtime)
+	movieKey, movieOK := catalogdomain.MovieSourceKey(showtime.GetMovie())
+	auditoriumKey, auditoriumOK := catalogdomain.AuditoriumSourceKey(showtime.GetAuditorium())
+	return showtimeOK && movieOK && auditoriumOK &&
+		showtime.GetId() == catalogdomain.CatalogID(providerID, "showtime", showtimeKey) &&
+		showtime.GetMovie().GetId() == catalogdomain.CatalogID(providerID, "movie", movieKey) &&
+		showtime.GetAuditorium().GetId() == catalogdomain.CatalogID(providerID, "auditorium", auditoriumKey)
 }
 
 func networkID(remoteAddress string) string {

@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
 	"github.com/cineko-org/central/internal/support/numeric"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -213,8 +214,8 @@ func (store *Store) CreateAdminObservationPolicy(
 			deleted_at = NULL, updated_at = EXCLUDED.updated_at
 		WHERE observation_policies.deleted_at IS NOT NULL
 		RETURNING id
-	`, id, theater.GetName(), input.GetEnabled(), probedomain.CapabilityCGVScheduleCapture,
-		theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName(), input.GetHorizonDays(),
+		`, id, theater.GetName(), input.GetEnabled(), probedomain.CapabilityCGVScheduleCapture,
+		theater.GetId(), theater.GetProviderId(), catalogTheaterSourceKey(theater), theater.GetRegion(), theater.GetName(), input.GetHorizonDays(),
 		"ko-KR", "Asia/Seoul", string(central.EgressPolicyScanDefault), policy.Priority,
 		seconds32(policy.BaselineMinimum), seconds32(policy.BaselineMaximum),
 		seconds32(policy.DemandMinimum), seconds32(policy.DemandMaximum),
@@ -273,7 +274,7 @@ func (store *Store) UpdateAdminObservationPolicy(
 		WHERE policy.id = $1 AND policy.revision = $2 AND policy.theater_id = $5
 			AND policy.deleted_at IS NULL
 	`, strings.TrimSpace(id), revision, theater.GetName(), input.GetEnabled(),
-		theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName(),
+		theater.GetId(), theater.GetProviderId(), catalogTheaterSourceKey(theater), theater.GetRegion(), theater.GetName(),
 		input.GetHorizonDays(), policy.Priority,
 		seconds32(policy.BaselineMinimum), seconds32(policy.BaselineMaximum),
 		seconds32(policy.DemandMinimum), seconds32(policy.DemandMaximum),
@@ -461,7 +462,9 @@ func scanAdminObservationPolicy(row rowScanner) (*adminpb.ObservationPolicy, err
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId(providerID)
-	theater.SetSourceKey(sourceKey)
+	if !catalogdomain.SetTheaterSourceKey(theater, sourceKey) {
+		return nil, fmt.Errorf("stored theater identity %q is not typed CGV", sourceKey)
+	}
 	theater.SetRegion(region)
 	theater.SetName(name)
 	input := &adminpb.ObservationPolicyInput{}
@@ -521,10 +524,17 @@ func (store *Store) adminCatalogTheater(ctx context.Context, id string) (*catalo
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId(providerID)
-	theater.SetSourceKey(sourceKey)
+	if !catalogdomain.SetTheaterSourceKey(theater, sourceKey) {
+		return nil, fmt.Errorf("stored theater identity %q is not typed CGV", sourceKey)
+	}
 	theater.SetRegion(region)
 	theater.SetName(name)
 	return theater, nil
+}
+
+func catalogTheaterSourceKey(theater *catalogpb.Theater) string {
+	value, _ := catalogdomain.TheaterSourceKey(theater)
+	return value
 }
 
 func adminObservationPolicyID(theaterID string) string {

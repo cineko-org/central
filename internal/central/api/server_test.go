@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

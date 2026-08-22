@@ -11,10 +11,11 @@ import (
 
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -73,7 +74,7 @@ func TestProbeLifecycleAndResultIdempotency(t *testing.T) {
 		t.Fatalf("repeated receipt = %+v, %v; want %+v", repeated, err, receipt)
 	}
 	conflict := proto.CloneOf(result)
-	conflict.GetCompleted().GetCaptures()[0].SetComplete(false)
+	conflict.GetCompleted().GetSchedule().GetCaptures()[0].SetComplete(false)
 	if _, err := service.CommitResult(t.Context(), probe, lease.GetAssignmentId(), lease.GetLeaseToken(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("conflicting result error = %v", err)
 	}
@@ -105,24 +106,26 @@ func TestServiceRejectsInvalidRegistrationAndResult(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	invalidSeatMap := validResult(now)
-	invalidSeatMap.GetCompleted().SetCaptures(nil)
-	invalidSeatMap.GetCompleted().SetSeatMap(seatMapSnapshot("", 1))
+	invalidSeatMap.GetCompleted().SetLiveSeat((&seatmappb.LiveSeatObservation_builder{
+		Layout: seatMapSnapshot("", 1), Availability: &seatmappb.AvailabilitySnapshot{},
+	}).Build())
 	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", invalidSeatMap); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid seat-map result error = %v", err)
 	}
 	seatMapResult := validResult(now)
-	seatMapResult.GetCompleted().SetCaptures(nil)
-	seatMapResult.GetCompleted().SetSeatMap(seatMapSnapshot("auditorium", 1))
+	seatMapResult.GetCompleted().SetLiveSeat((&seatmappb.LiveSeatObservation_builder{
+		Layout: seatMapSnapshot("auditorium", 1), Availability: &seatmappb.AvailabilitySnapshot{},
+	}).Build())
 	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", seatMapResult); err == nil {
 		t.Fatal("seat-map result unexpectedly committed without an assignment")
 	}
 	both := proto.CloneOf(seatMapResult)
 	both.GetCompleted().SetCatalog(validCatalogSnapshot(now))
-	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", both); !errors.Is(err, ErrInvalid) {
+	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", both); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("mixed catalog and seat-map result error = %v", err)
 	}
 	withCapture := proto.CloneOf(seatMapResult)
-	withCapture.GetCompleted().SetCaptures(validResult(now).GetCompleted().GetCaptures())
+	withCapture.GetCompleted().SetSchedule((&observationpb.ScheduleCaptures_builder{Captures: []*observationpb.Capture{nil}}).Build())
 	if _, err := service.CommitResult(t.Context(), Probe{ID: "probe"}, "assignment", "lease", withCapture); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("seat-map result with captures error = %v", err)
 	}
@@ -322,17 +325,17 @@ func TestServiceValidationBoundaries(t *testing.T) {
 		}(),
 		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.GetCompleted().GetCaptures()[0].ClearTargetDate()
+			value.GetCompleted().GetSchedule().GetCaptures()[0].ClearTargetDate()
 			return value
 		}(),
 		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.GetCompleted().GetCaptures()[0].SetErrorCode("unexpected")
+			value.GetCompleted().GetSchedule().GetCaptures()[0].SetErrorCode("unexpected")
 			return value
 		}(),
 		func() *observationpb.AssignmentResult {
 			value := validResult(now)
-			value.GetCompleted().GetCaptures()[0].GetShowtimes()[0].SetSourceKey("")
+			value.GetCompleted().GetSchedule().GetCaptures()[0].GetShowtimes()[0].GetIdentity().GetCgv().SetSequence("")
 			return value
 		}(),
 	}
@@ -346,7 +349,7 @@ func TestServiceValidationBoundaries(t *testing.T) {
 		t.Fatalf("valid catalog result rejected: %v", err)
 	}
 	withCaptures := proto.CloneOf(catalogResult)
-	withCaptures.GetCompleted().SetCaptures(validResult(now).GetCompleted().GetCaptures())
+	withCaptures.GetCompleted().SetSchedule((&observationpb.ScheduleCaptures_builder{Captures: []*observationpb.Capture{nil}}).Build())
 	if err := validateResult(withCaptures); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("catalog result with captures error = %v", err)
 	}
@@ -511,12 +514,14 @@ func validAssignmentTask(now time.Time) *observationpb.AssignmentTask {
 func validResult(now time.Time) *observationpb.AssignmentResult {
 	snapshot := validCatalogSnapshot(now)
 	capture := &observationpb.Capture{}
-	capture.SetTargetDate(proto.CloneOf(snapshot.GetShowtimes()[0].GetScheduleDate()))
+	capture.SetTargetDate(proto.CloneOf(snapshot.GetShowtimes()[0].GetIdentity().GetCgv().GetScheduleDate()))
 	capture.SetComplete(true)
 	capture.SetObservedAt(timestamppb.New(now.Add(9 * time.Second)))
 	capture.SetShowtimes([]*catalogpb.Showtime{proto.CloneOf(snapshot.GetShowtimes()[0])})
+	schedule := &observationpb.ScheduleCaptures{}
+	schedule.SetCaptures([]*observationpb.Capture{capture})
 	completed := &observationpb.Completed{}
-	completed.SetCaptures([]*observationpb.Capture{capture})
+	completed.SetSchedule(schedule)
 	result := &observationpb.AssignmentResult{}
 	result.SetRunId("run_01")
 	result.SetStartedAt(timestamppb.New(now))

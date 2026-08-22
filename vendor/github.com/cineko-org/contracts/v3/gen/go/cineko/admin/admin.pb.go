@@ -8,10 +8,10 @@ package admin
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	catalog "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	client "github.com/cineko-org/contracts/gen/go/cineko/client"
-	common "github.com/cineko-org/contracts/gen/go/cineko/common"
-	probe "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	catalog "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	client "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	common "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	probe "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -8660,7 +8660,7 @@ const file_cineko_admin_admin_proto_rawDesc = "" +
 	"\x0fListClientUsers\x12$.cineko.admin.ListClientUsersRequest\x1a%.cineko.admin.ListClientUsersResponse\x12a\n" +
 	"\x10CreateClientUser\x12%.cineko.admin.CreateClientUserRequest\x1a&.cineko.admin.CreateClientUserResponse\x12^\n" +
 	"\x0fRotateClientPin\x12$.cineko.admin.RotateClientPinRequest\x1a%.cineko.admin.RotateClientPinResponse\x12a\n" +
-	"\x10DeleteClientUser\x12%.cineko.admin.DeleteClientUserRequest\x1a&.cineko.admin.DeleteClientUserResponseB;Z9github.com/cineko-org/contracts/gen/go/cineko/admin;adminb\beditionsp\xe9\a"
+	"\x10DeleteClientUser\x12%.cineko.admin.DeleteClientUserRequest\x1a&.cineko.admin.DeleteClientUserResponseB>Z<github.com/cineko-org/contracts/v3/gen/go/cineko/admin;adminb\beditionsp\xe9\a"
 
 var file_cineko_admin_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
 var file_cineko_admin_admin_proto_goTypes = []any{

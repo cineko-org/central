@@ -8,7 +8,7 @@ package execution
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	catalog "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	catalog "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -1433,7 +1433,7 @@ const file_cineko_execution_execution_proto_rawDesc = "" +
 	"\tcompleted\x18\x03 \x01(\v2\x1b.cineko.execution.CompletedH\x00R\tcompleted\x122\n" +
 	"\x06failed\x18\x04 \x01(\v2\x18.cineko.execution.FailedH\x00R\x06failed\x12K\n" +
 	"\x0fretry_requested\x18\x05 \x01(\v2 .cineko.execution.RetryRequestedH\x00R\x0eretryRequestedB\x10\n" +
-	"\aoutcome\x12\x05\xbaH\x02\b\x01BCZAgithub.com/cineko-org/contracts/gen/go/cineko/execution;executionb\beditionsp\xe9\a"
+	"\aoutcome\x12\x05\xbaH\x02\b\x01BFZDgithub.com/cineko-org/contracts/v3/gen/go/cineko/execution;executionb\beditionsp\xe9\a"
 
 var file_cineko_execution_execution_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_cineko_execution_execution_proto_goTypes = []any{

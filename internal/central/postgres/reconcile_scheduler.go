@@ -108,12 +108,28 @@ WITH demand_theaters AS (
 				AND active.showtime_id = showtime.id
 				AND active.status IN ('queued', 'leased', 'retry_pending')
 		)
+), seat_map_deadlines AS (
+	SELECT CASE
+		WHEN state.state = 'queued' THEN $1::timestamptz
+		ELSE state.next_attempt_at
+	END AS deadline
+	FROM seat_map_collection_states AS state
+	WHERE state.state IN ('queued', 'retry_scheduled')
+		AND NOT EXISTS (
+			SELECT 1
+			FROM observation_assignments AS active
+			WHERE active.task_kind = $4
+				AND active.auditorium_id = state.auditorium_id
+				AND active.status IN ('queued', 'leased', 'retry_pending')
+		)
 )
 SELECT MIN(deadline)
 FROM (
 	SELECT deadline FROM policy_deadlines
 	UNION ALL
 	SELECT deadline FROM availability_deadlines
+	UNION ALL
+	SELECT deadline FROM seat_map_deadlines
 ) AS deadlines
 WHERE deadline IS NOT NULL
 `
@@ -124,7 +140,8 @@ WHERE deadline IS NOT NULL
 func (store *Store) NextReconcileDeadline(ctx context.Context, now time.Time) (*time.Time, error) {
 	var deadline *time.Time
 	err := store.pool.QueryRow(ctx, nextReconcileDeadlineQuery, now,
-		probedomain.CapabilityCGVSeatAvailabilityCapture, catalogdomain.ProviderCGV).Scan(&deadline)
+		probedomain.CapabilityCGVSeatAvailabilityCapture, catalogdomain.ProviderCGV,
+		probedomain.CapabilityCGVSeatMapCapture).Scan(&deadline)
 	if err != nil {
 		return nil, fmt.Errorf("read next reconcile deadline: %w", err)
 	}
@@ -132,10 +149,11 @@ func (store *Store) NextReconcileDeadline(ctx context.Context, now time.Time) (*
 }
 
 // WaitForReconcileWakeup blocks on the existing durable-state notifications.
-// Assignment result commits and client resource events both use transaction
-// scoped NOTIFY, so a wakeup is delivered only after the state that can move a
-// fast-lane deadline is committed. The adaptive timer remains the bounded
-// fallback if a listener connection is unavailable.
+// Assignment result commits, client resource events, and seat-map collection
+// transitions use transaction-scoped NOTIFY, so a wakeup is delivered only
+// after the state that can move a fast-lane deadline is committed. The
+// adaptive timer remains the bounded fallback if a listener connection is
+// unavailable.
 func (store *Store) WaitForReconcileWakeup(ctx context.Context) error {
 	connection, err := store.pool.Acquire(ctx)
 	if err != nil {
@@ -148,11 +166,15 @@ func (store *Store) WaitForReconcileWakeup(ctx context.Context) error {
 	if _, err := connection.Exec(ctx, "LISTEN "+clientEventNotifyChannel); err != nil {
 		return fmt.Errorf("listen for Client reconcile wakeups: %w", err)
 	}
+	if _, err := connection.Exec(ctx, "LISTEN "+seatMapCollectionNotifyChannel); err != nil {
+		return fmt.Errorf("listen for seat-map reconcile wakeups: %w", err)
+	}
 	defer func() {
 		cleanupContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, _ = connection.Exec(cleanupContext, "UNLISTEN "+assignmentNotifyChannel)
 		_, _ = connection.Exec(cleanupContext, "UNLISTEN "+clientEventNotifyChannel)
+		_, _ = connection.Exec(cleanupContext, "UNLISTEN "+seatMapCollectionNotifyChannel)
 	}()
 	if _, err := connection.Conn().WaitForNotification(ctx); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

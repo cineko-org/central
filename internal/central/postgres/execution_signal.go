@@ -8,10 +8,11 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -39,7 +40,7 @@ func enqueueClientExecutions(
 	if err != nil {
 		return err
 	}
-	for _, capture := range commit.Result.GetCompleted().GetCaptures() {
+	for _, capture := range commit.Result.GetCompleted().GetSchedule().GetCaptures() {
 		for _, showtime := range capture.GetShowtimes() {
 			if showtime.GetSoldOut() || showtime.GetAvailableSeats() <= 0 {
 				continue
@@ -260,9 +261,13 @@ func executionTargetMatches(
 		target.monitor.GetMovieId() == "" || showtime.GetMovie().GetId() == "" || target.monitor.GetMovieId() != showtime.GetMovie().GetId() {
 		return false
 	}
+	date, ok := catalogdomain.ShowtimeSourceKey(showtime)
+	if !ok || len(date) < 11 {
+		return false
+	}
 	return domain.MonitorMatchesScheduleDate(
 		target.monitor,
-		localDateString(showtime.GetScheduleDate()),
+		date[5:15],
 		showtime.GetStartsAt().AsTime(),
 		now,
 		location,

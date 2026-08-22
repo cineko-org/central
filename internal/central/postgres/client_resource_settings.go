@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 
 	"github.com/jackc/pgx/v5"
 )

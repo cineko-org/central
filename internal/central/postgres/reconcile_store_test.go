@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestSeatMapBackfillDatesCoverFourteenLocalCalendarDays(t *testing.T) {

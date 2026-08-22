@@ -9,7 +9,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/observation/planning"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
 )
 
 type adminOperations interface {

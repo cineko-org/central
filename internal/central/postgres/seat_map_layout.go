@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"github.com/jackc/pgx/v5"
 )
 

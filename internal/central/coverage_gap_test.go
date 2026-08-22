@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -16,7 +16,9 @@ func TestValidateResultSeatAvailabilityAndCaptureDateBoundaries(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
 	completed := &observationpb.Completed{}
-	completed.SetSeatAvailability(&seatmappb.AvailabilitySnapshot{})
+	completed.SetLiveSeat((&seatmappb.LiveSeatObservation_builder{
+		Layout: &seatmappb.Snapshot{}, Availability: &seatmappb.AvailabilitySnapshot{},
+	}).Build())
 	result := &observationpb.AssignmentResult{}
 	result.SetRunId("availability_run")
 	result.SetStartedAt(timestamppb.New(now))
@@ -31,13 +33,13 @@ func TestValidateResultSeatAvailabilityAndCaptureDateBoundaries(t *testing.T) {
 	date.SetYear(2026)
 	date.SetMonth(8)
 	date.SetDay(21)
-	mismatched.GetCompleted().GetCaptures()[0].GetShowtimes()[0].SetScheduleDate(date)
+	mismatched.GetCompleted().GetSchedule().GetCaptures()[0].GetShowtimes()[0].GetIdentity().GetCgv().SetScheduleDate(date)
 	if err := validateResult(mismatched); err == nil {
 		t.Fatal("capture with mismatched showtime date was accepted")
 	}
 
 	invalidDate := validResult(now)
-	invalidDate.GetCompleted().GetCaptures()[0].GetShowtimes()[0].SetScheduleDate(nil)
+	invalidDate.GetCompleted().GetSchedule().GetCaptures()[0].GetShowtimes()[0].GetIdentity().GetCgv().ClearScheduleDate()
 	if err := validateResult(invalidDate); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid local date error = %v, want ErrInvalid", err)
 	}

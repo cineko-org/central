@@ -4,8 +4,8 @@ This document is the service-point inventory for the current API. It describes p
 wire behavior only; deployment addresses, secret material, and network topology are
 intentionally outside this contract.
 
-The router has 55 literal service points and five resource-family declarations. The
-five declarations expand over five resource kinds, producing 80 concrete method/path
+The router has 56 literal service points and five resource-family declarations. The
+five declarations expand over five resource kinds, producing 81 concrete method/path
 service points in total.
 
 ## Shared rules
@@ -112,7 +112,8 @@ shown; this distinction is deliberate documentation of the implemented boundary.
 | `GET /v1/catalog` | reads active shared catalog | `200` |
 | `POST /v1/catalog/snapshots` | non-empty `Idempotency-Key`; `X-Cineko-Installation-Id` must identify this user's online Client Probe with catalog capability; additive canonical upsert | `200` generation |
 | `GET /v1/catalog/auditoriums/{auditoriumId}/seat-map` | reads current stored layout | `200` or `404` |
-| `POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve` | returns the stored current layout immediately; when absent, returns `waiting` after Central arranges the work behind this boundary | `200` resolution |
+| `POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve` | returns a `ResolveSeatMapResponse` wrapper with the stored current layout immediately; when absent, returns a typed collection state after Central arranges the work behind this boundary | `200` resolution |
+| `GET /v1/catalog/auditoriums/{auditoriumId}/seat-map:watch` | authenticated SSE; sends one `WatchSeatMapResponse` immediately and only emits changed resolutions after committed collection notifications; heartbeats are SSE comments | `200` `text/event-stream` |
 
 The resource family is `presets`, `monitors`, `reservations`,
 `external-operations`, and `app-events`. For each `{resource}`:

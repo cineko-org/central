@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

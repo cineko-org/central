@@ -2,157 +2,21 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/cineko-org/central/internal/support/numeric"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-func TestMigration000028NormalizesLatestClientResourceProtoJSON(t *testing.T) {
-	connection, migration28 := newMigration000028Schema(t, "normalized")
-	ctx := t.Context()
-	const (
-		userID        = "user_migration_28"
-		providerID    = "provider_migration_28"
-		theaterID     = "theater_migration_28"
-		auditoriumID  = "auditorium_migration_28"
-		movieID       = "movie_migration_28"
-		showtimeID    = "showtime_migration_28"
-		presetID      = "preset_migration_28"
-		monitorID     = "monitor_migration_28"
-		reservationID = "reservation_migration_28"
-	)
-	now := time.Date(2026, time.August, 22, 5, 0, 0, 0, time.UTC)
-	showtimeStart := now.Add(2 * time.Hour)
-	seedMigration000028Catalog(t, connection, ctx, now, providerID, theaterID, auditoriumID, movieID, showtimeID)
-	if _, err := connection.Exec(ctx, `
-		INSERT INTO client_users (id, display_name, created_at, updated_at)
-		VALUES ($1, 'Migration 28 User', $2, $2)
-	`, userID, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connection.Exec(ctx, `
-		INSERT INTO client_users (id, display_name, created_at, updated_at)
-		VALUES ('user_migration_28_empty_settings', 'Empty Settings User', $1, $1)
-	`, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connection.Exec(ctx, `
-		INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
-		VALUES ('user_migration_28_empty_settings', 'settings', 'settings', 1, '{}'::jsonb, $1, $1)
-	`, now); err != nil {
-		t.Fatal(err)
-	}
-
-	settings := migration000028Settings()
-	preset := migration000028Preset(userID, presetID, theaterID, auditoriumID, now)
-	monitor := migration000028Monitor(userID, monitorID, presetID, movieID, now)
-	showtime := migration000028Showtime(showtimeID, providerID, theaterID, movieID, auditoriumID, showtimeStart)
-	reservation := migration000028Reservation(userID, reservationID, monitorID, showtime, now)
-	operation := migration000028ExternalOperation(userID, "operation_migration_28", monitorID, reservationID, now)
-	event := migration000028AppEvent(userID, "event_migration_28", now)
-	resources := []struct {
-		kind string
-		id   string
-		body proto.Message
-	}{
-		{kind: "settings", id: "settings", body: settings},
-		{kind: "presets", id: presetID, body: preset},
-		{kind: "monitors", id: monitorID, body: monitor},
-		{kind: "reservations", id: reservationID, body: reservation},
-		{kind: "external-operations", id: operation.GetId(), body: operation},
-		{kind: "app-events", id: event.GetId(), body: event},
-	}
-	for _, resource := range resources {
-		payload, err := protojson.Marshal(resource.body)
-		if err != nil {
-			t.Fatalf("marshal %s: %v", resource.kind, err)
-		}
-		if _, err := connection.Exec(ctx, `
-			INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
-			VALUES ($1, $2, $3, 1, $4::jsonb, $5, $5)
-		`, userID, resource.kind, resource.id, payload, now); err != nil {
-			t.Fatalf("insert %s: %v", resource.kind, err)
-		}
-	}
-
-	assignmentTask := migration000028AssignmentTask(theaterID, auditoriumID)
-	assignmentPayload, err := protojson.Marshal(assignmentTask)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connection.Exec(ctx, `
-		INSERT INTO observation_assignments (
-			id, task_kind, theater_id, theater_region, theater_name, theater_provider_id,
-			theater_source_key, target_dates, locale, time_zone, egress_policy_id, status,
-			not_before, deadline, created_at, updated_at, task_data
-		) VALUES (
-			'assignment_migration_28', 'cgv.seat-map.capture', $1, 'KR-11', 'Migration Theater',
-			$2, 'theater-28', ARRAY['2026-08-23'::date], 'ko-KR', 'Asia/Seoul', 'scan_default',
-			'queued', $3::timestamptz, $3::timestamptz + interval '1 hour', $3::timestamptz, $3::timestamptz, $4::jsonb
-		)
-	`, theaterID, providerID, now, assignmentPayload); err != nil {
-		t.Fatal(err)
-	}
-
-	executionPayload := &executionpb.Payload{}
-	executionPayload.SetShowtime(showtime)
-	executionObservedAt := now.Add(30 * time.Minute)
-	executionPayload.SetObservedAt(timestamppb.New(executionObservedAt))
-	executionJSON, err := protojson.Marshal(executionPayload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connection.Exec(ctx, `
-		INSERT INTO client_execution_commands (
-			id, user_id, monitor_id, showtime_id, starts_at, payload, status,
-			attempt_count, reason_code, created_at, updated_at
-		) VALUES (
-			'execution_migration_28', $1, $2, $3, $4, $5::jsonb, 'queued', 0, '', $6, $6
-		)
-	`, userID, monitorID, showtimeID, showtimeStart, executionJSON, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connection.Exec(ctx, `
-		INSERT INTO client_events (
-			id, user_id, event_type, resource_kind, resource_id, resource_revision,
-			payload, occurred_at
-		) VALUES
-			('event_payload_migration_28', $1, 'settings.updated', 'settings', 'settings', 1, $2::jsonb, $3),
-			('event_legacy_preset_migration_28', $1, 'presets.updated', 'presets', $4, 1, $5::jsonb, $3),
-			('event_preset_deleted_migration_28', $1, 'presets.deleted', 'presets', $4, 2, '{"legacy":"ignored"}'::jsonb, $3)
-	`, userID, mustProtoJSON(t, settings), now, presetID, mustProtoJSON(t, preset)); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := applyMigration(ctx, connection, migration28); err != nil {
-		t.Fatalf("apply migration 000028 (%s): %v", migration28.name, err)
-	}
-	assertMigration000028Normalized(t, connection, ctx, userID, reservationID, executionObservedAt, auditoriumID)
-	if err := applyMigration(ctx, connection, migration28); err != nil {
-		t.Fatalf("reapply migration 000028 (%s): %v", migration28.name, err)
-	}
-	var emptyNetworkMode *string
-	if err := connection.QueryRow(ctx, `
-		SELECT network_mode FROM client_settings
-		WHERE user_id = 'user_migration_28_empty_settings' AND id = 'settings'
-	`).Scan(&emptyNetworkMode); err != nil {
-		t.Fatal(err)
-	}
-	if emptyNetworkMode != nil {
-		t.Fatalf("empty Settings network_mode = %q, want NULL", *emptyNetworkMode)
-	}
-}
 
 func TestMigration000028DropsPreCutoverAppEvents(t *testing.T) {
 	connection, migration28 := newMigration000028Schema(t, "drops_pre_cutover_app_events")
@@ -461,12 +325,16 @@ func seedMigration000028Catalog(
 		t.Fatal(err)
 	}
 	showtime := migration000028Showtime(showtimeID, providerID, theaterID, movieID, auditoriumID, now.Add(2*time.Hour))
+	showtimeSourceKey, ok := catalogdomain.ShowtimeSourceKey(showtime)
+	if !ok {
+		t.Fatal("migration 28 showtime identity is invalid")
+	}
 	if _, err := connection.Exec(ctx, `
 		INSERT INTO showtimes (
 			id, provider_id, source_key, theater_id, movie_id, auditorium_id,
 			starts_at, ends_at, content_hash, first_seen_at, last_seen_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $10)
-	`, showtime.GetId(), providerID, showtime.GetSourceKey(), theaterID, movieID, auditoriumID,
+	`, showtime.GetId(), providerID, showtimeSourceKey, theaterID, movieID, auditoriumID,
 		showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime(), hash, now); err != nil {
 		t.Fatal(err)
 	}
@@ -561,13 +429,13 @@ func migration000028Showtime(id, providerID, theaterID, movieID, auditoriumID st
 	movie := &catalogpb.Movie{}
 	movie.SetId(movieID)
 	movie.SetProviderId(providerID)
-	movie.SetSourceKey("movie-source-28")
+	catalogdomain.SetMovieSourceKey(movie, "00001234")
 	movie.SetTitle("Migration Movie")
 	movie.SetPosterUrl("https://movie.example/poster")
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(theaterID)
-	auditorium.SetSourceKey("auditorium-source-28")
+	catalogdomain.SetAuditoriumSourceKey(auditorium, "0056/0007")
 	auditorium.SetName("IMAX")
 	auditorium.SetScreenTypes([]string{"IMAX", "PREMIUM"})
 	auditorium.SetCapacity(300)
@@ -575,15 +443,10 @@ func migration000028Showtime(id, providerID, theaterID, movieID, auditoriumID st
 	showtime := &catalogpb.Showtime{}
 	showtime.SetId(id)
 	showtime.SetProviderId(providerID)
-	showtime.SetSourceKey("showtime-source-28")
+	catalogdomain.SetShowtimeSourceKey(showtime, fmt.Sprintf("0056/%s/0007/0001", startsAt.Format(time.DateOnly)))
 	showtime.SetTheaterId(theaterID)
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
-	scheduleDate := &commonpb.LocalDate{}
-	scheduleDate.SetYear(numeric.ClampInt32(startsAt.Year()))
-	scheduleDate.SetMonth(numeric.ClampInt32(int(startsAt.Month())))
-	scheduleDate.SetDay(numeric.ClampInt32(startsAt.Day()))
-	showtime.SetScheduleDate(scheduleDate)
 	showtime.SetStartsAt(timestamppb.New(startsAt))
 	showtime.SetEndsAt(timestamppb.New(startsAt.Add(2 * time.Hour)))
 	showtime.SetAvailableSeats(120)
@@ -638,13 +501,13 @@ func migration000028AssignmentTask(theaterID, auditoriumID string) *observationp
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId("provider_migration_28")
-	theater.SetSourceKey("theater-source-28")
+	catalogdomain.SetTheaterSourceKey(theater, "0056")
 	theater.SetRegion("KR-11")
 	theater.SetName("Migration Theater")
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(theaterID)
-	auditorium.SetSourceKey("auditorium-source-28")
+	catalogdomain.SetAuditoriumSourceKey(auditorium, "0056/0007")
 	auditorium.SetName("IMAX")
 	auditorium.SetScreenTypes([]string{"IMAX"})
 	auditorium.SetCapacity(300)

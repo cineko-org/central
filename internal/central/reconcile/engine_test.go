@@ -13,8 +13,8 @@ import (
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestReconcileCycleDecisions(t *testing.T) {
@@ -208,7 +208,7 @@ func TestCatalogRefreshWaitsForProbeAndCreatesOneSystemAssignment(t *testing.T) 
 	catalogTask := assignment.Task.GetCatalog()
 	if assignment.Priority != planning.PriorityCatalogRefresh || assignment.PolicyID != "" ||
 		catalogTask == nil || catalogTask.GetTheater() == nil ||
-		catalogTask.GetTheater().GetSourceKey() != "__catalog__" || len(catalogTask.GetTargetDates()) != 0 ||
+		func() string { key, _ := catalogdomain.TheaterSourceKey(catalogTask.GetTheater()); return key }() != "__catalog__" || len(catalogTask.GetTargetDates()) != 0 ||
 		len(assignment.Candidates) != 1 {
 		t.Fatalf("catalog assignment = %+v", assignment)
 	}
@@ -750,7 +750,7 @@ func testTheater(id string) *catalogpb.Theater {
 	theater := &catalogpb.Theater{}
 	theater.SetId(id)
 	theater.SetProviderId(catalogdomain.ProviderCGV)
-	theater.SetSourceKey(id)
+	catalogdomain.SetTheaterSourceKey(theater, "0056")
 	theater.SetRegion("서울")
 	theater.SetName("용산아이파크몰")
 	return theater

@@ -8,11 +8,12 @@ import (
 	"time"
 
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -682,7 +683,9 @@ func TestGeneratedProtoCatalogAndExecutionBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	seatService.clock = func() time.Time { return now }
-	if _, err := seatService.ResolveSeatMap(t.Context(), "auditorium"); !errors.Is(err, errInjectedClient) {
+	request := &servicepb.ResolveSeatMapRequest{}
+	request.SetAuditoriumId("auditorium")
+	if _, err := seatService.ResolveSeatMap(t.Context(), request); !errors.Is(err, errInjectedClient) {
 		t.Fatalf("seat-map backfill error = %v", err)
 	}
 	if _, err := seatService.SeatMap(t.Context(), " "); !errors.Is(err, ErrInvalid) {

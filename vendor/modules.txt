@@ -35,18 +35,19 @@ github.com/cenkalti/backoff/v5
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
-# github.com/cineko-org/contracts v0.0.0-20260822085048-37a628469be1
+# github.com/cineko-org/contracts/v3 v3.5.1
 ## explicit; go 1.26
-github.com/cineko-org/contracts/gen/go/cineko/admin
-github.com/cineko-org/contracts/gen/go/cineko/catalog
-github.com/cineko-org/contracts/gen/go/cineko/client
-github.com/cineko-org/contracts/gen/go/cineko/common
-github.com/cineko-org/contracts/gen/go/cineko/execution
-github.com/cineko-org/contracts/gen/go/cineko/observation
-github.com/cineko-org/contracts/gen/go/cineko/probe
-github.com/cineko-org/contracts/gen/go/cineko/release
-github.com/cineko-org/contracts/gen/go/cineko/seatmap
-github.com/cineko-org/contracts/gen/go/cineko/service
+github.com/cineko-org/contracts/v3/gen/go/cineko/admin
+github.com/cineko-org/contracts/v3/gen/go/cineko/catalog
+github.com/cineko-org/contracts/v3/gen/go/cineko/client
+github.com/cineko-org/contracts/v3/gen/go/cineko/collection
+github.com/cineko-org/contracts/v3/gen/go/cineko/common
+github.com/cineko-org/contracts/v3/gen/go/cineko/execution
+github.com/cineko-org/contracts/v3/gen/go/cineko/observation
+github.com/cineko-org/contracts/v3/gen/go/cineko/probe
+github.com/cineko-org/contracts/v3/gen/go/cineko/release
+github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap
+github.com/cineko-org/contracts/v3/gen/go/cineko/service
 # github.com/containerd/errdefs v1.0.0
 ## explicit; go 1.20
 github.com/containerd/errdefs

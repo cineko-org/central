@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/cineko-org/central/internal/central/reconcile"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	"github.com/cineko-org/central/internal/observation/planning"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -40,7 +41,7 @@ func TestMarshalAssignmentTaskPersistsLaneWithoutChangingTaskShape(t *testing.T)
 	theater := &catalogpb.Theater{}
 	theater.SetId("theater")
 	theater.SetProviderId("cgv")
-	theater.SetSourceKey("source")
+	catalogdomain.SetTheaterSourceKey(theater, "0056")
 	theater.SetRegion("서울")
 	theater.SetName("용산아이파크몰")
 	schedule := &observationpb.ScheduleTask{}

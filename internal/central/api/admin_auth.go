@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

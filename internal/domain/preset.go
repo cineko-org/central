@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 )
 
 // ValidatePreset enforces Central's domain invariants on the canonical Proto preset.

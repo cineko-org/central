@@ -7,9 +7,10 @@ import (
 	"time"
 
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -85,7 +86,9 @@ func TestGeneratedProtoServiceResidualValidationBoundaries(t *testing.T) {
 	}
 
 	invalidUTF8Failure := &observationpb.Failed{}
-	invalidUTF8Failure.SetReasonCode(string([]byte{0xff}))
+	invalidUTF8Reason := &collectionpb.FailureReason{}
+	invalidUTF8Reason.SetInvalidResult(&collectionpb.InvalidResult{})
+	invalidUTF8Failure.SetReason(invalidUTF8Reason)
 	invalidUTF8Result := &observationpb.AssignmentResult{}
 	invalidUTF8Result.SetRunId("run")
 	invalidUTF8Result.SetStartedAt(timestamppb.New(now))

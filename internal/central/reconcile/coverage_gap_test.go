@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
 )
 
 func TestReconcilePropagatesSeatAvailabilityFailure(t *testing.T) {

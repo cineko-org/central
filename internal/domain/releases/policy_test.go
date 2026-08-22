@@ -3,7 +3,7 @@ package releases
 import (
 	"testing"
 
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 )
 
 func TestSelectionRequiresCompatibleRuntimeComponents(t *testing.T) {

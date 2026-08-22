@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 )
 
 const pinTestPepper = "0123456789abcdef0123456789abcdef"

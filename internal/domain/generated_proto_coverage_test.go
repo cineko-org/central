@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 )
 
 func TestGeneratedProtoPresetValidationBoundaries(t *testing.T) {

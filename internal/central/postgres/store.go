@@ -14,10 +14,11 @@ import (
 	"github.com/cineko-org/central/internal/central"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -483,24 +484,40 @@ func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommi
 	if err := authorizeResultCommit(state, commit); err != nil {
 		return nil, err
 	}
-	if err := writeAssignmentResult(ctx, tx, commit, resultPayload); err != nil {
-		return nil, err
-	}
-	if err := finishAssignmentAttempt(ctx, tx, commit, resultPayload); err != nil {
-		return nil, err
-	}
-	if commit.Result.GetCompleted() != nil {
-		if err := storeSuccessfulResult(ctx, tx, commit, state); err != nil {
-			return nil, err
-		}
-	}
-	if err := notifyAssignmentAvailability(ctx, tx); err != nil {
+	if err := store.commitAssignmentResultTx(ctx, tx, commit, state, resultPayload); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit assignment result: %w", err)
 	}
 	return resultReceipt(commit.AssignmentID, commit.Result.GetRunId(), commit.PayloadHash, false), nil
+}
+
+func (store *Store) commitAssignmentResultTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	commit central.ResultCommit,
+	state assignmentResultState,
+	resultPayload []byte,
+) error {
+	if err := writeAssignmentResult(ctx, tx, commit, state, resultPayload); err != nil {
+		return err
+	}
+	if err := finishAssignmentAttempt(ctx, tx, commit, resultPayload); err != nil {
+		return err
+	}
+	if err := updateSeatMapCollectionAfterResult(ctx, tx, commit, state); err != nil {
+		return err
+	}
+	if commit.Result.GetCompleted() != nil {
+		if err := storeSuccessfulResult(ctx, tx, commit, state); err != nil {
+			return err
+		}
+	}
+	if err := notifyAssignmentAvailability(ctx, tx); err != nil {
+		return err
+	}
+	return nil
 }
 
 func storeSuccessfulResult(
@@ -513,18 +530,52 @@ func storeSuccessfulResult(
 	case probedomain.CapabilityCGVCatalogCapture:
 		return storeCatalogResult(ctx, tx, commit.Result)
 	case probedomain.CapabilityCGVSeatMapCapture:
-		return storeSeatMapResult(ctx, tx, commit.Result, state.task)
+		return storeLiveSeatResult(ctx, tx, commit, state.task)
 	case probedomain.CapabilityCGVSeatAvailabilityCapture:
-		return storeSeatAvailabilityResult(ctx, tx, commit, state.task)
+		return storeLiveSeatResult(ctx, tx, commit, state.task)
 	default:
 		return storeScheduleResult(ctx, tx, commit, state)
 	}
 }
 
+func updateSeatMapCollectionAfterResult(
+	ctx context.Context,
+	tx pgx.Tx,
+	commit central.ResultCommit,
+	state assignmentResultState,
+) error {
+	if state.task == nil || state.task.GetSeatMap() == nil {
+		return nil
+	}
+	auditoriumID := assignmentTaskAuditoriumID(state.task)
+	if auditoriumID == "" {
+		return nil
+	}
+	if commit.Result.GetDeferred() != nil {
+		reason := commit.Result.GetDeferred().GetReason()
+		if reason == nil {
+			return fmt.Errorf("%w: seat-map deferred reason is required", central.ErrInvalid)
+		}
+		waiting := &collectionpb.WaitingReason{}
+		switch {
+		case reason.GetNoBookableShowtime() != nil:
+			waiting.SetNoBookableShowtime(&collectionpb.NoBookableShowtime{})
+		case reason.GetTargetDateUnavailable() != nil:
+			waiting.SetTargetDateUnavailable(&collectionpb.TargetDateUnavailable{})
+		default:
+			return fmt.Errorf("%w: unsupported seat-map deferred reason", central.ErrInvalid)
+		}
+		return waitSeatMapCollectionForShowtimeTx(ctx, tx, auditoriumID, waiting, commit.CommittedAt)
+	}
+	if failed := commit.Result.GetFailed(); failed != nil {
+		return recordSeatMapCollectionFailureTx(ctx, tx, auditoriumID, failed.GetReason(), commit.CommittedAt)
+	}
+	return nil
+}
+
 func storeCatalogResult(ctx context.Context, tx pgx.Tx, result *observationpb.AssignmentResult) error {
 	completed := result.GetCompleted()
-	if completed == nil || completed.GetCatalog() == nil || len(completed.GetCaptures()) != 0 ||
-		completed.GetSeatMap() != nil || completed.GetSeatAvailability() != nil {
+	if completed == nil || completed.GetCatalog() == nil || completed.GetSchedule() != nil || completed.GetLiveSeat() != nil {
 		return fmt.Errorf("%w: catalog assignment result is incomplete", central.ErrInvalid)
 	}
 	snapshot := completed.GetCatalog()
@@ -545,26 +596,6 @@ func storeCatalogResult(ctx context.Context, tx pgx.Tx, result *observationpb.As
 	return nil
 }
 
-func storeSeatMapResult(
-	ctx context.Context,
-	tx pgx.Tx,
-	result *observationpb.AssignmentResult,
-	task *observationpb.AssignmentTask,
-) error {
-	completed := result.GetCompleted()
-	seatMap := completed.GetSeatMap()
-	if completed == nil || seatMap == nil || len(completed.GetCaptures()) != 0 ||
-		completed.GetCatalog() != nil || completed.GetSeatAvailability() != nil {
-		return fmt.Errorf("%w: seat-map assignment result is incomplete", central.ErrInvalid)
-	}
-	if task.GetSeatMap() == nil || task.GetSeatMap().GetAuditorium() == nil ||
-		seatMap.GetAuditoriumId() != task.GetSeatMap().GetAuditorium().GetId() {
-		return fmt.Errorf("%w: seat-map result does not match assignment auditorium", central.ErrInvalid)
-	}
-	_, err := putSeatMapTx(ctx, tx, seatMap)
-	return err
-}
-
 func storeScheduleResult(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -572,7 +603,7 @@ func storeScheduleResult(
 	state assignmentResultState,
 ) error {
 	completed := commit.Result.GetCompleted()
-	if completed == nil || completed.GetCatalog() != nil || completed.GetSeatMap() != nil || completed.GetSeatAvailability() != nil {
+	if completed == nil || completed.GetSchedule() == nil || completed.GetCatalog() != nil || completed.GetLiveSeat() != nil {
 		return fmt.Errorf("%w: schedule assignment cannot include another result type", central.ErrInvalid)
 	}
 	snapshot := catalogSnapshotFromResult(state.theater, commit.Result, commit.CommittedAt)
@@ -630,7 +661,9 @@ func lockAssignmentResult(ctx context.Context, tx pgx.Tx, assignmentID string) (
 	state.theater = &catalogpb.Theater{}
 	state.theater.SetId(theaterID)
 	state.theater.SetProviderId(providerID)
-	state.theater.SetSourceKey(sourceKey)
+	if !catalogdomain.SetTheaterSourceKey(state.theater, sourceKey) {
+		return assignmentResultState{}, fmt.Errorf("stored theater identity %q is not typed CGV", sourceKey)
+	}
 	state.theater.SetRegion(region)
 	state.theater.SetName(name)
 	state.theaterID = theaterID
@@ -710,13 +743,21 @@ func authorizeResultCommit(state assignmentResultState, commit central.ResultCom
 	return nil
 }
 
-func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.ResultCommit, resultPayload []byte) error {
+func writeAssignmentResult(
+	ctx context.Context,
+	tx pgx.Tx,
+	commit central.ResultCommit,
+	state assignmentResultState,
+	resultPayload []byte,
+) error {
 	status := assignmentResultStatus(commit.Result)
 	failureReason := ""
 	if failed := commit.Result.GetFailed(); failed != nil {
-		failureReason = strings.TrimSpace(failed.GetReasonCode())
+		failureReason, _ = seatMapCollectionFailureReasonCode(failed.GetReason())
+		failureReason = strings.TrimSpace(failureReason)
 	}
-	if failed := commit.Result.GetFailed(); failed != nil && failed.GetRetryable() {
+	if state.taskKind != probedomain.CapabilityCGVSeatMapCapture &&
+		seatMapCollectionRetryableFailureReason(commit.Result.GetFailed().GetReason()) {
 		_, err := tx.Exec(ctx, `
 			UPDATE observation_assignments
 			SET status = 'retry_pending', probe_id = NULL, lease_token_hash = NULL,
@@ -727,6 +768,14 @@ func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.Result
 			return fmt.Errorf("store retryable assignment failure: %w", err)
 		}
 		return nil
+	}
+	if deferred := commit.Result.GetDeferred(); deferred != nil {
+		switch {
+		case deferred.GetReason().GetNoBookableShowtime() != nil:
+			failureReason = "no_bookable_showtime"
+		case deferred.GetReason().GetTargetDateUnavailable() != nil:
+			failureReason = "target_date_unavailable"
+		}
 	}
 	_, err := tx.Exec(ctx, `
 		UPDATE observation_assignments
@@ -773,10 +822,13 @@ func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.Resu
 }
 
 func assignmentResultStatus(result *observationpb.AssignmentResult) string {
+	if result.GetDeferred() != nil {
+		return "failed"
+	}
 	if result.GetFailed() != nil {
 		return "failed"
 	}
-	for _, capture := range result.GetCompleted().GetCaptures() {
+	for _, capture := range result.GetCompleted().GetSchedule().GetCaptures() {
 		if !capture.GetComplete() {
 			return "partial"
 		}
@@ -791,7 +843,7 @@ func storeCaptures(
 	theaterID string,
 	timeZone string,
 ) error {
-	for _, capture := range commit.Result.GetCompleted().GetCaptures() {
+	for _, capture := range commit.Result.GetCompleted().GetSchedule().GetCaptures() {
 		opened, newShowtimes, err := captureIntroducesNewShowtimes(ctx, tx, theaterID, capture)
 		if err != nil {
 			return err
@@ -826,7 +878,11 @@ func captureIntroducesNewShowtimes(
 	sourceKeys := make([]string, len(showtimes))
 	startTimes := make([]time.Time, len(showtimes))
 	for index, showtime := range showtimes {
-		sourceKeys[index] = showtime.GetSourceKey()
+		key, ok := catalogdomain.ShowtimeSourceKey(showtime)
+		if !ok {
+			return false, nil, fmt.Errorf("showtime identity is not typed CGV")
+		}
+		sourceKeys[index] = key
 		startTimes[index] = showtime.GetStartsAt().AsTime()
 	}
 	var hasPrior bool
@@ -906,11 +962,8 @@ func requestMonitoredSeatMapValidation(
 		}
 	}
 	for auditoriumID := range auditoriumIDs {
-		if _, err := tx.Exec(ctx, `
-			UPDATE auditoriums
-			SET seat_map_requested_at = COALESCE(seat_map_requested_at, $2)
-			WHERE id = $1 AND active
-		`, auditoriumID, now); err != nil {
+		trigger := (&collectionpb.Trigger_builder{ActiveMonitor: (&collectionpb.ActiveMonitor_builder{}).Build()}).Build()
+		if err := queueSeatMapCollectionStateTx(ctx, tx, auditoriumID, trigger, 60, now, ""); err != nil {
 			return fmt.Errorf("request monitored seat-map validation: %w", err)
 		}
 	}
@@ -962,13 +1015,17 @@ func storeCapture(
 		return fmt.Errorf("store schedule capture: %w", err)
 	}
 	for _, showtime := range capture.GetShowtimes() {
+		showtimeSourceKey, ok := catalogdomain.ShowtimeSourceKey(showtime)
+		if !ok {
+			return fmt.Errorf("showtime identity is not typed CGV")
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO showtime_observations (
 				assignment_id, run_id, target_date, source_key, theater_id,
 				auditorium_id, auditorium_name, screen_types, movie_id, movie_title, poster_url,
 				starts_at, ends_at, available_seats, capacity, sold_out, observed_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		`, commit.AssignmentID, commit.Result.GetRunId(), localDateString(capture.GetTargetDate()), showtime.GetSourceKey(), theaterID,
+		`, commit.AssignmentID, commit.Result.GetRunId(), localDateString(capture.GetTargetDate()), showtimeSourceKey, theaterID,
 			showtime.GetAuditorium().GetId(), showtime.GetAuditorium().GetName(), showtime.GetAuditorium().GetScreenTypes(), showtime.GetMovie().GetId(),
 			showtime.GetMovie().GetTitle(),
 			showtime.GetMovie().GetPosterUrl(), showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime(), showtime.GetAvailableSeats(),
@@ -994,7 +1051,7 @@ func catalogSnapshotFromResult(
 	movies := make(map[string]struct{})
 	auditoriums := make(map[string]*catalogpb.Auditorium)
 	showtimes := make(map[string]*catalogpb.Showtime)
-	for _, capture := range result.GetCompleted().GetCaptures() {
+	for _, capture := range result.GetCompleted().GetSchedule().GetCaptures() {
 		for _, showtime := range capture.GetShowtimes() {
 			if _, exists := movies[showtime.GetMovie().GetId()]; !exists {
 				movies[showtime.GetMovie().GetId()] = struct{}{}

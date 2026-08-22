@@ -18,6 +18,9 @@ Client monitor resources store `movieId` as the canonical catalog Movie ID. The 
 snapshot and is never used to match a showtime; execution matching fails closed when either Movie ID is missing or
 different.
 
-Stored seat layouts and anonymous Probe seat observations are optional analysis or preview data. Their absence never
-blocks a preset, monitor, execution command, or booking attempt. The live CGV seat response read again on the user's
-Client is authoritative.
+Stored seat layouts and anonymous Probe seat observations are separate data products. The immutable current layout
+pointer is a reusable snapshot; `seat_map_collection_states` is the durable lifecycle for obtaining or validating
+that snapshot and may be non-idle even while an older snapshot remains readable. A monitor may be created without a
+cached layout, but the preset editor needs a layout to offer seat constraints and a seat-constrained execution command
+is blocked until Central has exact layout-aware proof. The live CGV seat response read again on the user's Client is
+authoritative.
