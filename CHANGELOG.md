@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.1](https://github.com/cineko-org/central/compare/v2.8.0...v2.8.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* enforce assignment contract boundaries ([#32](https://github.com/cineko-org/central/issues/32)) ([db80a68](https://github.com/cineko-org/central/commit/db80a68bba7867eb74a6b5de114f77cfe3f26835))
+
 ## [2.8.0](https://github.com/cineko-org/central/compare/v2.7.2...v2.8.0) (2026-08-22)
 
 
