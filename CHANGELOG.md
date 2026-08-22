@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/cineko-org/central/compare/v2.7.2...v2.8.0) (2026-08-22)
+
+
+### Features
+
+* enforce latest seat collection contract ([#30](https://github.com/cineko-org/central/issues/30)) ([781f10d](https://github.com/cineko-org/central/commit/781f10d06bc2e04593e89531417bcaf9303a8d61))
+
 ## [2.7.2](https://github.com/cineko-org/central/compare/v2.7.1...v2.7.2) (2026-08-22)
 
 
