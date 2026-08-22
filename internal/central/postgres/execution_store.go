@@ -70,7 +70,7 @@ func (store *Store) ClaimClientExecution(
 		SELECT command.id, command.monitor_id, command.payload,
 			command.attempt_count, command.created_at
 		FROM client_execution_commands AS command
-		LEFT JOIN active_targets AS target ON target.monitor_id = command.monitor_id
+		JOIN active_targets AS target ON target.monitor_id = command.monitor_id
 		-- The command payload is the immutable showtime snapshot. Catalog rows may
 		-- be retired after enqueueing, but that must not strand the command.
 		LEFT JOIN showtimes AS showtime ON showtime.id = command.showtime_id
@@ -89,6 +89,12 @@ func (store *Store) ClaimClientExecution(
 		&commandID, &monitorID, &payload, &attempt, &createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Lease and stale-command expiry run in this transaction before the
+		// selection. Preserve those terminal state transitions even when they
+		// leave no command for the caller to claim.
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return nil, fmt.Errorf("commit empty Client execution claim: %w", commitErr)
+		}
 		return nil, central.ErrNotFound
 	}
 	if err != nil {
@@ -326,10 +332,15 @@ func finishExecutionMonitor(
 	}
 	mutation := central.ResourceMutation{
 		UserID: completion.UserID, Kind: "monitors", ID: monitorID,
-		Resource: resource.body, CommandID: "execution-failure:" + completion.CommandID,
+		Resource: resource.body,
+		CommandID: fmt.Sprintf(
+			"execution-failure:%s:%d",
+			completion.CommandID,
+			resource.revision,
+		),
 		Now: completion.Now,
 	}
-	if err := recordClientMutation(ctx, tx, mutation, "execution-failure", "monitors.updated", resource); err != nil {
+	if err := recordClientMutation(ctx, tx, mutation, clientMutationOperation(false), "monitors.updated", resource); err != nil {
 		return fmt.Errorf("publish terminal execution monitor: %w", err)
 	}
 	return nil

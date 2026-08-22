@@ -866,7 +866,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	terminalCapture := &observationpb.Capture{}
 	terminalCapture.SetTargetDate(targetDateMessage)
 	terminalCapture.SetComplete(true)
-	terminalCapture.SetObservedAt(timestamppb.New(commit.CommittedAt.Add(time.Second)))
+	terminalCapture.SetObservedAt(timestamppb.New(availabilityObservedAt.Add(time.Second)))
 	terminalCapture.SetShowtimes([]*catalogpb.Showtime{terminalShowtime})
 	terminalCompleted := &observationpb.Completed{}
 	terminalCompleted.SetCaptures([]*observationpb.Capture{terminalCapture})
@@ -927,7 +927,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	leaseLossCapture := &observationpb.Capture{}
 	leaseLossCapture.SetTargetDate(targetDateMessage)
 	leaseLossCapture.SetComplete(true)
-	leaseLossCapture.SetObservedAt(timestamppb.Now())
+	leaseLossCapture.SetObservedAt(timestamppb.New(terminalCapture.GetObservedAt().AsTime().Add(time.Second)))
 	leaseLossCapture.SetShowtimes([]*catalogpb.Showtime{leaseLossShowtime})
 	leaseLossCompleted := &observationpb.Completed{}
 	leaseLossCompleted.SetCaptures([]*observationpb.Capture{leaseLossCapture})
@@ -948,7 +948,8 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	leaseLossResponse, err := service.ClaimExecution(ctx, principal, claimA)
 	leaseLossCommand := leaseLossResponse.GetCommand()
-	if err != nil || leaseLossCommand == nil {
+	if err != nil || leaseLossCommand == nil ||
+		leaseLossCommand.GetPayload().GetShowtime().GetId() != leaseLossShowtime.GetId() {
 		t.Fatalf("lease-loss execution claim = %+v, %v", leaseLossResponse, err)
 	}
 	if _, err := store.pool.Exec(ctx, `
@@ -995,7 +996,7 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	deleteCapture := &observationpb.Capture{}
 	deleteCapture.SetTargetDate(targetDateMessage)
 	deleteCapture.SetComplete(true)
-	deleteCapture.SetObservedAt(timestamppb.Now())
+	deleteCapture.SetObservedAt(timestamppb.New(leaseLossCapture.GetObservedAt().AsTime().Add(time.Second)))
 	deleteCapture.SetShowtimes([]*catalogpb.Showtime{deleteShowtime})
 	deleteCompleted := &observationpb.Completed{}
 	deleteCompleted.SetCaptures([]*observationpb.Capture{deleteCapture})
@@ -1016,7 +1017,8 @@ func TestPostgresAvailabilityExecutionLifecycle(t *testing.T) {
 	}
 	deleteClaimResponse, err := service.ClaimExecution(ctx, principal, claimA)
 	deleteCommand := deleteClaimResponse.GetCommand()
-	if err != nil || deleteCommand == nil {
+	if err != nil || deleteCommand == nil ||
+		deleteCommand.GetPayload().GetShowtime().GetId() != deleteShowtime.GetId() {
 		t.Fatalf("delete execution claim = %+v, %v", deleteClaimResponse, err)
 	}
 	deleteRevision := rearmedMonitor.GetIdentity().GetRevision()
@@ -2503,6 +2505,12 @@ func cleanupClientResourceCatalog(
 		query string
 		ids   []string
 	}{
+		{`DELETE FROM monitor_showtime_availability WHERE showtime_id IN (
+			SELECT id FROM showtimes WHERE theater_id = ANY($1)
+		)`, theaterIDs},
+		{`DELETE FROM seat_availability_snapshots WHERE showtime_id IN (
+			SELECT id FROM showtimes WHERE theater_id = ANY($1)
+		)`, theaterIDs},
 		{`DELETE FROM showtimes WHERE theater_id = ANY($1)`, theaterIDs},
 		{`DELETE FROM auditoriums WHERE id = ANY($1)`, auditoriumIDs},
 		{`DELETE FROM movies WHERE id = ANY($1)`, movieIDs},
