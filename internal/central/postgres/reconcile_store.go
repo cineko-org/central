@@ -485,9 +485,9 @@ func (store *cycleStore) DuePolicies(
 			policy.theater_name, policy.target_date_mode, policy.target_dates::text[], LEAST(policy.horizon_days, 14),
 			policy.locale, policy.time_zone, policy.egress_policy_id,
 			CASE
-				WHEN COALESCE(demand.booking_active, false) THEN $2
-				WHEN policy.burst_until > $1 THEN $3
-				ELSE $4
+				WHEN COALESCE(demand.booking_active, false) THEN $2::integer
+				WHEN policy.burst_until > $1 THEN $3::integer
+				ELSE $4::integer
 			END AS effective_priority,
 			CASE
 				WHEN COALESCE(demand.booking_active, false) THEN 2
