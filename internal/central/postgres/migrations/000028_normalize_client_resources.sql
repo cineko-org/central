@@ -697,6 +697,43 @@ BEGIN
 END;
 $$;
 
+-- Releases before the protobuf-only cutover persisted AppEvent.tone as a
+-- string. Canonicalize that finite legacy shape into the latest ProtoJSON
+-- oneof so retained events remain decodable after the migration.
+CREATE OR REPLACE FUNCTION cineko_normalize_app_event_payload(value jsonb, context text)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    tone_value text;
+    oneof_member_count integer;
+BEGIN
+    PERFORM cineko_require_keys(value, context,
+        ARRAY['id', 'userId', 'kind', 'message', 'createdAt', 'readAt',
+              'tone', 'info', 'success', 'warning', 'error']);
+    IF value ? 'tone' THEN
+        SELECT count(*) INTO oneof_member_count
+        FROM unnest(ARRAY['info', 'success', 'warning', 'error']) AS candidate
+        WHERE value ? candidate;
+        IF oneof_member_count <> 0 THEN
+            RAISE EXCEPTION '% cannot contain both legacy tone and protobuf tone members', context;
+        END IF;
+        tone_value := cineko_json_text(value->'tone', context || '.tone', true);
+        IF NOT (tone_value = ANY (ARRAY['info', 'success', 'warning', 'error'])) THEN
+            RAISE EXCEPTION '% contains invalid legacy tone %', context, tone_value;
+        END IF;
+        RETURN (value - 'tone') || jsonb_build_object(tone_value, '{}'::jsonb);
+    END IF;
+    tone_value := cineko_json_oneof_fields(
+        value,
+        context || '.tone',
+        ARRAY['info', 'success', 'warning', 'error']
+    );
+    PERFORM cineko_require_keys(value->tone_value, context || '.' || tone_value, ARRAY[]::text[]);
+    RETURN value;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION cineko_validate_theater(value jsonb, context text)
 RETURNS void
 LANGUAGE plpgsql
@@ -1453,10 +1490,10 @@ BEGIN
         FROM client_resources
         WHERE kind = 'app-events'
     LOOP
-        body := resource_row.payload;
-        PERFORM cineko_require_keys(body, 'client app event ' || resource_row.id,
-            ARRAY['id', 'userId', 'kind', 'message', 'createdAt', 'readAt',
-                  'info', 'success', 'warning', 'error']);
+        body := cineko_normalize_app_event_payload(
+            resource_row.payload,
+            'client app event ' || resource_row.id
+        );
         payload_id := cineko_json_text(body->'id', 'client app event.id', true);
         user_id_value := cineko_json_text(body->'userId', 'client app event.userId', true);
         IF payload_id <> resource_row.id OR user_id_value <> resource_row.user_id THEN
@@ -1467,7 +1504,6 @@ BEGIN
         created_at_value := cineko_json_timestamp(body->'createdAt', 'client app event.createdAt', false);
         read_at_value := cineko_json_timestamp(body->'readAt', 'client app event.readAt', false);
         tone := cineko_json_oneof_fields(body, 'client app event.tone', ARRAY['info', 'success', 'warning', 'error']);
-        PERFORM cineko_require_keys(body->tone, 'client app event.' || tone, ARRAY[]::text[]);
         INSERT INTO client_app_events (
             user_id, resource_kind, id, kind, message, event_created_at, read_at, tone
         ) VALUES (
@@ -1700,6 +1736,14 @@ BEGIN
                 UPDATE client_events
                 SET payload = canonical_payload
                 WHERE sequence = event_row.sequence;
+            ELSIF event_row.resource_kind = 'app-events' THEN
+                canonical_payload := cineko_normalize_app_event_payload(
+                    canonical_payload,
+                    'client app event at sequence ' || event_row.sequence
+                );
+                UPDATE client_events
+                SET payload = canonical_payload
+                WHERE sequence = event_row.sequence;
             END IF;
             PERFORM cineko_validate_client_event_resource(
                 canonical_payload,
@@ -1726,6 +1770,7 @@ DROP FUNCTION cineko_validate_showtime(jsonb, text);
 DROP FUNCTION cineko_validate_auditorium(jsonb, text);
 DROP FUNCTION cineko_validate_movie(jsonb, text);
 DROP FUNCTION cineko_validate_theater(jsonb, text);
+DROP FUNCTION cineko_normalize_app_event_payload(jsonb, text);
 DROP FUNCTION cineko_json_oneof_fields(jsonb, text, text[]);
 DROP FUNCTION cineko_json_oneof(jsonb, text, text[]);
 DROP FUNCTION cineko_json_local_minutes(jsonb, text);
