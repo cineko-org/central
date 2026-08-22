@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/cineko-org/central/compare/v2.6.2...v2.7.0) (2026-08-22)
+
+
+### Features
+
+* centralize booking observation lifecycle ([#24](https://github.com/cineko-org/central/issues/24)) ([c3e0d06](https://github.com/cineko-org/central/commit/c3e0d0672e89942f09ecf6ce0d2b44a1b2c3e208))
+
 ## [2.6.2](https://github.com/cineko-org/central/compare/v2.6.1...v2.6.2) (2026-08-22)
 
 
