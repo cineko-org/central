@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/cineko-org/central/internal/central"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 )
 
 func TestPINAuthenticationAndAdminManagementAPI(t *testing.T) {

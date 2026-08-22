@@ -18,7 +18,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	document := contractReadFile(t, filepath.Join(root, "docs/api-contract.md"))
 
 	staticRoute := regexp.MustCompile(`mux\.Handle(?:Func)?\("([A-Z]+ /[^"]*)"`)
-	static := make([]string, 0, 55)
+	static := make([]string, 0, 56)
 	for _, line := range strings.Split(source, "\n") {
 		if strings.Contains(line, "+resource") {
 			continue
@@ -28,7 +28,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 			static = append(static, match[1])
 		}
 	}
-	if len(static) != 55 {
+	if len(static) != 56 {
 		t.Fatalf("literal HTTP service points = %d, update contract inventory", len(static))
 	}
 	for _, route := range static {
@@ -53,8 +53,8 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 			t.Errorf("HTTP contract does not document family %s", family)
 		}
 	}
-	if concrete := len(static) + len(resources)*len(families); concrete != 80 ||
-		!strings.Contains(document, "80 concrete method/path") {
+	if concrete := len(static) + len(resources)*len(families); concrete != 81 ||
+		!strings.Contains(document, "81 concrete method/path") {
 		t.Fatalf("expanded HTTP service points = %d, update contract inventory", concrete)
 	}
 	methodCounts := map[string]int{}
@@ -64,7 +64,7 @@ func TestHTTPContractDocumentsEveryServicePoint(t *testing.T) {
 	for _, family := range families {
 		methodCounts[strings.SplitN(family, " ", 2)[0]] += len(resources)
 	}
-	wantMethodCounts := map[string]int{"GET": 34, "POST": 25, "PUT": 13, "DELETE": 8}
+	wantMethodCounts := map[string]int{"GET": 35, "POST": 25, "PUT": 13, "DELETE": 8}
 	for method, want := range wantMethodCounts {
 		if methodCounts[method] != want {
 			t.Errorf("%s service points = %d, want %d", method, methodCounts[method], want)
@@ -161,7 +161,8 @@ func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 		"providers":                                {"id", "name", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
 		"theaters":                                 {"id", "provider_id", "source_key", "region", "name", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
 		"movies":                                   {"id", "provider_id", "source_key", "title", "poster_url", "display_order", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
-		"auditoriums":                              {"id", "theater_id", "source_key", "name", "screen_types", "capacity", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at", "current_seat_map_version_id", "seat_map_requested_at"},
+		"auditoriums":                              {"id", "theater_id", "source_key", "name", "screen_types", "capacity", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at", "current_seat_map_version_id"},
+		"seat_map_collection_states":               {"auditorium_id", "state", "trigger_kind", "priority", "assignment_id", "showtime_id", "reason_code", "requested_at", "last_attempt_at", "next_attempt_at", "consecutive_failures", "updated_at"},
 		"showtimes":                                {"id", "provider_id", "source_key", "theater_id", "movie_id", "auditorium_id", "schedule_date", "starts_at", "ends_at", "active", "content_hash", "first_seen_at", "last_seen_at", "updated_at"},
 		"seat_map_versions":                        {"id", "auditorium_id", "layout_hash", "capacity", "observed_at", "first_seen_at", "last_seen_at"},
 		"seat_map_seats":                           {"version_id", "position", "seat_id", "label", "row_label", "seat_number", "x", "y", "seat_type", "zone_name", "zone_kind", "sale_form_code", "sale_form_name", "left_aisle", "right_aisle", "source_label", "source_seat_kind_code", "source_seat_kind_name"},
@@ -193,8 +194,8 @@ func TestSchemaContractMatchesMigrationHistory(t *testing.T) {
 		"seat_availability_snapshot_seats":         {"snapshot_id", "position", "seat_id"},
 		"monitor_showtime_availability":            {"user_id", "monitor_id", "showtime_id", "snapshot_id", "matched", "observed_at", "updated_at"},
 	}
-	if len(currentSchema) != 59 {
-		t.Fatalf("current schema tables = %d, want 59", len(currentSchema))
+	if len(currentSchema) != 60 {
+		t.Fatalf("current schema tables = %d, want 60", len(currentSchema))
 	}
 	for table, columns := range currentSchema {
 		row := schemaContractRow(t, document, table)

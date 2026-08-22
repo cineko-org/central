@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/support/numeric"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -188,6 +190,9 @@ func upsertCatalogSnapshotTx(ctx context.Context, tx pgx.Tx, snapshot *catalogpb
 		}
 		changed = changed || entityChanged
 	}
+	if err := promoteWaitingSeatMapCollectionsTx(ctx, tx, observedAt); err != nil {
+		return 0, err
+	}
 	if !changed {
 		return generation, nil
 	}
@@ -214,8 +219,35 @@ func putSeatMapTx(ctx context.Context, tx pgx.Tx, snapshot *seatmappb.Snapshot) 
 		return 0, fmt.Errorf("lock seat map auditorium: %w", err)
 	}
 	observedAt := snapshot.GetObservedAt().AsTime()
+	if err := ensureSeatMapVersionTx(ctx, tx, snapshot, observedAt); err != nil {
+		return 0, err
+	}
+	if currentID == snapshot.GetId() || currentObservedAt != nil && !observedAt.After(*currentObservedAt) {
+		if err := clearSeatMapCollectionStateTx(ctx, tx, snapshot.GetAuditoriumId()); err != nil {
+			return generation, err
+		}
+		return generation, nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE auditoriums SET current_seat_map_version_id = $2, capacity = $3,
+			updated_at = $4 WHERE id = $1
+	`, snapshot.GetAuditoriumId(), snapshot.GetId(), snapshot.GetCapacity(), observedAt); err != nil {
+		return 0, fmt.Errorf("activate seat map: %w", err)
+	}
+	if err := clearSeatMapCollectionStateTx(ctx, tx, snapshot.GetAuditoriumId()); err != nil {
+		return 0, err
+	}
+	return incrementCatalogGeneration(ctx, tx, observedAt)
+}
+
+func ensureSeatMapVersionTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	snapshot *seatmappb.Snapshot,
+	observedAt time.Time,
+) error {
 	var storedID string
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT id FROM seat_map_versions WHERE auditorium_id = $1 AND layout_hash = $2
 	`, snapshot.GetAuditoriumId(), snapshot.GetLayoutHash()).Scan(&storedID)
 	switch {
@@ -225,36 +257,79 @@ func putSeatMapTx(ctx context.Context, tx pgx.Tx, snapshot *seatmappb.Snapshot) 
 				id, auditorium_id, layout_hash, capacity, observed_at, first_seen_at, last_seen_at
 			) VALUES ($1, $2, $3, $4, $5, $5, $5)
 		`, snapshot.GetId(), snapshot.GetAuditoriumId(), snapshot.GetLayoutHash(), snapshot.GetCapacity(), observedAt); err != nil {
-			return 0, fmt.Errorf("insert seat-map version: %w", err)
+			return fmt.Errorf("insert seat-map version: %w", err)
 		}
 		if err := storeSeatMapLayout(ctx, tx, snapshot); err != nil {
-			return 0, err
+			return err
 		}
 	case err != nil:
-		return 0, fmt.Errorf("read seat-map version: %w", err)
+		return fmt.Errorf("read seat-map version: %w", err)
 	case storedID != snapshot.GetId():
-		return 0, errors.New("stored seat-map version identity is inconsistent")
+		return errors.New("stored seat-map version identity is inconsistent")
 	default:
 		if _, err := tx.Exec(ctx, `
 			UPDATE seat_map_versions SET last_seen_at = GREATEST(last_seen_at, $2) WHERE id = $1
 		`, storedID, observedAt); err != nil {
-			return 0, fmt.Errorf("refresh seat-map version: %w", err)
+			return fmt.Errorf("refresh seat-map version: %w", err)
 		}
 	}
-	if currentID == snapshot.GetId() {
-		_, err := tx.Exec(ctx, `UPDATE auditoriums SET seat_map_requested_at = NULL WHERE id = $1`, snapshot.GetAuditoriumId())
-		return generation, err
+	return nil
+}
+
+// promoteWaitingSeatMapCollectionsTx turns catalog discovery into runnable
+// work without requiring another Client request. Notifications are committed
+// with the catalog transaction, so active watchers cannot observe partial data.
+func promoteWaitingSeatMapCollectionsTx(ctx context.Context, tx pgx.Tx, now time.Time) error {
+	rows, err := tx.Query(ctx, `
+		WITH next_showtimes AS (
+			SELECT state.auditorium_id, candidate.id AS showtime_id
+			FROM seat_map_collection_states AS state
+			JOIN LATERAL (
+				SELECT showtime.id
+				FROM showtimes AS showtime
+				WHERE showtime.auditorium_id = state.auditorium_id
+					AND showtime.active
+					AND showtime.starts_at > $1
+					AND (
+						state.reason_code = 'showtime_not_discovered'
+						OR showtime.updated_at > state.updated_at
+					)
+				ORDER BY showtime.starts_at, showtime.id
+				LIMIT 1
+			) AS candidate ON true
+			WHERE state.state = 'waiting_for_showtime'
+		), promoted AS (
+			UPDATE seat_map_collection_states AS state
+			SET state = 'queued', showtime_id = next_showtimes.showtime_id,
+				reason_code = '', assignment_id = NULL, next_attempt_at = NULL,
+				updated_at = $1
+			FROM next_showtimes
+			WHERE state.auditorium_id = next_showtimes.auditorium_id
+			RETURNING state.auditorium_id
+		)
+		SELECT auditorium_id FROM promoted
+	`, now)
+	if err != nil {
+		return fmt.Errorf("promote waiting seat-map collections: %w", err)
 	}
-	if currentObservedAt != nil && !observedAt.After(*currentObservedAt) {
-		return generation, nil
+	defer rows.Close()
+	var auditoriumIDs []string
+	for rows.Next() {
+		var auditoriumID string
+		if err := rows.Scan(&auditoriumID); err != nil {
+			return fmt.Errorf("scan promoted seat-map collection: %w", err)
+		}
+		auditoriumIDs = append(auditoriumIDs, auditoriumID)
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE auditoriums SET current_seat_map_version_id = $2, capacity = $3,
-			seat_map_requested_at = NULL, updated_at = $4 WHERE id = $1
-	`, snapshot.GetAuditoriumId(), snapshot.GetId(), snapshot.GetCapacity(), observedAt); err != nil {
-		return 0, fmt.Errorf("activate seat map: %w", err)
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate promoted seat-map collections: %w", err)
 	}
-	return incrementCatalogGeneration(ctx, tx, observedAt)
+	for _, auditoriumID := range auditoriumIDs {
+		if err := notifySeatMapCollection(ctx, tx, auditoriumID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (store *Store) SeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Snapshot, error) {
@@ -286,15 +361,28 @@ func (store *Store) SeatMap(ctx context.Context, auditoriumID string) (*seatmapp
 }
 
 func (store *Store) RequestSeatMapBackfill(ctx context.Context, auditoriumID string, requestedAt time.Time) error {
-	tag, err := store.pool.Exec(ctx, `
-		UPDATE auditoriums SET seat_map_requested_at = COALESCE(seat_map_requested_at, $2)
-		WHERE id = $1 AND active
-	`, auditoriumID, requestedAt)
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return fmt.Errorf("request seat-map backfill: %w", err)
+		return fmt.Errorf("begin seat-map collection request: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	defer func() { _ = tx.Rollback(ctx) }()
+	var active bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM auditoriums WHERE id = $1 AND active
+		)
+	`, auditoriumID).Scan(&active); err != nil {
+		return fmt.Errorf("inspect seat-map collection auditorium: %w", err)
+	}
+	if !active {
 		return central.ErrNotFound
+	}
+	trigger := (&collectionpb.Trigger_builder{ClientRequest: (&collectionpb.ClientRequest_builder{}).Build()}).Build()
+	if err := queueSeatMapCollectionStateTx(ctx, tx, auditoriumID, trigger, 80, requestedAt, ""); err != nil {
+		return fmt.Errorf("request seat-map collection: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit seat-map collection request: %w", err)
 	}
 	return nil
 }
@@ -329,6 +417,10 @@ func upsertProvider(ctx context.Context, tx pgx.Tx, provider *catalogpb.Provider
 }
 
 func upsertTheater(ctx context.Context, tx pgx.Tx, theater *catalogpb.Theater, observedAt time.Time) (bool, error) {
+	sourceKey, ok := catalogdomain.TheaterSourceKey(theater)
+	if !ok {
+		return false, errors.New("catalog theater identity is not typed CGV")
+	}
 	return mutateCatalogEntity(ctx, tx, "theater", theater.GetId(), theater, observedAt,
 		`SELECT content_hash, updated_at FROM theaters WHERE id = $1 FOR UPDATE`, `
 		INSERT INTO theaters (id, provider_id, source_key, region, name, content_hash, first_seen_at, last_seen_at, updated_at)
@@ -337,10 +429,14 @@ func upsertTheater(ctx context.Context, tx pgx.Tx, theater *catalogpb.Theater, o
 			region = EXCLUDED.region, name = EXCLUDED.name, active = true, content_hash = EXCLUDED.content_hash,
 			last_seen_at = GREATEST(theaters.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN theaters.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.updated_at ELSE theaters.updated_at END
-		WHERE EXCLUDED.updated_at >= theaters.updated_at`, theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName())
+		WHERE EXCLUDED.updated_at >= theaters.updated_at`, theater.GetId(), theater.GetProviderId(), sourceKey, theater.GetRegion(), theater.GetName())
 }
 
 func upsertMovie(ctx context.Context, tx pgx.Tx, movie *catalogpb.Movie, displayOrder int, observedAt time.Time) (bool, error) {
+	sourceKey, ok := catalogdomain.MovieSourceKey(movie)
+	if !ok {
+		return false, errors.New("catalog movie identity is not typed CGV")
+	}
 	hashInput := proto.Clone(movie)
 	return mutateCatalogEntity(ctx, tx, "movie", movie.GetId(), hashInput, observedAt,
 		`SELECT content_hash, updated_at FROM movies WHERE id = $1 FOR UPDATE`, `
@@ -351,27 +447,30 @@ func upsertMovie(ctx context.Context, tx pgx.Tx, movie *catalogpb.Movie, display
 			active = true, content_hash = EXCLUDED.content_hash,
 			last_seen_at = GREATEST(movies.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN movies.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.updated_at ELSE movies.updated_at END
-		WHERE EXCLUDED.updated_at >= movies.updated_at`, movie.GetId(), movie.GetProviderId(), movie.GetSourceKey(), movie.GetTitle(), movie.GetPosterUrl(), displayOrder)
+		WHERE EXCLUDED.updated_at >= movies.updated_at`, movie.GetId(), movie.GetProviderId(), sourceKey, movie.GetTitle(), movie.GetPosterUrl(), displayOrder)
 }
 
 func upsertAuditorium(ctx context.Context, tx pgx.Tx, auditorium *catalogpb.Auditorium, observedAt time.Time) (bool, error) {
+	sourceKey, ok := catalogdomain.AuditoriumSourceKey(auditorium)
+	if !ok {
+		return false, errors.New("catalog auditorium identity is not typed CGV")
+	}
 	return mutateCatalogEntity(ctx, tx, "auditorium", auditorium.GetId(), auditorium, observedAt,
 		`SELECT content_hash, updated_at FROM auditoriums WHERE id = $1 FOR UPDATE`, `
-		INSERT INTO auditoriums (id, theater_id, source_key, name, screen_types, capacity, content_hash, first_seen_at, last_seen_at, updated_at, seat_map_requested_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $8, $8)
+		INSERT INTO auditoriums (id, theater_id, source_key, name, screen_types, capacity, content_hash, first_seen_at, last_seen_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $8)
 		ON CONFLICT (id) DO UPDATE SET theater_id = EXCLUDED.theater_id, source_key = EXCLUDED.source_key,
 			name = EXCLUDED.name, screen_types = EXCLUDED.screen_types, capacity = EXCLUDED.capacity, active = true,
-			seat_map_requested_at = CASE WHEN auditoriums.current_seat_map_version_id IS NULL
-				OR auditoriums.capacity IS DISTINCT FROM EXCLUDED.capacity
-				OR auditoriums.screen_types IS DISTINCT FROM EXCLUDED.screen_types
-				THEN COALESCE(auditoriums.seat_map_requested_at, EXCLUDED.seat_map_requested_at)
-				ELSE auditoriums.seat_map_requested_at END,
 			content_hash = EXCLUDED.content_hash, last_seen_at = GREATEST(auditoriums.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN auditoriums.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.updated_at ELSE auditoriums.updated_at END
-		WHERE EXCLUDED.updated_at >= auditoriums.updated_at`, auditorium.GetId(), auditorium.GetTheaterId(), auditorium.GetSourceKey(), auditorium.GetName(), auditorium.GetScreenTypes(), auditorium.GetCapacity())
+		WHERE EXCLUDED.updated_at >= auditoriums.updated_at`, auditorium.GetId(), auditorium.GetTheaterId(), sourceKey, auditorium.GetName(), auditorium.GetScreenTypes(), auditorium.GetCapacity())
 }
 
 func upsertShowtime(ctx context.Context, tx pgx.Tx, showtime *catalogpb.Showtime, observedAt time.Time) (bool, error) {
+	sourceKey, ok := catalogdomain.ShowtimeSourceKey(showtime)
+	if !ok || showtime.GetIdentity() == nil || showtime.GetIdentity().GetCgv() == nil {
+		return false, errors.New("catalog showtime identity is not typed CGV")
+	}
 	return mutateCatalogEntity(ctx, tx, "showtime", showtime.GetId(), showtime, observedAt,
 		`SELECT content_hash, updated_at FROM showtimes WHERE id = $1 FOR UPDATE`, `
 		INSERT INTO showtimes (id, provider_id, source_key, theater_id, movie_id, auditorium_id, schedule_date, starts_at, ends_at, content_hash, first_seen_at, last_seen_at, updated_at)
@@ -381,7 +480,7 @@ func upsertShowtime(ctx context.Context, tx pgx.Tx, showtime *catalogpb.Showtime
 			schedule_date = EXCLUDED.schedule_date, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, active = true, content_hash = EXCLUDED.content_hash,
 			last_seen_at = GREATEST(showtimes.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN showtimes.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.updated_at ELSE showtimes.updated_at END
-		WHERE EXCLUDED.updated_at >= showtimes.updated_at`, showtime.GetId(), showtime.GetProviderId(), showtime.GetSourceKey(), showtime.GetTheaterId(), showtime.GetMovie().GetId(), showtime.GetAuditorium().GetId(), localDateString(showtime.GetScheduleDate()), showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime())
+		WHERE EXCLUDED.updated_at >= showtimes.updated_at`, showtime.GetId(), showtime.GetProviderId(), sourceKey, showtime.GetTheaterId(), showtime.GetMovie().GetId(), showtime.GetAuditorium().GetId(), localDateString(showtime.GetIdentity().GetCgv().GetScheduleDate()), showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime())
 }
 
 func mutateCatalogEntity(ctx context.Context, tx pgx.Tx, entity, id string, value proto.Message, observedAt time.Time, stateQuery, mutationQuery string, arguments ...any) (bool, error) {
@@ -459,7 +558,9 @@ func (store *Store) listTheaters(ctx context.Context) ([]*catalogpb.Theater, err
 		value := &catalogpb.Theater{}
 		value.SetId(id)
 		value.SetProviderId(providerID)
-		value.SetSourceKey(sourceKey)
+		if !catalogdomain.SetTheaterSourceKey(value, sourceKey) {
+			return nil, fmt.Errorf("stored theater identity %q is not typed CGV", sourceKey)
+		}
 		value.SetRegion(region)
 		value.SetName(name)
 		result = append(result, value)
@@ -487,7 +588,9 @@ func (store *Store) listMovies(ctx context.Context) ([]*catalogpb.Movie, error) 
 		value := &catalogpb.Movie{}
 		value.SetId(id)
 		value.SetProviderId(providerID)
-		value.SetSourceKey(sourceKey)
+		if !catalogdomain.SetMovieSourceKey(value, sourceKey) {
+			return nil, fmt.Errorf("stored movie identity %q is not typed CGV", sourceKey)
+		}
 		value.SetTitle(title)
 		value.SetPosterUrl(posterURL)
 		result = append(result, value)
@@ -512,7 +615,9 @@ func (store *Store) listAuditoriums(ctx context.Context) ([]*catalogpb.Auditoriu
 		value := catalogpb.Auditorium_builder{ScreenTypes: screenTypes}.Build()
 		value.SetId(id)
 		value.SetTheaterId(theaterID)
-		value.SetSourceKey(sourceKey)
+		if !catalogdomain.SetAuditoriumSourceKey(value, sourceKey) {
+			return nil, fmt.Errorf("stored auditorium identity %q is not typed CGV", sourceKey)
+		}
 		value.SetName(name)
 		value.SetCapacity(capacity)
 		value.SetCurrentLayoutHash(layoutHash)
@@ -547,29 +652,33 @@ func (store *Store) listShowtimes(ctx context.Context) ([]*catalogpb.Showtime, e
 		if err := rows.Scan(&id, &providerID, &sourceKey, &theaterID, &movieID, &movieProviderID, &movieSourceKey, &movieTitle, &moviePosterURL, &auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName, &screenTypes, &capacity, &layoutHash, &scheduleDate, &startsAt, &endsAt); err != nil {
 			return nil, err
 		}
-		parsedScheduleDate, err := time.Parse(time.DateOnly, scheduleDate)
-		if err != nil {
+		if _, err := time.Parse(time.DateOnly, scheduleDate); err != nil {
 			return nil, fmt.Errorf("parse catalog showtime schedule date: %w", err)
 		}
 		movie := &catalogpb.Movie{}
 		movie.SetId(movieID)
 		movie.SetProviderId(movieProviderID)
-		movie.SetSourceKey(movieSourceKey)
+		if !catalogdomain.SetMovieSourceKey(movie, movieSourceKey) {
+			return nil, fmt.Errorf("stored movie identity %q is not typed CGV", movieSourceKey)
+		}
 		movie.SetTitle(movieTitle)
 		movie.SetPosterUrl(moviePosterURL)
 		auditorium := catalogpb.Auditorium_builder{ScreenTypes: screenTypes}.Build()
 		auditorium.SetId(auditoriumID)
 		auditorium.SetTheaterId(auditoriumTheaterID)
-		auditorium.SetSourceKey(auditoriumSourceKey)
+		if !catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSourceKey) {
+			return nil, fmt.Errorf("stored auditorium identity %q is not typed CGV", auditoriumSourceKey)
+		}
 		auditorium.SetName(auditoriumName)
 		auditorium.SetCapacity(capacity)
 		auditorium.SetCurrentLayoutHash(layoutHash)
 		value := catalogpb.Showtime_builder{Movie: movie, Auditorium: auditorium, StartsAt: timestamppb.New(startsAt), EndsAt: timestamppb.New(endsAt)}.Build()
 		value.SetId(id)
 		value.SetProviderId(providerID)
-		value.SetSourceKey(sourceKey)
+		if !catalogdomain.SetShowtimeSourceKey(value, sourceKey) {
+			return nil, fmt.Errorf("stored showtime identity %q is not typed CGV", sourceKey)
+		}
 		value.SetTheaterId(theaterID)
-		value.SetScheduleDate(catalogLocalDate(parsedScheduleDate))
 		result = append(result, value)
 	}
 	return result, rows.Err()

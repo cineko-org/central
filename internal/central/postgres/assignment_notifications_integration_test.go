@@ -8,9 +8,9 @@ import (
 
 	"github.com/cineko-org/central/internal/central/reconcile"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestPostgresAssignmentNotificationWakesWaitingProbe(t *testing.T) {
@@ -54,7 +54,7 @@ func TestPostgresAssignmentNotificationWakesWaitingProbe(t *testing.T) {
 	theater := &catalogpb.Theater{}
 	theater.SetId(catalogdomain.CatalogID(catalogdomain.ProviderCGV, "theater", "0056"))
 	theater.SetProviderId(catalogdomain.ProviderCGV)
-	theater.SetSourceKey("0056")
+	catalogdomain.SetTheaterSourceKey(theater, "0056")
 	theater.SetRegion("서울")
 	theater.SetName("용산아이파크몰")
 	schedule := &observationpb.ScheduleTask{}

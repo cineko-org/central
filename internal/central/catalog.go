@@ -8,9 +8,12 @@ import (
 	"time"
 
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -115,19 +118,110 @@ func (service *CatalogService) RequestSeatMapBackfill(ctx context.Context, audit
 	return service.repository.RequestSeatMapBackfill(ctx, auditoriumID, service.clock().UTC())
 }
 
-// ResolveSeatMap returns the current layout or a typed capture state.
-func (service *CatalogService) ResolveSeatMap(ctx context.Context, auditoriumID string) (*seatmappb.Resolution, error) {
+type seatMapStateReader interface {
+	SeatMapCollectionState(context.Context, string) (*collectionpb.State, error)
+}
+
+type seatMapStateWatcher interface {
+	WatchSeatMapCollection(context.Context, string, func() error) error
+}
+
+func (service *CatalogService) resolveSeatMap(ctx context.Context, auditoriumID string, enqueue bool) (*seatmappb.Resolution, error) {
+	auditoriumID = strings.TrimSpace(auditoriumID)
+	if auditoriumID == "" {
+		return nil, fmt.Errorf("%w: auditorium id is required", ErrInvalid)
+	}
 	snapshot, err := service.SeatMap(ctx, auditoriumID)
 	if err == nil {
-		return seatmappb.Resolution_builder{Ready: seatmappb.Ready_builder{Snapshot: snapshot}.Build()}.Build(), nil
+		state := &collectionpb.State{}
+		if reader, ok := service.repository.(seatMapStateReader); ok {
+			state, err = reader.SeatMapCollectionState(ctx, auditoriumID)
+			if errors.Is(err, ErrNotFound) {
+				state = &collectionpb.State{}
+				state.SetIdle(&collectionpb.Idle{})
+				err = nil
+			}
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			state.SetIdle(&collectionpb.Idle{})
+		}
+		return seatmappb.Resolution_builder{Snapshot: snapshot, State: state}.Build(), nil
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	if err := service.RequestSeatMapBackfill(ctx, auditoriumID); err != nil {
+	if enqueue {
+		if err := service.RequestSeatMapBackfill(ctx, auditoriumID); err != nil {
+			return nil, err
+		}
+	}
+	if reader, ok := service.repository.(seatMapStateReader); ok {
+		state, stateErr := reader.SeatMapCollectionState(ctx, auditoriumID)
+		if stateErr == nil {
+			return seatmappb.Resolution_builder{State: state}.Build(), nil
+		}
+		if !errors.Is(stateErr, ErrNotFound) {
+			return nil, stateErr
+		}
+		if !enqueue {
+			return nil, ErrNotFound
+		}
+	}
+	state := &collectionpb.State{}
+	state.SetQueued((&collectionpb.Queued_builder{
+		QueuedAt: timestamppb.New(service.clock().UTC()),
+		Trigger:  (&collectionpb.Trigger_builder{ClientRequest: (&collectionpb.ClientRequest_builder{}).Build()}).Build(),
+	}).Build())
+	return seatmappb.Resolution_builder{State: state}.Build(), nil
+}
+
+// ResolveSeatMap returns the current layout or a typed collection state.
+func (service *CatalogService) ResolveSeatMap(ctx context.Context, request *servicepb.ResolveSeatMapRequest) (*servicepb.ResolveSeatMapResponse, error) {
+	if request == nil {
+		return nil, fmt.Errorf("%w: resolve seat-map request is required", ErrInvalid)
+	}
+	resolution, err := service.resolveSeatMap(ctx, request.GetAuditoriumId(), true)
+	if err != nil {
 		return nil, err
 	}
-	queued := seatmappb.CaptureQueued_builder{NextCheckAt: timestamppb.New(service.clock().UTC().Add(2 * time.Second))}.Build()
-	queued.SetTaskId(auditoriumID)
-	return seatmappb.Resolution_builder{CaptureQueued: queued}.Build(), nil
+	return servicepb.ResolveSeatMapResponse_builder{Resolution: resolution}.Build(), nil
+}
+
+// WatchSeatMap emits one initial resolution and then waits only on committed
+// PostgreSQL state notifications. Identical resolutions are suppressed.
+func (service *CatalogService) WatchSeatMap(
+	ctx context.Context,
+	request *servicepb.WatchSeatMapRequest,
+	send func(*servicepb.WatchSeatMapResponse) error,
+) error {
+	if request == nil || send == nil {
+		return fmt.Errorf("%w: watch seat-map request and sender are required", ErrInvalid)
+	}
+	watcher, ok := service.repository.(seatMapStateWatcher)
+	if !ok {
+		return errors.New("seat-map watch is unavailable")
+	}
+	auditoriumID := strings.TrimSpace(request.GetAuditoriumId())
+	if auditoriumID == "" {
+		return fmt.Errorf("%w: auditorium id is required", ErrInvalid)
+	}
+	var resolution *seatmappb.Resolution
+	initial := true
+	return watcher.WatchSeatMapCollection(ctx, auditoriumID, func() error {
+		next, err := service.resolveSeatMap(ctx, auditoriumID, initial)
+		if errors.Is(err, ErrNotFound) && !initial {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !initial && proto.Equal(resolution, next) {
+			return nil
+		}
+		initial = false
+		resolution = next
+		return send(servicepb.WatchSeatMapResponse_builder{Resolution: resolution}.Build())
+	})
 }

@@ -22,7 +22,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 )
 
 const (

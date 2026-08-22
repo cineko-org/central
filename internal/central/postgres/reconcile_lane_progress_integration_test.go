@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central/reconcile"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -25,7 +26,7 @@ func TestPostgresDuePoliciesIgnoreUnsuccessfulLaneProgress(t *testing.T) {
 	cleanupReconcileRows(t, store, []string{policyID}, nil)
 	t.Cleanup(func() { cleanupReconcileRows(t, store, []string{policyID}, nil) })
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	theaterID := seedIntegrationPolicy(t, store, policyID, "theater_lane_progress", now.Add(-time.Minute))
+	theaterID := seedIntegrationPolicy(t, store, policyID, "0113", now.Add(-time.Minute))
 
 	insertLaneProgressAssignment(t, store, laneProgressAssignment{
 		ID:         "assignment_lane_progress_hot_completed_old",
@@ -132,7 +133,7 @@ func TestPostgresPreemptQueuedBaselineMakesFuturePolicyDue(t *testing.T) {
 	cleanupReconcileRows(t, store, []string{policyID}, nil)
 	t.Cleanup(func() { cleanupReconcileRows(t, store, []string{policyID}, nil) })
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	theaterID := seedIntegrationPolicy(t, store, policyID, "theater_preempt_future", now.Add(time.Hour))
+	theaterID := seedIntegrationPolicy(t, store, policyID, "0114", now.Add(time.Hour))
 	insertLaneProgressAssignment(t, store, laneProgressAssignment{
 		ID:         assignmentID,
 		PolicyID:   policyID,
@@ -185,7 +186,7 @@ func insertLaneProgressAssignment(t *testing.T, store *Store, assignment lanePro
 	theater := &catalogpb.Theater{}
 	theater.SetId(assignment.TheaterID)
 	theater.SetProviderId("cgv")
-	theater.SetSourceKey("lane-progress")
+	catalogdomain.SetTheaterSourceKey(theater, "0056")
 	theater.SetRegion("서울")
 	theater.SetName("레인 진행 시험관")
 	taskData, err := protojson.Marshal(storeIntegrationScheduleTask(

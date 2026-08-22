@@ -18,7 +18,7 @@ import (
 	"github.com/cineko-org/central/internal/central/reconcile"
 	"github.com/cineko-org/central/internal/support/numeric"
 	"github.com/cineko-org/central/internal/telemetry"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
 
 	"golang.org/x/sync/errgroup"
 )

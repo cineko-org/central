@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"

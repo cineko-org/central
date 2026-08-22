@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 	"golang.org/x/mod/semver"
 )
 

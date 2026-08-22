@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	"buf.build/go/protovalidate"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -46,7 +46,13 @@ func NormalizeSnapshot(snapshot *catalogpb.CatalogSnapshot) error {
 	if err != nil {
 		return err
 	}
-	return normalizeShowtimes(snapshot, theaters, movies, auditoriums, seen)
+	if err := normalizeShowtimes(snapshot, theaters, movies, auditoriums, seen); err != nil {
+		return err
+	}
+	if err := protovalidate.Validate(snapshot); err != nil {
+		return fmt.Errorf("validate normalized catalog snapshot: %w", err)
+	}
+	return nil
 }
 
 // NormalizeSeatMap canonicalizes a layout and derives its stable snapshot identity.
@@ -83,6 +89,9 @@ func NormalizeSeatMap(snapshot *seatmappb.Snapshot, now time.Time) error {
 	if claimedID != "" && claimedID != snapshot.GetId() {
 		return errors.New("seat map snapshot id is not canonical")
 	}
+	if err := protovalidate.Validate(snapshot); err != nil {
+		return fmt.Errorf("validate normalized seat map snapshot: %w", err)
+	}
 	return nil
 }
 
@@ -93,11 +102,14 @@ func normalizeTheaters(snapshot *catalogpb.CatalogSnapshot, seen map[string]stru
 			return nil, errors.New("catalog theater is required")
 		}
 		theater.SetProviderId(strings.TrimSpace(theater.GetProviderId()))
-		theater.SetSourceKey(strings.TrimSpace(theater.GetSourceKey()))
 		theater.SetRegion(strings.TrimSpace(theater.GetRegion()))
 		theater.SetName(strings.TrimSpace(theater.GetName()))
-		theater.SetId(CatalogID(snapshot.GetProvider().GetId(), "theater", theater.GetSourceKey()))
-		if theater.GetProviderId() != snapshot.GetProvider().GetId() || theater.GetSourceKey() == "" || theater.GetRegion() == "" || theater.GetName() == "" {
+		sourceKey, identityOK := TheaterSourceKey(theater)
+		if identityOK {
+			theater.GetIdentity().GetCgv().SetSiteNo(sourceKey)
+		}
+		theater.SetId(CatalogID(snapshot.GetProvider().GetId(), "theater", sourceKey))
+		if theater.GetProviderId() != snapshot.GetProvider().GetId() || !identityOK || theater.GetRegion() == "" || theater.GetName() == "" {
 			return nil, errors.New("catalog theater is incomplete")
 		}
 		if err := rememberID(seen, theater.GetId()); err != nil {
@@ -115,11 +127,14 @@ func normalizeMovies(snapshot *catalogpb.CatalogSnapshot, seen map[string]struct
 			return nil, errors.New("catalog movie is required")
 		}
 		movie.SetProviderId(strings.TrimSpace(movie.GetProviderId()))
-		movie.SetSourceKey(strings.TrimSpace(movie.GetSourceKey()))
 		movie.SetTitle(strings.TrimSpace(movie.GetTitle()))
 		movie.SetPosterUrl(strings.TrimSpace(movie.GetPosterUrl()))
-		movie.SetId(CatalogID(snapshot.GetProvider().GetId(), "movie", movie.GetSourceKey()))
-		if movie.GetProviderId() != snapshot.GetProvider().GetId() || movie.GetSourceKey() == "" || movie.GetTitle() == "" {
+		sourceKey, identityOK := MovieSourceKey(movie)
+		if identityOK {
+			movie.GetIdentity().GetCgv().SetMovieNo(sourceKey)
+		}
+		movie.SetId(CatalogID(snapshot.GetProvider().GetId(), "movie", sourceKey))
+		if movie.GetProviderId() != snapshot.GetProvider().GetId() || !identityOK || movie.GetTitle() == "" {
 			return nil, errors.New("catalog movie is incomplete")
 		}
 		if err := rememberID(seen, movie.GetId()); err != nil {
@@ -137,11 +152,18 @@ func normalizeAuditoriums(snapshot *catalogpb.CatalogSnapshot, theaters map[stri
 			return nil, errors.New("catalog auditorium is required")
 		}
 		auditorium.SetTheaterId(strings.TrimSpace(auditorium.GetTheaterId()))
-		auditorium.SetSourceKey(strings.TrimSpace(auditorium.GetSourceKey()))
 		auditorium.SetName(strings.TrimSpace(auditorium.GetName()))
 		auditorium.SetScreenTypes(normalizedStrings(auditorium.GetScreenTypes()))
-		auditorium.SetId(CatalogID(snapshot.GetProvider().GetId(), "auditorium", auditorium.GetSourceKey()))
-		if theaters[auditorium.GetTheaterId()] == nil || auditorium.GetSourceKey() == "" || auditorium.GetName() == "" || auditorium.GetCapacity() < 0 {
+		sourceKey, identityOK := AuditoriumSourceKey(auditorium)
+		identity := auditorium.GetIdentity().GetCgv()
+		if identityOK {
+			parts := strings.Split(sourceKey, "/")
+			identity.SetSiteNo(parts[0])
+			identity.SetScreenNo(parts[1])
+		}
+		auditorium.SetId(CatalogID(snapshot.GetProvider().GetId(), "auditorium", sourceKey))
+		theater := theaters[auditorium.GetTheaterId()]
+		if theater == nil || !identityOK || identity.GetSiteNo() != theater.GetIdentity().GetCgv().GetSiteNo() || auditorium.GetName() == "" || auditorium.GetCapacity() < 0 {
 			return nil, errors.New("catalog auditorium is incomplete")
 		}
 		if err := rememberID(seen, auditorium.GetId()); err != nil {
@@ -159,13 +181,21 @@ func normalizeShowtimes(snapshot *catalogpb.CatalogSnapshot, theaters map[string
 			return errors.New("catalog showtime is required")
 		}
 		showtime.SetProviderId(strings.TrimSpace(showtime.GetProviderId()))
-		showtime.SetSourceKey(strings.TrimSpace(showtime.GetSourceKey()))
 		showtime.SetTheaterId(strings.TrimSpace(showtime.GetTheaterId()))
-		showtime.SetId(CatalogID(snapshot.GetProvider().GetId(), "showtime", showtime.GetSourceKey()))
+		sourceKey, identityOK := ShowtimeSourceKey(showtime)
+		identity := showtime.GetIdentity().GetCgv()
+		if identityOK {
+			parts := strings.Split(sourceKey, "/")
+			identity.SetSiteNo(parts[0])
+			identity.SetScreenNo(parts[2])
+			identity.SetSequence(parts[3])
+		}
+		showtime.SetId(CatalogID(snapshot.GetProvider().GetId(), "showtime", sourceKey))
+		theater := theaters[showtime.GetTheaterId()]
 		movie := movies[strings.TrimSpace(showtime.GetMovie().GetId())]
 		auditorium := auditoriums[strings.TrimSpace(showtime.GetAuditorium().GetId())]
 		startsAt, endsAt := showtime.GetStartsAt(), showtime.GetEndsAt()
-		if showtime.GetProviderId() != snapshot.GetProvider().GetId() || showtime.GetSourceKey() == "" || theaters[showtime.GetTheaterId()] == nil || movie == nil || auditorium == nil || auditorium.GetTheaterId() != showtime.GetTheaterId() || !validLocalDate(showtime.GetScheduleDate()) || startsAt == nil || endsAt == nil || startsAt.CheckValid() != nil || endsAt.CheckValid() != nil || !endsAt.AsTime().After(startsAt.AsTime()) {
+		if showtime.GetProviderId() != snapshot.GetProvider().GetId() || !identityOK || theater == nil || movie == nil || auditorium == nil || auditorium.GetTheaterId() != showtime.GetTheaterId() || identity.GetSiteNo() != theater.GetIdentity().GetCgv().GetSiteNo() || identity.GetSiteNo() != auditorium.GetIdentity().GetCgv().GetSiteNo() || identity.GetScreenNo() != auditorium.GetIdentity().GetCgv().GetScreenNo() || startsAt == nil || endsAt == nil || startsAt.CheckValid() != nil || endsAt.CheckValid() != nil || !endsAt.AsTime().After(startsAt.AsTime()) {
 			return errors.New("catalog showtime is incomplete")
 		}
 		showtime.SetMovie(movie)
@@ -175,16 +205,6 @@ func normalizeShowtimes(snapshot *catalogpb.CatalogSnapshot, theaters map[string
 		}
 	}
 	return nil
-}
-
-// validLocalDate rejects normalized-looking values that time.Date would roll
-// into a different civil day.
-func validLocalDate(value *commonpb.LocalDate) bool {
-	if value == nil || value.GetYear() < 1 || value.GetMonth() < 1 || value.GetMonth() > 12 || value.GetDay() < 1 || value.GetDay() > 31 {
-		return false
-	}
-	date := time.Date(int(value.GetYear()), time.Month(value.GetMonth()), int(value.GetDay()), 0, 0, 0, 0, time.UTC)
-	return date.Year() == int(value.GetYear()) && date.Month() == time.Month(value.GetMonth()) && date.Day() == int(value.GetDay())
 }
 
 //nolint:gocyclo,cyclop // Seat geometry validation keeps every contract invariant visible in one ordered pass.

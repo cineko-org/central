@@ -8,9 +8,9 @@ package client
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	catalog "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	common "github.com/cineko-org/contracts/gen/go/cineko/common"
-	_ "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalog "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	common "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	_ "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -2609,7 +2609,7 @@ const file_cineko_client_webui_proto_rawDesc = "" +
 	"\rrefund_amount\x18\x03 \x01(\tR\frefundAmount\"?\n" +
 	"\x18WebUIAppEventUserRequest\x12#\n" +
 	"\auser_id\x18\x01 \x01(\tB\n" +
-	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x06userIdB=Z;github.com/cineko-org/contracts/gen/go/cineko/client;clientb\beditionsp\xe9\a"
+	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\x06userIdB@Z>github.com/cineko-org/contracts/v3/gen/go/cineko/client;clientb\beditionsp\xe9\a"
 
 var file_cineko_client_webui_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_cineko_client_webui_proto_goTypes = []any{

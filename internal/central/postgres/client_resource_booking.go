@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -98,13 +99,17 @@ func loadClientReservationShowtime(
 	movie := &catalogpb.Movie{}
 	movie.SetId(movieID)
 	movie.SetProviderId(movieProviderID)
-	movie.SetSourceKey(movieSourceKey)
+	if !catalogdomain.SetMovieSourceKey(movie, movieSourceKey) {
+		return nil, fmt.Errorf("stored movie identity %q is not typed CGV", movieSourceKey)
+	}
 	movie.SetTitle(movieTitle)
 	movie.SetPosterUrl(moviePosterURL)
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(auditoriumTheaterID)
-	auditorium.SetSourceKey(auditoriumSourceKey)
+	if !catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSourceKey) {
+		return nil, fmt.Errorf("stored auditorium identity %q is not typed CGV", auditoriumSourceKey)
+	}
 	auditorium.SetName(auditoriumName)
 	auditorium.SetScreenTypes(screenTypes)
 	auditorium.SetCapacity(auditoriumCapacity)
@@ -112,11 +117,12 @@ func loadClientReservationShowtime(
 	showtime := &catalogpb.Showtime{}
 	showtime.SetId(showtimeID)
 	showtime.SetProviderId(providerID)
-	showtime.SetSourceKey(sourceKey)
+	if !catalogdomain.SetShowtimeSourceKey(showtime, sourceKey) {
+		return nil, fmt.Errorf("stored showtime identity %q is not typed CGV", sourceKey)
+	}
 	showtime.SetTheaterId(theaterID)
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
-	showtime.SetScheduleDate(catalogLocalDate(scheduleDate))
 	showtime.SetStartsAt(timestamppb.New(startsAt))
 	showtime.SetEndsAt(timestamppb.New(endsAt))
 	showtime.SetAvailableSeats(availableSeats)
@@ -181,7 +187,19 @@ func writeClientReservationShowtime(
 ) error {
 	movie := showtime.GetMovie()
 	auditorium := showtime.GetAuditorium()
-	scheduleDate, err := clientLocalDateString(showtime.GetScheduleDate())
+	showtimeSourceKey, ok := catalogdomain.ShowtimeSourceKey(showtime)
+	if !ok {
+		return fmt.Errorf("reservation showtime identity is not typed CGV")
+	}
+	movieSourceKey, ok := catalogdomain.MovieSourceKey(movie)
+	if !ok {
+		return fmt.Errorf("reservation movie identity is not typed CGV")
+	}
+	auditoriumSourceKey, ok := catalogdomain.AuditoriumSourceKey(auditorium)
+	if !ok {
+		return fmt.Errorf("reservation auditorium identity is not typed CGV")
+	}
+	scheduleDate, err := clientLocalDateString(showtime.GetIdentity().GetCgv().GetScheduleDate())
 	if err != nil {
 		return fmt.Errorf("write Client reservation schedule date: %w", err)
 	}
@@ -215,9 +233,9 @@ func writeClientReservationShowtime(
 			available_seats = EXCLUDED.available_seats,
 			capacity = EXCLUDED.capacity,
 			sold_out = EXCLUDED.sold_out
-	`, userID, reservationID, showtime.GetId(), showtime.GetProviderId(), showtime.GetSourceKey(),
-		showtime.GetTheaterId(), movie.GetId(), movie.GetProviderId(), movie.GetSourceKey(), movie.GetTitle(),
-		movie.GetPosterUrl(), auditorium.GetId(), auditorium.GetTheaterId(), auditorium.GetSourceKey(),
+	`, userID, reservationID, showtime.GetId(), showtime.GetProviderId(), showtimeSourceKey,
+		showtime.GetTheaterId(), movie.GetId(), movie.GetProviderId(), movieSourceKey, movie.GetTitle(),
+		movie.GetPosterUrl(), auditorium.GetId(), auditorium.GetTheaterId(), auditoriumSourceKey,
 		auditorium.GetName(), auditorium.GetCapacity(), auditorium.GetCurrentLayoutHash(),
 		scheduleDate, showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime(), showtime.GetAvailableSeats(),
 		showtime.GetCapacity(), showtime.GetSoldOut()); err != nil {

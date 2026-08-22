@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

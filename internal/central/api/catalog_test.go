@@ -3,16 +3,19 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -79,14 +82,14 @@ func TestClientCatalogAPI(t *testing.T) {
 	backfill := request(t, server.Handler(), http.MethodPost,
 		"/v1/catalog/auditoriums/"+auditoriumID+"/seat-map:resolve", nil, getHeaders)
 	if backfill.Code != http.StatusOK || repository.requestedSeatMap != "" ||
-		!strings.Contains(backfill.Body.String(), `"ready"`) {
+		!strings.Contains(backfill.Body.String(), `"snapshot"`) {
 		t.Fatalf("request seat map = %d, %s; requested %q", backfill.Code, backfill.Body.String(), repository.requestedSeatMap)
 	}
 	repository.seatMap = nil
 	waiting := request(t, server.Handler(), http.MethodPost,
 		"/v1/catalog/auditoriums/"+auditoriumID+"/seat-map:resolve", nil, getHeaders)
 	if waiting.Code != http.StatusOK || repository.requestedSeatMap != auditoriumID ||
-		!strings.Contains(waiting.Body.String(), `"captureQueued"`) {
+		!strings.Contains(waiting.Body.String(), `"queued"`) {
 		t.Fatalf("resolve missing seat map = %d, %s; requested %q", waiting.Code, waiting.Body.String(), repository.requestedSeatMap)
 	}
 	retiredDirectWrite := request(t, server.Handler(), http.MethodPut,
@@ -96,27 +99,83 @@ func TestClientCatalogAPI(t *testing.T) {
 	}
 }
 
+func TestClientSeatMapWatchUsesSSEFramingAndSuppressesDuplicates(t *testing.T) {
+	probeService, err := central.NewService(&apiRepository{}, central.Config{EnrollmentToken: "enroll"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := central.ClientPrincipal{UserID: "user", SessionID: "session"}
+	base := &apiCatalogRepository{
+		apiResourceRepository: &apiResourceRepository{principal: principal, resources: make(map[string]*clientpb.Resource)},
+	}
+	queued := &collectionpb.State{}
+	queued.SetQueued((&collectionpb.Queued_builder{
+		QueuedAt: timestamppb.New(time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC)),
+		Trigger:  (&collectionpb.Trigger_builder{ClientRequest: (&collectionpb.ClientRequest_builder{}).Build()}).Build(),
+	}).Build())
+	collecting := &collectionpb.State{}
+	assignmentID := "assignment-1"
+	collecting.SetCollecting((&collectionpb.Collecting_builder{
+		AssignmentId: &assignmentID,
+		StartedAt:    timestamppb.New(time.Date(2026, 8, 23, 1, 0, 1, 0, time.UTC)),
+	}).Build())
+	repository := &apiCatalogWatchRepository{
+		apiCatalogRepository: base,
+		states:               []*collectionpb.State{queued, proto.CloneOf(queued), collecting},
+	}
+	clients, err := central.NewClientService(repository, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogService, err := central.NewCatalogService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(probeService, WithClientService(clients), WithCatalogService(catalogService))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	writer := newCancelResponseWriter(cancel, `"collecting"`)
+	request := httptest.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"/v1/catalog/auditoriums/auditorium/seat-map:watch",
+		nil,
+	)
+	request.Header.Set("Authorization", "Bearer client-session")
+	server.Handler().ServeHTTP(writer, request)
+	body := writer.body.String()
+	if writer.status != http.StatusOK || writer.header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("seat-map watch response = %d, headers=%v, body=%q", writer.status, writer.header, body)
+	}
+	if strings.Count(body, "event: cineko.seat-map\n") != 2 ||
+		strings.Count(body, "data: {") != 2 || strings.Contains(body, `\\n`) {
+		t.Fatalf("seat-map SSE framing = %q", body)
+	}
+}
+
 func apiCatalogSnapshot(observedAt time.Time) *catalogpb.CatalogSnapshot {
 	provider := &catalogpb.Provider{}
 	provider.SetId(catalogdomain.ProviderCGV)
 	provider.SetName("CGV")
-	theaterSource := "서울/용산아이파크몰"
+	theaterSource := "0056"
 	theater := &catalogpb.Theater{}
 	theater.SetId(catalogdomain.CatalogID(provider.GetId(), "theater", theaterSource))
 	theater.SetProviderId(provider.GetId())
-	theater.SetSourceKey(theaterSource)
+	catalogdomain.SetTheaterSourceKey(theater, theaterSource)
 	theater.SetRegion("서울")
 	theater.SetName("용산아이파크몰")
 	movie := &catalogpb.Movie{}
-	movie.SetId(catalogdomain.CatalogID(provider.GetId(), "movie", "테스트 영화"))
+	movie.SetId(catalogdomain.CatalogID(provider.GetId(), "movie", "00001234"))
 	movie.SetProviderId(provider.GetId())
-	movie.SetSourceKey("테스트 영화")
+	catalogdomain.SetMovieSourceKey(movie, "00001234")
 	movie.SetTitle("테스트 영화")
-	auditoriumSource := theaterSource + "/IMAX관"
+	auditoriumSource := theaterSource + "/0007"
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(catalogdomain.CatalogID(provider.GetId(), "auditorium", auditoriumSource))
 	auditorium.SetTheaterId(theater.GetId())
-	auditorium.SetSourceKey(auditoriumSource)
+	catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSource)
 	auditorium.SetName("IMAX관")
 	auditorium.SetCapacity(624)
 	return catalogpb.CatalogSnapshot_builder{
@@ -133,6 +192,37 @@ type apiCatalogRepository struct {
 	requestedSeatMap string
 	generation       int64
 	refresh          *adminpb.CatalogRefreshStatus
+}
+
+type apiCatalogWatchRepository struct {
+	*apiCatalogRepository
+	states  []*collectionpb.State
+	current *collectionpb.State
+}
+
+func (repository *apiCatalogWatchRepository) SeatMapCollectionState(
+	context.Context,
+	string,
+) (*collectionpb.State, error) {
+	if repository.current == nil {
+		return nil, central.ErrNotFound
+	}
+	return proto.CloneOf(repository.current), nil
+}
+
+func (repository *apiCatalogWatchRepository) WatchSeatMapCollection(
+	ctx context.Context,
+	_ string,
+	observe func() error,
+) error {
+	for _, state := range repository.states {
+		repository.current = proto.CloneOf(state)
+		if err := observe(); err != nil {
+			return err
+		}
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (repository *apiCatalogRepository) AuthorizeCatalogWrite(

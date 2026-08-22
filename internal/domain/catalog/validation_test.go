@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/support/numeric"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -81,18 +81,36 @@ func TestNormalizeSnapshotRejectsInvalidEntities(t *testing.T) {
 		"auditorium": func(snapshot *catalogpb.CatalogSnapshot) {
 			snapshot.GetAuditoriums()[0].SetName(" ")
 		},
-		"showtime": func(snapshot *catalogpb.CatalogSnapshot) { snapshot.GetShowtimes()[0].SetSourceKey(" ") },
+		"showtime": func(snapshot *catalogpb.CatalogSnapshot) { snapshot.GetShowtimes()[0].SetIdentity(nil) },
 		"unknown auditorium theater": func(snapshot *catalogpb.CatalogSnapshot) {
 			snapshot.GetAuditoriums()[0].SetTheaterId("unknown")
+		},
+		"auditorium site mismatch": func(snapshot *catalogpb.CatalogSnapshot) {
+			identity := snapshot.GetAuditoriums()[0].GetIdentity().GetCgv()
+			identity.SetSiteNo("0043")
 		},
 		"unknown showtime movie": func(snapshot *catalogpb.CatalogSnapshot) {
 			snapshot.GetShowtimes()[0].GetMovie().SetId("unknown")
 		},
+		"showtime site mismatch": func(snapshot *catalogpb.CatalogSnapshot) {
+			identity := snapshot.GetShowtimes()[0].GetIdentity().GetCgv()
+			identity.SetSiteNo("0043")
+		},
+		"showtime screen mismatch": func(snapshot *catalogpb.CatalogSnapshot) {
+			identity := snapshot.GetShowtimes()[0].GetIdentity().GetCgv()
+			identity.SetScreenNo("0010")
+		},
+		"nonnumeric provider identity": func(snapshot *catalogpb.CatalogSnapshot) {
+			snapshot.GetMovies()[0].GetIdentity().GetCgv().SetMovieNo("movie")
+		},
 		"cross-theater showtime": func(snapshot *catalogpb.CatalogSnapshot) {
 			other := proto.CloneOf(snapshot.GetTheaters()[0])
-			other.SetSourceKey("0043")
+			if !SetTheaterSourceKey(other, "0043") {
+				t.Fatalf("set typed theater identity")
+			}
 			other.SetName("영등포")
-			other.SetId(CatalogID(other.GetProviderId(), "theater", other.GetSourceKey()))
+			otherKey, _ := TheaterSourceKey(other)
+			other.SetId(CatalogID(other.GetProviderId(), "theater", otherKey))
 			snapshot.SetTheaters(append(snapshot.GetTheaters(), other))
 			snapshot.GetShowtimes()[0].SetTheaterId(other.GetId())
 		},
@@ -363,24 +381,27 @@ func catalogSnapshotFixture(observedAt time.Time) *catalogpb.CatalogSnapshot {
 	provider.SetName("CGV")
 	theater := &catalogpb.Theater{}
 	theater.SetProviderId(provider.GetId())
-	theater.SetSourceKey("0056")
+	SetTheaterSourceKey(theater, "0056")
 	theater.SetRegion("서울")
 	theater.SetName("용산아이파크몰")
-	theater.SetId(CatalogID(provider.GetId(), "theater", theater.GetSourceKey()))
+	theaterKey, _ := TheaterSourceKey(theater)
+	theater.SetId(CatalogID(provider.GetId(), "theater", theaterKey))
 	movie := &catalogpb.Movie{}
 	movie.SetProviderId(provider.GetId())
-	movie.SetSourceKey("00001234")
+	SetMovieSourceKey(movie, "00001234")
 	movie.SetTitle("테스트 영화")
-	movie.SetId(CatalogID(provider.GetId(), "movie", movie.GetSourceKey()))
+	movieKey, _ := MovieSourceKey(movie)
+	movie.SetId(CatalogID(provider.GetId(), "movie", movieKey))
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetTheaterId(theater.GetId())
-	auditorium.SetSourceKey("0056/0007")
+	SetAuditoriumSourceKey(auditorium, "0056/0007")
 	auditorium.SetName("IMAX관")
 	auditorium.SetCapacity(624)
-	auditorium.SetId(CatalogID(provider.GetId(), "auditorium", auditorium.GetSourceKey()))
+	auditoriumKey, _ := AuditoriumSourceKey(auditorium)
+	auditorium.SetId(CatalogID(provider.GetId(), "auditorium", auditoriumKey))
 	showtime := &catalogpb.Showtime{}
 	showtime.SetProviderId(provider.GetId())
-	showtime.SetSourceKey("0056/2026-08-14/0007/0003")
+	SetShowtimeSourceKey(showtime, "0056/2026-08-14/0007/0003")
 	showtime.SetTheaterId(theater.GetId())
 	showtime.SetMovie(proto.CloneOf(movie))
 	showtime.SetAuditorium(proto.CloneOf(auditorium))
@@ -389,11 +410,11 @@ func catalogSnapshotFixture(observedAt time.Time) *catalogpb.CatalogSnapshot {
 	scheduleDate.SetYear(numeric.ClampInt32(startsAt.Year()))
 	scheduleDate.SetMonth(numeric.ClampInt32(int(startsAt.Month())))
 	scheduleDate.SetDay(numeric.ClampInt32(startsAt.Day()))
-	showtime.SetScheduleDate(scheduleDate)
 	showtime.SetStartsAt(timestamppb.New(startsAt))
 	showtime.SetEndsAt(timestamppb.New(observedAt.Add(3 * time.Hour)))
 	showtime.SetCapacity(624)
-	showtime.SetId(CatalogID(provider.GetId(), "showtime", showtime.GetSourceKey()))
+	showtimeKey, _ := ShowtimeSourceKey(showtime)
+	showtime.SetId(CatalogID(provider.GetId(), "showtime", showtimeKey))
 	snapshot := &catalogpb.CatalogSnapshot{}
 	snapshot.SetProvider(provider)
 	snapshot.SetTheaters([]*catalogpb.Theater{theater})

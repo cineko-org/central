@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
 )
 
 func TestClientExecutionLifecycle(t *testing.T) {

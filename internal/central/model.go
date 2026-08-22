@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 const (

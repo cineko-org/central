@@ -12,9 +12,9 @@ import (
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
 	"github.com/cineko-org/central/internal/support/numeric"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -272,6 +272,9 @@ func (store *cycleStore) RequeueAssignment(
 	if err := expectOneRow(tag.RowsAffected(), "requeue expired assignment"); err != nil {
 		return err
 	}
+	if err := requeueSeatMapCollectionForAssignmentTx(ctx, store.tx, assignmentID, now); err != nil {
+		return fmt.Errorf("requeue seat-map collection: %w", err)
+	}
 	return notifyAssignmentAvailability(ctx, store.tx)
 }
 
@@ -293,6 +296,9 @@ func (store *cycleStore) FinishAssignment(
 	}
 	if err := expectOneRow(tag.RowsAffected(), "finish assignment"); err != nil {
 		return err
+	}
+	if err := requeueSeatMapCollectionForAssignmentTx(ctx, store.tx, assignmentID, now); err != nil {
+		return fmt.Errorf("finish seat-map collection: %w", err)
 	}
 	return notifyAssignmentAvailability(ctx, store.tx)
 }
@@ -650,44 +656,52 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	ctx context.Context,
 	now time.Time,
 ) (*reconcile.SeatMapBackfillTarget, error) {
+	if err := refreshSeatMapCollectionShowtimeTargetsTx(ctx, store.tx, now); err != nil {
+		return nil, fmt.Errorf("refresh seat-map collection showtime targets: %w", err)
+	}
+
 	target := &reconcile.SeatMapBackfillTarget{}
 	var theaterID, theaterProviderID, theaterSourceKey, theaterRegion, theaterName string
 	var auditoriumID, auditoriumTheaterID, auditoriumSourceKey, auditoriumName string
 	var auditoriumScreenTypes []string
 	var auditoriumCapacity int32
+	var layoutHash string
+	var triggerKind, showtimeID, showtimeProviderID, showtimeSourceKey, scheduleDate string
+	var showtimeStartsAt, showtimeEndsAt time.Time
+	var movieID, movieProviderID, movieSourceKey, movieTitle, moviePosterURL string
 	err := store.tx.QueryRow(ctx, `
 		SELECT theater.id, theater.provider_id, theater.source_key, theater.region, theater.name,
 			auditorium.id, auditorium.theater_id, auditorium.source_key, auditorium.name,
-			auditorium.screen_types, auditorium.capacity,
-			auditorium.seat_map_requested_at IS NOT NULL
-		FROM auditoriums AS auditorium
+			auditorium.screen_types, auditorium.capacity, COALESCE(version.layout_hash, ''),
+			state.trigger_kind, state.showtime_id,
+			showtime.provider_id, showtime.source_key, showtime.schedule_date::text,
+			showtime.starts_at, showtime.ends_at,
+			movie.id, movie.provider_id, movie.source_key, movie.title, movie.poster_url
+		FROM seat_map_collection_states AS state
+		JOIN auditoriums AS auditorium ON auditorium.id = state.auditorium_id
 		JOIN theaters AS theater ON theater.id = auditorium.theater_id AND theater.active
+		JOIN showtimes AS showtime ON showtime.id = state.showtime_id
+			AND showtime.auditorium_id = auditorium.id AND showtime.active AND showtime.starts_at > $1
+		JOIN movies AS movie ON movie.id = showtime.movie_id AND movie.active
+		LEFT JOIN seat_map_versions AS version ON version.id = auditorium.current_seat_map_version_id
 		WHERE auditorium.active
-			AND (
-				auditorium.seat_map_requested_at IS NOT NULL
-				OR (
-					auditorium.current_seat_map_version_id IS NULL
-					AND EXISTS (
-						SELECT 1 FROM showtimes AS candidate
-						WHERE candidate.auditorium_id = auditorium.id
-							AND candidate.active AND candidate.starts_at > $1
-					)
-				)
-			)
+			AND (state.state = 'queued' OR (state.state = 'retry_scheduled' AND state.next_attempt_at <= $1))
 			AND NOT EXISTS (
 				SELECT 1 FROM observation_assignments AS assignment
 				WHERE assignment.task_kind = $2
 					AND assignment.status IN ('queued', 'leased', 'retry_pending')
 					AND assignment.auditorium_id = auditorium.id
 			)
-		ORDER BY auditorium.seat_map_requested_at DESC NULLS LAST, auditorium.updated_at
-		FOR UPDATE OF auditorium SKIP LOCKED
+		ORDER BY state.priority DESC, state.requested_at, state.auditorium_id
+		FOR UPDATE OF state, auditorium SKIP LOCKED
 		LIMIT 1
 	`, now, probedomain.CapabilityCGVSeatMapCapture).Scan(
 		&theaterID, &theaterProviderID, &theaterSourceKey, &theaterRegion, &theaterName,
 		&auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName,
 		&auditoriumScreenTypes, &auditoriumCapacity,
-		&target.Requested,
+		&layoutHash, &triggerKind, &showtimeID,
+		&showtimeProviderID, &showtimeSourceKey, &scheduleDate, &showtimeStartsAt, &showtimeEndsAt,
+		&movieID, &movieProviderID, &movieSourceKey, &movieTitle, &moviePosterURL,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -698,20 +712,49 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId(theaterProviderID)
-	theater.SetSourceKey(theaterSourceKey)
+	if !catalogdomain.SetTheaterSourceKey(theater, theaterSourceKey) {
+		return nil, fmt.Errorf("stored theater identity %q is not typed CGV", theaterSourceKey)
+	}
 	theater.SetRegion(theaterRegion)
 	theater.SetName(theaterName)
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(auditoriumTheaterID)
-	auditorium.SetSourceKey(auditoriumSourceKey)
+	if !catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSourceKey) {
+		return nil, fmt.Errorf("stored auditorium identity %q is not typed CGV", auditoriumSourceKey)
+	}
 	auditorium.SetName(auditoriumName)
 	auditorium.SetScreenTypes(auditoriumScreenTypes)
 	auditorium.SetCapacity(auditoriumCapacity)
+	auditorium.SetCurrentLayoutHash(layoutHash)
+	movie := &catalogpb.Movie{}
+	movie.SetId(movieID)
+	movie.SetProviderId(movieProviderID)
+	if !catalogdomain.SetMovieSourceKey(movie, movieSourceKey) {
+		return nil, fmt.Errorf("stored movie identity %q is not typed CGV", movieSourceKey)
+	}
+	movie.SetTitle(movieTitle)
+	movie.SetPosterUrl(moviePosterURL)
+	showtime := catalogpb.Showtime_builder{
+		Movie: movie, Auditorium: auditorium,
+		StartsAt: timestamppb.New(showtimeStartsAt), EndsAt: timestamppb.New(showtimeEndsAt),
+	}.Build()
+	showtime.SetId(showtimeID)
+	showtime.SetProviderId(showtimeProviderID)
+	if !catalogdomain.SetShowtimeSourceKey(showtime, showtimeSourceKey) {
+		return nil, fmt.Errorf("stored showtime identity %q is not typed CGV", showtimeSourceKey)
+	}
+	showtime.SetTheaterId(theaterID)
+	showtime.SetCapacity(auditoriumCapacity)
+	parsedDate, err := time.Parse(time.DateOnly, scheduleDate)
+	if err != nil {
+		return nil, fmt.Errorf("parse seat-map target date: %w", err)
+	}
 	seatMap := &observationpb.SeatMapTask{}
 	seatMap.SetTheater(theater)
 	seatMap.SetAuditorium(auditorium)
-	seatMap.SetTargetDates(seatMapBackfillDates(now))
+	seatMap.SetShowtime(showtime)
+	seatMap.SetTargetDates([]*commonpb.LocalDate{catalogLocalDate(parsedDate)})
 	seatMap.SetLocale("ko-KR")
 	seatMap.SetTimeZone("Asia/Seoul")
 	task := &observationpb.AssignmentTask{}
@@ -720,6 +763,7 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	task.SetEgress(egress)
 	task.SetSeatMap(seatMap)
 	target.Task = task
+	target.Requested = triggerKind == seatMapTriggerClientRequest || triggerKind == seatMapTriggerOperatorRequest
 	return target, nil
 }
 
@@ -866,26 +910,31 @@ func scanSeatAvailabilityTarget(row pgx.Row) (*catalogpb.Theater, *catalogpb.Sho
 	); err != nil {
 		return nil, nil, fmt.Errorf("scan exact-showtime availability target: %w", err)
 	}
-	parsedScheduleDate, err := time.Parse(time.DateOnly, scheduleDate)
-	if err != nil {
+	if _, err := time.Parse(time.DateOnly, scheduleDate); err != nil {
 		return nil, nil, fmt.Errorf("parse exact-showtime schedule date: %w", err)
 	}
 	theater := &catalogpb.Theater{}
 	theater.SetId(theaterID)
 	theater.SetProviderId(theaterProviderID)
-	theater.SetSourceKey(theaterSourceKey)
+	if !catalogdomain.SetTheaterSourceKey(theater, theaterSourceKey) {
+		return nil, nil, fmt.Errorf("stored theater identity %q is not typed CGV", theaterSourceKey)
+	}
 	theater.SetRegion(theaterRegion)
 	theater.SetName(theaterName)
 	movie := &catalogpb.Movie{}
 	movie.SetId(movieID)
 	movie.SetProviderId(movieProviderID)
-	movie.SetSourceKey(movieSourceKey)
+	if !catalogdomain.SetMovieSourceKey(movie, movieSourceKey) {
+		return nil, nil, fmt.Errorf("stored movie identity %q is not typed CGV", movieSourceKey)
+	}
 	movie.SetTitle(movieTitle)
 	movie.SetPosterUrl(moviePosterURL)
 	auditorium := catalogpb.Auditorium_builder{ScreenTypes: screenTypes}.Build()
 	auditorium.SetId(auditoriumID)
 	auditorium.SetTheaterId(auditoriumTheaterID)
-	auditorium.SetSourceKey(auditoriumSourceKey)
+	if !catalogdomain.SetAuditoriumSourceKey(auditorium, auditoriumSourceKey) {
+		return nil, nil, fmt.Errorf("stored auditorium identity %q is not typed CGV", auditoriumSourceKey)
+	}
 	auditorium.SetName(auditoriumName)
 	auditorium.SetCapacity(auditoriumCapacity)
 	auditorium.SetCurrentLayoutHash(layoutHash)
@@ -895,9 +944,10 @@ func scanSeatAvailabilityTarget(row pgx.Row) (*catalogpb.Theater, *catalogpb.Sho
 	}.Build()
 	showtime.SetId(showtimeID)
 	showtime.SetProviderId(showtimeProviderID)
-	showtime.SetSourceKey(showtimeSourceKey)
+	if !catalogdomain.SetShowtimeSourceKey(showtime, showtimeSourceKey) {
+		return nil, nil, fmt.Errorf("stored showtime identity %q is not typed CGV", showtimeSourceKey)
+	}
 	showtime.SetTheaterId(theaterID)
-	showtime.SetScheduleDate(catalogLocalDate(parsedScheduleDate))
 	showtime.SetCapacity(auditoriumCapacity)
 	return theater, showtime, nil
 }
@@ -916,6 +966,13 @@ func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconc
 	}
 	if err := store.insertEligibleProbes(ctx, assignment); err != nil {
 		return err
+	}
+	if assignment.Task.GetSeatMap() != nil {
+		if err := markSeatMapCollectionCollectingTx(
+			ctx, store.tx, assignmentTaskAuditoriumID(assignment.Task), assignment.ID, assignment.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("mark seat-map collection collecting: %w", err)
+		}
 	}
 	if err := store.activateAssignmentPolicy(ctx, assignment); err != nil {
 		return err
@@ -942,7 +999,7 @@ func (store *cycleStore) insertAssignment(
 		ON CONFLICT DO NOTHING
 		RETURNING id
 	`, assignment.ID, assignment.PolicyID, assignmentTaskKind(assignment.Task), assignmentTaskAuditoriumID(assignment.Task), assignmentTaskShowtimeID(assignment.Task), assignmentTaskTheater(assignment.Task).GetId(),
-		assignmentTaskTheater(assignment.Task).GetProviderId(), assignmentTaskTheater(assignment.Task).GetSourceKey(),
+		assignmentTaskTheater(assignment.Task).GetProviderId(), catalogTheaterSourceKey(assignmentTaskTheater(assignment.Task)),
 		assignmentTaskTheater(assignment.Task).GetRegion(), assignmentTaskTheater(assignment.Task).GetName(), targetDates, assignmentTaskLocale(assignment.Task),
 		assignmentTaskTimeZone(assignment.Task), string(central.EgressPolicyScanDefault), assignment.Priority, assignment.Status,
 		assignment.NotBefore, assignment.Deadline, assignment.ReasonCode, nullableTime(assignment.FinishedAt),
@@ -1076,7 +1133,9 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	policy.Theater = &catalogpb.Theater{}
 	policy.Theater.SetId(theaterID)
 	policy.Theater.SetProviderId(providerID)
-	policy.Theater.SetSourceKey(sourceKey)
+	if !catalogdomain.SetTheaterSourceKey(policy.Theater, sourceKey) {
+		return reconcile.Policy{}, fmt.Errorf("stored theater identity %q is not typed CGV", sourceKey)
+	}
 	policy.Theater.SetRegion(region)
 	policy.Theater.SetName(name)
 	if horizonDays != nil {
@@ -1276,7 +1335,15 @@ func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, err
 	case task.GetSeatMap() != nil:
 		values = task.GetSeatMap().GetTargetDates()
 	case task.GetSeatAvailability() != nil && task.GetSeatAvailability().GetShowtime() != nil:
-		values = []*commonpb.LocalDate{task.GetSeatAvailability().GetShowtime().GetScheduleDate()}
+		key, ok := catalogdomain.ShowtimeSourceKey(task.GetSeatAvailability().GetShowtime())
+		if !ok || len(key) < 15 {
+			return nil, fmt.Errorf("seat-availability showtime identity is not typed CGV")
+		}
+		date, err := time.Parse(time.DateOnly, key[5:15])
+		if err != nil {
+			return nil, fmt.Errorf("seat-availability showtime date is invalid: %w", err)
+		}
+		values = []*commonpb.LocalDate{catalogLocalDate(date)}
 	}
 	dates := make([]time.Time, 0, len(values))
 	for _, value := range values {

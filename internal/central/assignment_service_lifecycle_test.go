@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestServiceCommitsFailedAttemptForRepositoryRetryDecision(t *testing.T) {
@@ -20,7 +21,9 @@ func TestServiceCommitsFailedAttemptForRepositoryRetryDecision(t *testing.T) {
 	service.clock = func() time.Time { return now }
 	result := validResult(now)
 	failed := &observationpb.Failed{}
-	failed.SetReasonCode("provider_error")
+	reason := &collectionpb.FailureReason{}
+	reason.SetProviderTransportFailed(&collectionpb.ProviderTransportFailed{})
+	failed.SetReason(reason)
 	result.SetFailed(failed)
 
 	receipt, err := service.CommitResult(

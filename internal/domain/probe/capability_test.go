@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 )
 
 func TestCapabilityKeysCanonicalizesOrder(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/support/numeric"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 )
 
 const DefaultSearchHorizonDays = 14

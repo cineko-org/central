@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 )
 
 // Catalog is Central's validated in-memory index of generated release messages.

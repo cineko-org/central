@@ -13,10 +13,10 @@ import (
 
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	releasepolicy "github.com/cineko-org/central/internal/domain/releases"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	releasepb "github.com/cineko-org/contracts/gen/go/cineko/release"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	releasepb "github.com/cineko-org/contracts/v3/gen/go/cineko/release"
 
 	"golang.org/x/mod/semver"
 	"google.golang.org/protobuf/proto"

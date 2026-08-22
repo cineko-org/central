@@ -20,10 +20,10 @@ import (
 	"github.com/cineko-org/central/internal/observation/planning"
 	"github.com/cineko-org/central/internal/support/numeric"
 	"github.com/cineko-org/central/internal/telemetry"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -367,7 +367,7 @@ func (engine *Engine) scheduleCatalogRefresh(
 	theater := &catalogpb.Theater{}
 	theater.SetId(contracts.CatalogID(contracts.ProviderCGV, "theater", sourceKey))
 	theater.SetProviderId(contracts.ProviderCGV)
-	theater.SetSourceKey(sourceKey)
+	contracts.SetTheaterSourceKey(theater, sourceKey)
 	theater.SetRegion("system")
 	theater.SetName("CGV catalog")
 	assignment := NewAssignment{
@@ -765,7 +765,7 @@ func policyPlan(policy Policy, now time.Time) (planning.Result, error) {
 
 func validatePolicyRuntime(policy Policy) (*time.Location, error) {
 	if strings.TrimSpace(policy.TaskKind) == "" || policy.Theater == nil || strings.TrimSpace(policy.Theater.GetId()) == "" ||
-		strings.TrimSpace(policy.Theater.GetProviderId()) == "" || strings.TrimSpace(policy.Theater.GetSourceKey()) == "" ||
+		strings.TrimSpace(policy.Theater.GetProviderId()) == "" || func() string { key, _ := contracts.TheaterSourceKey(policy.Theater); return key }() == "" ||
 		strings.TrimSpace(policy.Locale) == "" || policy.MinimumInterval <= 0 ||
 		policy.MaximumInterval < policy.MinimumInterval ||
 		policy.ExecutionWindow <= 0 {

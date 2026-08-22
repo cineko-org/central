@@ -2160,7 +2160,7 @@ const file_cineko_release_release_proto_rawDesc = "" +
 	"playwright\x18\x04 \x01(\v2$.cineko.release.PlaywrightReleaseSetR\n" +
 	"playwright\x12@\n" +
 	"\tlaunchers\x18\x05 \x01(\v2\".cineko.release.LauncherReleaseSetR\tlaunchers\x127\n" +
-	"\x06probes\x18\x06 \x01(\v2\x1f.cineko.release.ProbeReleaseSetR\x06probesB?Z=github.com/cineko-org/contracts/gen/go/cineko/release;releaseb\beditionsp\xe9\a"
+	"\x06probes\x18\x06 \x01(\v2\x1f.cineko.release.ProbeReleaseSetR\x06probesBBZ@github.com/cineko-org/contracts/v3/gen/go/cineko/release;releaseb\beditionsp\xe9\a"
 
 var file_cineko_release_release_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_cineko_release_release_proto_goTypes = []any{

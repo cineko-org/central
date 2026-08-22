@@ -3,7 +3,7 @@
 Notation: `!` means `NOT NULL`; `?` means nullable; `=value` records a database
 default. Named checks, foreign-key actions, and indexes are listed separately. This is
 the effective schema after every migration, not a history of intermediate tables.
-The current schema contains 59 tables. Client resource bodies are normalized into the
+The current schema contains 60 tables. Client resource bodies are normalized into the
 typed tables below; `client_resources` retains only common identity, revision, timestamps,
 and soft-delete state.
 
@@ -77,7 +77,8 @@ with the common revision on a resource mutation.
 | `providers` | `id text! PK`; `name text!`; `content_hash text!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!`; `updated_at timestamptz!` | hash 64 lowercase hex | PK | none |
 | `theaters` | `id text! PK`; `provider_id text!`; `source_key text!`; `region text!`; `name text!`; `active boolean! = true`; `content_hash text!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!`; `updated_at timestamptz!` | provider FK RESTRICT; hash format; unique provider/source | browse | none |
 | `movies` | `id text! PK`; `provider_id text!`; `source_key text!`; `title text!`; `poster_url text! = ''`; `display_order integer! = 2147483647`; `active boolean! = true`; `content_hash text!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!`; `updated_at timestamptz!` | provider FK RESTRICT; display order nonnegative; hash format; unique provider/source; historical master rows are never deleted by retention | Client browse requires a current future showtime; operator history uses the permanent row | none |
-| `auditoriums` | `id text! PK`; `theater_id text!`; `source_key text!`; `name text!`; `screen_types text[]! = '{}'`; `capacity integer! = 0`; `active boolean! = true`; `content_hash text!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!`; `updated_at timestamptz!`; `current_seat_map_version_id text?`; `seat_map_requested_at timestamptz?` | theater and current seat-map FKs RESTRICT; capacity nonnegative; unique theater/source | browse; conditional missing-seat-map | none |
+| `auditoriums` | `id text! PK`; `theater_id text!`; `source_key text!`; `name text!`; `screen_types text[]! = '{}'`; `capacity integer! = 0`; `active boolean! = true`; `content_hash text!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!`; `updated_at timestamptz!`; `current_seat_map_version_id text?` | theater and current seat-map FKs RESTRICT; capacity nonnegative; unique theater/source | browse; current layout pointer | none |
+| `seat_map_collection_states` | `auditorium_id text! PK`; `state text!`; `trigger_kind text!`; `priority smallint! = 30`; `assignment_id text?`; `showtime_id text?`; `reason_code text! = ''`; `requested_at timestamptz!`; `last_attempt_at timestamptz?`; `next_attempt_at timestamptz?`; `consecutive_failures integer! = 0`; `updated_at timestamptz!` | auditorium FK CASCADE; assignment/showtime FKs RESTRICT; queued/collecting/retry states require an exact future showtime hint; collecting requires one assignment; retry requires `next_attempt_at` and an egress `FailureReason`; waiting requires a generated `WaitingReason`; blocked accepts any generated `FailureReason`, including an egress failure after the retry limit; one state row per auditorium; one state row per assignment | due state/priority; assignment lookup | durable Central-owned seat-map collection lifecycle; no row means idle. State, trigger, and reason values are persisted representations of Contracts-generated types, not Central-owned DTOs |
 | `showtimes` | `id text! PK`; `provider_id text!`; `source_key text!`; `theater_id text!`; `movie_id text!`; `auditorium_id text!`; `schedule_date date!`; `starts_at timestamptz!`; `ends_at timestamptz!`; `active boolean! = true`; `content_hash text!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!`; `updated_at timestamptz!` | all entity FKs RESTRICT; provider schedule date is not inferred from civil start time; end after start; hash format; unique provider/source/start | browse + theater/schedule date | none |
 | `seat_map_versions` | `id text! PK`; `auditorium_id text!`; `layout_hash text!`; `capacity integer!`; `observed_at timestamptz!`; `first_seen_at timestamptz!`; `last_seen_at timestamptz!` | auditorium FK RESTRICT; hash format; capacity positive; unique auditorium/layout hash | uniqueness | none |
 | `seat_map_seats` | `version_id text!`; `position integer!`; `seat_id text!`; `label text!`; `row_label text!`; `seat_number integer!`; `x double precision!`; `y double precision!`; `seat_type text!`; `zone_name text! = ''`; `zone_kind text! = ''`; `sale_form_code text! = ''`; `sale_form_name text! = ''`; `left_aisle boolean! = false`; `right_aisle boolean! = false`; `source_label text! = ''`; `source_seat_kind_code text! = ''`; `source_seat_kind_name text! = ''`; composite PK version/position | version FK CASCADE; position and seat number positive; coordinates normalized; unique version/seat and version/label | row and seat number | version retention |
@@ -129,6 +130,7 @@ cannot merge without an intentional update to this inventory.
 000029_showtime_schedule_dates.sql adbcbeea805c098b593cf121f627fccbd44b84fab0ebbe9d30160faecc2c6256
 000030_seat_availability.sql a79b291109cc2044126d2a75213f93da1dd370b3e3093c90bd74eb83c3397f86
 000031_demand_observation_cadence.sql 6c7c761c269f83a21df2799d6ae47a0fcbd30916ea3e4e6b05cc3f7f89507917
+000032_seat_map_collection_state.sql 89565b08f9435ceaec7e28a29cd2e7ee78ac250967f985a4158637b2ecbfd97f
 ```
 
 Migration `000008` creates `observation_policy_subscriptions`, `000015` creates the
@@ -151,4 +153,13 @@ start instant. Migration `000030` adds exact-showtime assignment identity and no
 adjacent live-seat snapshots. The per-monitor state table is the false-to-true edge fence:
 unchanged positive snapshots cannot create duplicate execution commands. Migration
 `000031` permits the Central-owned 2–5 second booking-demand cadence while preserving
-strictly increasing positive interval bounds.
+strictly increasing positive interval bounds. Migration `000032` is the latest-contract
+hard cutover: it atomically removes non-settings Client resources and their transient
+command/event history, all observation workload, and all catalog, showtime, seat-map,
+and availability rows. It preserves users, credentials, sessions, devices, normalized
+settings, release state, and Probe runtimes; resets catalog generation to `1`; and
+requests an immediate full catalog refresh from an upgraded Probe. It then drops the
+ambiguous auditorium timestamp marker and creates the durable collection lifecycle.
+No legacy marker or row is converted. Its state, trigger, exact-showtime, assignment,
+retry, and reason checks are the cutover boundary. This forward-only destructive
+migration requires a verified upgraded Probe and a recoverable database snapshot.

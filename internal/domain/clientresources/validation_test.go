@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -127,20 +128,18 @@ func validReservationPayload() *clientpb.Reservation {
 	startsAt := time.Date(2026, 8, 22, 19, 0, 0, 0, time.UTC)
 	movie := &catalogpb.Movie{}
 	movie.SetId("movie_1")
+	catalogdomain.SetMovieSourceKey(movie, "1")
 	auditorium := &catalogpb.Auditorium{}
 	auditorium.SetId("auditorium_1")
 	auditorium.SetTheaterId("theater_1")
 	auditorium.SetCapacity(100)
+	catalogdomain.SetAuditoriumSourceKey(auditorium, "1/1")
 	showtime := &catalogpb.Showtime{}
 	showtime.SetId("showtime_1")
 	showtime.SetTheaterId("theater_1")
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
-	scheduleDate := &commonpb.LocalDate{}
-	scheduleDate.SetYear(2026)
-	scheduleDate.SetMonth(8)
-	scheduleDate.SetDay(22)
-	showtime.SetScheduleDate(scheduleDate)
+	catalogdomain.SetShowtimeSourceKey(showtime, "1/2026-08-22/1/1")
 	showtime.SetStartsAt(timestamppb.New(startsAt))
 	showtime.SetEndsAt(timestamppb.New(startsAt.Add(2 * time.Hour)))
 	showtime.SetAvailableSeats(50)

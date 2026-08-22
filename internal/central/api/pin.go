@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 )
 
 func (server *Server) exchangeClientPIN(writer http.ResponseWriter, request *http.Request) {

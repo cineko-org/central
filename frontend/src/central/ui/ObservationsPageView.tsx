@@ -34,7 +34,7 @@ function observationMode(policy: ObservationPolicy): string {
   switch (policy.effectiveMode?.mode.case) {
     case 'demand': return '예매 요청 집중 관측';
     case 'burst': return '새 회차 집중 관측';
-    case 'cancellation': return '취소표 관측';
+    case 'seatAvailability': return '취소표 관측';
     case 'baseline': return '평상시 관측';
     default: return '상태 확인 중';
   }

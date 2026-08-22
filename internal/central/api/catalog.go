@@ -2,13 +2,18 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
+	"buf.build/go/protovalidate"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	servicepb "github.com/cineko-org/contracts/gen/go/cineko/service"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	servicepb "github.com/cineko-org/contracts/v3/gen/go/cineko/service"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -111,9 +116,132 @@ func (server *Server) getClientSeatMapVersion(writer http.ResponseWriter, reques
 }
 
 func (server *Server) resolveClientSeatMap(writer http.ResponseWriter, request *http.Request) {
-	server.writeClientSeatMap(writer, request, func(ctx context.Context, auditoriumID string) (proto.Message, error) {
-		return server.catalog.ResolveSeatMap(ctx, auditoriumID)
-	})
+	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
+		return
+	}
+	input := &servicepb.ResolveSeatMapRequest{}
+	input.SetAuditoriumId(request.PathValue("auditoriumId"))
+	response, err := server.catalog.ResolveSeatMap(request.Context(), input)
+	if err != nil {
+		server.writeError(writer, request, err)
+		return
+	}
+	server.writeProtoJSON(writer, http.StatusOK, response)
+}
+
+func (server *Server) watchClientSeatMap(writer http.ResponseWriter, request *http.Request) {
+	if _, ok := server.authenticatedClient(writer, request); !ok || !server.requireCatalog(writer, request) {
+		return
+	}
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		server.writeAPIError(writer, request, http.StatusInternalServerError, "stream_unavailable", "streaming is unavailable", true)
+		return
+	}
+	// Unbuffered delivery guarantees the initial resolution reaches the HTTP
+	// writer before a concurrent watcher failure can win the select.
+	updates := make(chan *servicepb.WatchSeatMapResponse)
+	errorsCh := make(chan error, 1)
+	input := &servicepb.WatchSeatMapRequest{}
+	input.SetAuditoriumId(request.PathValue("auditoriumId"))
+	go func() {
+		errorsCh <- server.catalog.WatchSeatMap(request.Context(), input, func(response *servicepb.WatchSeatMapResponse) error {
+			select {
+			case updates <- response:
+				return nil
+			case <-request.Context().Done():
+				return request.Context().Err()
+			}
+		})
+	}()
+	stream := &seatMapSSEStream{
+		server: server, writer: writer, request: request, flusher: flusher,
+	}
+	defer stream.stop()
+	for {
+		select {
+		case response := <-updates:
+			if !stream.writeResponse(response) {
+				return
+			}
+		case <-stream.heartbeatC:
+			if !stream.writeHeartbeat() {
+				return
+			}
+		case err := <-errorsCh:
+			stream.writeWatchError(err)
+			return
+		case <-request.Context().Done():
+			return
+		}
+	}
+}
+
+type seatMapSSEStream struct {
+	server     *Server
+	writer     http.ResponseWriter
+	request    *http.Request
+	flusher    http.Flusher
+	heartbeat  *time.Ticker
+	heartbeatC <-chan time.Time
+	started    bool
+}
+
+func (stream *seatMapSSEStream) stop() {
+	if stream.heartbeat != nil {
+		stream.heartbeat.Stop()
+	}
+}
+
+func (stream *seatMapSSEStream) writeResponse(response *servicepb.WatchSeatMapResponse) bool {
+	if err := protovalidate.Validate(response); err != nil {
+		stream.writeErrorBeforeStart(err)
+		return false
+	}
+	payload, err := protojson.MarshalOptions{UseProtoNames: false}.Marshal(response)
+	if err != nil {
+		stream.writeErrorBeforeStart(err)
+		return false
+	}
+	stream.start()
+	if _, err := fmt.Fprintf(stream.writer, "event: cineko.seat-map\ndata: %s\n\n", payload); err != nil {
+		return false
+	}
+	stream.flusher.Flush()
+	return true
+}
+
+func (stream *seatMapSSEStream) start() {
+	if stream.started {
+		return
+	}
+	stream.writer.Header().Set("Content-Type", "text/event-stream")
+	stream.writer.Header().Set("Cache-Control", "no-cache")
+	stream.writer.Header().Set("Connection", "keep-alive")
+	stream.writer.WriteHeader(http.StatusOK)
+	stream.started = true
+	stream.heartbeat = time.NewTicker(stream.server.eventHeartbeat)
+	stream.heartbeatC = stream.heartbeat.C
+}
+
+func (stream *seatMapSSEStream) writeHeartbeat() bool {
+	if _, err := fmt.Fprint(stream.writer, ": heartbeat\n\n"); err != nil {
+		return false
+	}
+	stream.flusher.Flush()
+	return true
+}
+
+func (stream *seatMapSSEStream) writeWatchError(err error) {
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		stream.writeErrorBeforeStart(err)
+	}
+}
+
+func (stream *seatMapSSEStream) writeErrorBeforeStart(err error) {
+	if !stream.started {
+		stream.server.writeError(stream.writer, stream.request, err)
+	}
 }
 
 func (server *Server) writeClientSeatMap(

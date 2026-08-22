@@ -105,8 +105,23 @@ stateDiagram-v2
   until explicitly migrated.
 - Catalog refresh is idle, requested, or running. Catalog snapshots are additive and
   omission is never evidence of deletion. Only successful full catalog-assignment
-  completion clears the refresh request. Seat layout is missing, requested, or
-  available; a newly stored layout clears its request marker. Catalog generation
+  completion clears the refresh request. Seat-map collection is independent from the
+  immutable current layout pointer. A missing or stale layout may still have a readable
+  older snapshot. The only durable collection states are `queued`, `collecting`,
+  `waiting_for_showtime`, `retry_scheduled`, and `blocked`; no row means idle. Central
+  records the trigger, exact showtime hint for active work, assignment, retry/backoff timestamps,
+  failure count, and reason. A successful result removes the state row. A transient
+  terminal result moves it to `retry_scheduled` with Central-owned backoff; a Probe
+  deferred result (`no_bookable_showtime` or `target_date_unavailable`) moves it to
+  `waiting_for_showtime`, while Central derives `showtime_not_discovered` when its
+  catalog has no future candidate; identity, challenge, authentication, UI-contract,
+  or invalid-result failures move it to `blocked`.
+  Provider blocking/throttling, browser start, provider transport/server, and timeout
+  failures remain retryable egress failures until the retry limit is exhausted; the
+  final blocked row retains the exact generated `FailureReason`. A Client request never clears `blocked`;
+  only a new objective trigger can.
+  Reconciler ticks never recreate a terminal assignment without a due state transition
+  or a new objective trigger. Catalog generation
   increments only when canonical shared content changes.
 - Release component records are immutable. The desktop generation increases only when
   the fully resolvable active desktop manifest changes. Launch tickets bind that

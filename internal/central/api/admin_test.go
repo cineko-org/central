@@ -13,9 +13,9 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	catalogpb "github.com/cineko-org/contracts/v3/gen/go/cineko/catalog"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -68,10 +68,11 @@ func (operations *adminOperationsFake) CreateAdminObservationPolicy(
 		return nil, operations.err
 	}
 	id, revision := "policy", int64(1)
-	providerID, sourceKey, region, name := catalogdomain.ProviderCGV, "서울/용산아이파크몰", "서울", "용산아이파크몰"
+	providerID, sourceKey, region, name := catalogdomain.ProviderCGV, "0056", "서울", "용산아이파크몰"
 	theater := catalogpb.Theater_builder{
-		Id: ptrString(input.GetTheaterId()), ProviderId: &providerID, SourceKey: &sourceKey, Region: &region, Name: &name,
+		Id: ptrString(input.GetTheaterId()), ProviderId: &providerID, Region: &region, Name: &name,
 	}.Build()
+	catalogdomain.SetTheaterSourceKey(theater, sourceKey)
 	policy := adminpb.ObservationPolicy_builder{Id: &id, Revision: &revision, Input: input, Theater: theater}.Build()
 	operations.policies = append(operations.policies, policy)
 	return policy, nil
@@ -87,10 +88,11 @@ func (operations *adminOperationsFake) UpdateAdminObservationPolicy(
 		return nil, operations.err
 	}
 	nextRevision := revision + 1
-	providerID, sourceKey, region, name := catalogdomain.ProviderCGV, "서울/용산아이파크몰", "서울", "용산아이파크몰"
+	providerID, sourceKey, region, name := catalogdomain.ProviderCGV, "0056", "서울", "용산아이파크몰"
 	theater := catalogpb.Theater_builder{
-		Id: ptrString(input.GetTheaterId()), ProviderId: &providerID, SourceKey: &sourceKey, Region: &region, Name: &name,
+		Id: ptrString(input.GetTheaterId()), ProviderId: &providerID, Region: &region, Name: &name,
 	}.Build()
+	catalogdomain.SetTheaterSourceKey(theater, sourceKey)
 	return adminpb.ObservationPolicy_builder{Id: &id, Revision: &nextRevision, Input: input, Theater: theater}.Build(), nil
 }
 

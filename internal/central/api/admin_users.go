@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
 )
 
 func (server *Server) listAdminUsers(writer http.ResponseWriter, request *http.Request) {

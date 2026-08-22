@@ -8,45 +8,113 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	seatavailabilitydomain "github.com/cineko-org/central/internal/domain/seatavailability"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
+	collectionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/collection"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	seatmappb "github.com/cineko-org/contracts/v3/gen/go/cineko/seatmap"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// storeSeatAvailabilityResult persists only adjacent state changes, evaluates
-// active presets, and emits a command only for a false-to-true match edge.
-func storeSeatAvailabilityResult(
+// storeLiveSeatResult atomically persists the static layout and the exact
+// showtime availability returned by a Probe. The collection state is cleared
+// by putSeatMapTx in the same transaction as both writes.
+func storeLiveSeatResult(
 	ctx context.Context,
 	tx pgx.Tx,
 	commit central.ResultCommit,
 	task *observationpb.AssignmentTask,
 ) error {
-	completed := commit.Result.GetCompleted()
-	if completed == nil {
-		return fmt.Errorf("%w: seat-availability assignment result is incomplete", central.ErrInvalid)
+	liveSeat, err := completedLiveSeatObservation(commit.Result)
+	if err != nil {
+		return err
 	}
-	snapshot := completed.GetSeatAvailability()
-	availabilityTask := task.GetSeatAvailability()
-	if snapshot == nil || availabilityTask == nil ||
-		len(completed.GetCaptures()) != 0 || completed.GetCatalog() != nil || completed.GetSeatMap() != nil {
-		return fmt.Errorf("%w: seat-availability assignment result is incomplete", central.ErrInvalid)
+	target, err := assignmentLiveSeatTarget(task)
+	if err != nil {
+		return err
 	}
-	if availabilityTask.GetShowtime() == nil || availabilityTask.GetAuditorium() == nil ||
-		snapshot.GetShowtimeId() != availabilityTask.GetShowtime().GetId() ||
-		snapshot.GetAuditoriumId() != availabilityTask.GetAuditorium().GetId() {
-		return fmt.Errorf("%w: seat-availability result does not match its exact assignment", central.ErrInvalid)
+	availability := liveSeat.GetAvailability()
+	layout := liveSeat.GetLayout()
+	if err := validateLiveSeatTarget(liveSeat, target); err != nil {
+		return err
 	}
-	if err := seatavailabilitydomain.Normalize(snapshot, commit.CommittedAt); err != nil {
+	if err := catalogdomain.NormalizeSeatMap(layout, commit.CommittedAt); err != nil {
+		return fmt.Errorf("%w: normalize live-seat layout: %w", central.ErrInvalid, err)
+	}
+	if availability.GetLayoutHash() != layout.GetLayoutHash() {
+		return fmt.Errorf("%w: live-seat availability layout hash does not match normalized layout", central.ErrInvalid)
+	}
+	if err := seatavailabilitydomain.Normalize(availability, commit.CommittedAt); err != nil {
 		return fmt.Errorf("%w: normalize seat availability: %w", central.ErrInvalid, err)
 	}
-	contentHash := seatavailabilitydomain.ContentHash(snapshot)
-	changed, snapshotID, err := storeDistinctSeatAvailability(ctx, tx, snapshot, contentHash, commit.CommittedAt)
+	if _, err := putSeatMapTx(ctx, tx, layout); err != nil {
+		return err
+	}
+	contentHash := seatavailabilitydomain.ContentHash(availability)
+	changed, snapshotID, err := storeDistinctSeatAvailability(ctx, tx, availability, contentHash, commit.CommittedAt)
 	if err != nil || !changed {
 		return err
 	}
-	return applySeatAvailability(ctx, tx, availabilityTask, snapshot, snapshotID, commit.CommittedAt)
+	if target.availabilityTask == nil {
+		return nil
+	}
+	return applySeatAvailability(ctx, tx, target.availabilityTask, availability, snapshotID, commit.CommittedAt)
+}
+
+type liveSeatTarget struct {
+	auditoriumID     string
+	showtimeID       string
+	availabilityTask *observationpb.SeatAvailabilityTask
+}
+
+func completedLiveSeatObservation(result *observationpb.AssignmentResult) (*seatmappb.LiveSeatObservation, error) {
+	completed := result.GetCompleted()
+	if completed == nil {
+		return nil, fmt.Errorf("%w: live-seat assignment result is incomplete", central.ErrInvalid)
+	}
+	liveSeat := completed.GetLiveSeat()
+	if liveSeat == nil || liveSeat.GetLayout() == nil || liveSeat.GetAvailability() == nil ||
+		completed.GetCatalog() != nil || completed.GetSchedule() != nil {
+		return nil, fmt.Errorf("%w: live-seat assignment result is incomplete", central.ErrInvalid)
+	}
+	return liveSeat, nil
+}
+
+func assignmentLiveSeatTarget(task *observationpb.AssignmentTask) (liveSeatTarget, error) {
+	if seatMapTask := task.GetSeatMap(); seatMapTask != nil {
+		if seatMapTask.GetAuditorium() == nil {
+			return liveSeatTarget{}, fmt.Errorf("%w: live-seat assignment auditorium is required", central.ErrInvalid)
+		}
+		target := liveSeatTarget{auditoriumID: seatMapTask.GetAuditorium().GetId()}
+		if seatMapTask.GetShowtime() != nil {
+			target.showtimeID = seatMapTask.GetShowtime().GetId()
+		}
+		return target, nil
+	}
+	availabilityTask := task.GetSeatAvailability()
+	if availabilityTask == nil {
+		return liveSeatTarget{}, fmt.Errorf("%w: live-seat assignment target is required", central.ErrInvalid)
+	}
+	if availabilityTask.GetAuditorium() == nil || availabilityTask.GetShowtime() == nil {
+		return liveSeatTarget{}, fmt.Errorf("%w: live-seat assignment target is incomplete", central.ErrInvalid)
+	}
+	return liveSeatTarget{
+		auditoriumID:     availabilityTask.GetAuditorium().GetId(),
+		showtimeID:       availabilityTask.GetShowtime().GetId(),
+		availabilityTask: availabilityTask,
+	}, nil
+}
+
+func validateLiveSeatTarget(liveSeat *seatmappb.LiveSeatObservation, target liveSeatTarget) error {
+	layout, availability := liveSeat.GetLayout(), liveSeat.GetAvailability()
+	if target.auditoriumID == "" || layout.GetAuditoriumId() != target.auditoriumID ||
+		availability.GetAuditoriumId() != target.auditoriumID ||
+		target.showtimeID != "" && availability.GetShowtimeId() != target.showtimeID ||
+		availability.GetLayoutHash() == "" || availability.GetLayoutHash() != layout.GetLayoutHash() {
+		return fmt.Errorf("%w: live-seat result does not match its exact assignment", central.ErrInvalid)
+	}
+	return nil
 }
 
 func storeDistinctSeatAvailability(
@@ -128,11 +196,8 @@ func applySeatAvailability(
 		}
 	}
 	if requestLayoutValidation {
-		if _, err := tx.Exec(ctx, `
-			UPDATE auditoriums
-			SET seat_map_requested_at = COALESCE(seat_map_requested_at, $2), updated_at = $2
-			WHERE id = $1
-		`, snapshot.GetAuditoriumId(), now); err != nil {
+		trigger := (&collectionpb.Trigger_builder{ActiveMonitor: (&collectionpb.ActiveMonitor_builder{}).Build()}).Build()
+		if err := queueSeatMapCollectionStateTx(ctx, tx, snapshot.GetAuditoriumId(), trigger, 60, now, ""); err != nil {
 			return fmt.Errorf("request changed seat-map validation: %w", err)
 		}
 	}

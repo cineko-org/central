@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
+	executionpb "github.com/cineko-org/contracts/v3/gen/go/cineko/execution"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

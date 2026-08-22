@@ -17,11 +17,11 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/bootstrap"
-	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
-	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
+	adminpb "github.com/cineko-org/contracts/v3/gen/go/cineko/admin"
+	clientpb "github.com/cineko-org/contracts/v3/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/v3/gen/go/cineko/common"
+	observationpb "github.com/cineko-org/contracts/v3/gen/go/cineko/observation"
+	probepb "github.com/cineko-org/contracts/v3/gen/go/cineko/probe"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -176,6 +176,7 @@ func New(service *central.Service, options ...Option) (*Server, error) {
 	mux.HandleFunc("POST /v1/catalog/snapshots", server.putClientCatalogSnapshot)
 	mux.HandleFunc("GET /v1/catalog/auditoriums/{auditoriumId}/seat-map", server.getClientSeatMapVersion)
 	mux.HandleFunc("POST /v1/catalog/auditoriums/{auditoriumId}/seat-map:resolve", server.resolveClientSeatMap)
+	mux.HandleFunc("GET /v1/catalog/auditoriums/{auditoriumId}/seat-map:watch", server.watchClientSeatMap)
 	for _, resource := range []string{
 		"presets", "monitors", "reservations", "external-operations", "app-events",
 	} {
