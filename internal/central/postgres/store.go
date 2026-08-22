@@ -460,6 +460,10 @@ func authorizeAssignmentHeartbeat(
 }
 
 func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommit) (*observationpb.ResultReceipt, error) {
+	resultPayload, err := protojson.Marshal(commit.Result)
+	if err != nil {
+		return nil, fmt.Errorf("encode assignment result for storage: %w", err)
+	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("begin result commit: %w", err)
@@ -479,10 +483,10 @@ func (store *Store) CommitResult(ctx context.Context, commit central.ResultCommi
 	if err := authorizeResultCommit(state, commit); err != nil {
 		return nil, err
 	}
-	if err := writeAssignmentResult(ctx, tx, commit); err != nil {
+	if err := writeAssignmentResult(ctx, tx, commit, resultPayload); err != nil {
 		return nil, err
 	}
-	if err := finishAssignmentAttempt(ctx, tx, commit); err != nil {
+	if err := finishAssignmentAttempt(ctx, tx, commit, resultPayload); err != nil {
 		return nil, err
 	}
 	if commit.Result.GetCompleted() != nil {
@@ -510,6 +514,8 @@ func storeSuccessfulResult(
 		return storeCatalogResult(ctx, tx, commit.Result)
 	case probedomain.CapabilityCGVSeatMapCapture:
 		return storeSeatMapResult(ctx, tx, commit.Result, state.task)
+	case probedomain.CapabilityCGVSeatAvailabilityCapture:
+		return storeSeatAvailabilityResult(ctx, tx, commit, state.task)
 	default:
 		return storeScheduleResult(ctx, tx, commit, state)
 	}
@@ -517,7 +523,8 @@ func storeSuccessfulResult(
 
 func storeCatalogResult(ctx context.Context, tx pgx.Tx, result *observationpb.AssignmentResult) error {
 	completed := result.GetCompleted()
-	if completed == nil || completed.GetCatalog() == nil || len(completed.GetCaptures()) != 0 || completed.GetSeatMap() != nil {
+	if completed == nil || completed.GetCatalog() == nil || len(completed.GetCaptures()) != 0 ||
+		completed.GetSeatMap() != nil || completed.GetSeatAvailability() != nil {
 		return fmt.Errorf("%w: catalog assignment result is incomplete", central.ErrInvalid)
 	}
 	snapshot := completed.GetCatalog()
@@ -546,7 +553,8 @@ func storeSeatMapResult(
 ) error {
 	completed := result.GetCompleted()
 	seatMap := completed.GetSeatMap()
-	if completed == nil || seatMap == nil || len(completed.GetCaptures()) != 0 || completed.GetCatalog() != nil {
+	if completed == nil || seatMap == nil || len(completed.GetCaptures()) != 0 ||
+		completed.GetCatalog() != nil || completed.GetSeatAvailability() != nil {
 		return fmt.Errorf("%w: seat-map assignment result is incomplete", central.ErrInvalid)
 	}
 	if task.GetSeatMap() == nil || task.GetSeatMap().GetAuditorium() == nil ||
@@ -564,7 +572,7 @@ func storeScheduleResult(
 	state assignmentResultState,
 ) error {
 	completed := commit.Result.GetCompleted()
-	if completed == nil || completed.GetCatalog() != nil || completed.GetSeatMap() != nil {
+	if completed == nil || completed.GetCatalog() != nil || completed.GetSeatMap() != nil || completed.GetSeatAvailability() != nil {
 		return fmt.Errorf("%w: schedule assignment cannot include another result type", central.ErrInvalid)
 	}
 	snapshot := catalogSnapshotFromResult(state.theater, commit.Result, commit.CommittedAt)
@@ -702,15 +710,19 @@ func authorizeResultCommit(state assignmentResultState, commit central.ResultCom
 	return nil
 }
 
-func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.ResultCommit) error {
+func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.ResultCommit, resultPayload []byte) error {
 	status := assignmentResultStatus(commit.Result)
-	if status == "failed" {
+	failureReason := ""
+	if failed := commit.Result.GetFailed(); failed != nil {
+		failureReason = strings.TrimSpace(failed.GetReasonCode())
+	}
+	if failed := commit.Result.GetFailed(); failed != nil && failed.GetRetryable() {
 		_, err := tx.Exec(ctx, `
 			UPDATE observation_assignments
 			SET status = 'retry_pending', probe_id = NULL, lease_token_hash = NULL,
-				lease_expires_at = NULL, terminal_reason = '', updated_at = $2
+				lease_expires_at = NULL, terminal_reason = $3, updated_at = $2
 			WHERE id = $1
-		`, commit.AssignmentID, commit.CommittedAt)
+		`, commit.AssignmentID, commit.CommittedAt, failureReason)
 		if err != nil {
 			return fmt.Errorf("store retryable assignment failure: %w", err)
 		}
@@ -720,24 +732,25 @@ func writeAssignmentResult(ctx context.Context, tx pgx.Tx, commit central.Result
 		UPDATE observation_assignments
 		SET status = $2, probe_id = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
 			completed_by_probe_id = $3, run_id = $4, result_hash = $5, result_payload = $6,
-			started_at = $7, finished_at = $8, updated_at = $9
+			started_at = $7, finished_at = $8, updated_at = $9, terminal_reason = $10
 		WHERE id = $1
 	`, commit.AssignmentID, status, commit.ProbeID, commit.Result.GetRunId(), commit.PayloadHash,
-		string(commit.Payload), commit.Result.GetStartedAt().AsTime(), commit.Result.GetFinishedAt().AsTime(), commit.CommittedAt)
+		resultPayload, commit.Result.GetStartedAt().AsTime(), commit.Result.GetFinishedAt().AsTime(), commit.CommittedAt,
+		failureReason)
 	if err != nil {
 		return fmt.Errorf("store assignment result: %w", err)
 	}
 	return nil
 }
 
-func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.ResultCommit) error {
+func finishAssignmentAttempt(ctx context.Context, tx pgx.Tx, commit central.ResultCommit, resultPayload []byte) error {
 	status := assignmentResultStatus(commit.Result)
 	tag, err := tx.Exec(ctx, `
 		UPDATE assignment_attempts
 		SET status = $3, finished_at = $4, run_id = $5, result_hash = $6, result_payload = $7
 		WHERE assignment_id = $1 AND probe_id = $2 AND status = 'leased'
 	`, commit.AssignmentID, commit.ProbeID, status, commit.Result.GetFinishedAt().AsTime(),
-		commit.Result.GetRunId(), commit.PayloadHash, string(commit.Payload))
+		commit.Result.GetRunId(), commit.PayloadHash, resultPayload)
 	if err != nil {
 		return fmt.Errorf("finish assignment attempt: %w", err)
 	}
@@ -787,7 +800,7 @@ func storeCaptures(
 			return err
 		}
 		if err := requestMonitoredSeatMapValidation(
-			ctx, tx, theaterID, timeZone, localDateString(capture.GetTargetDate()), newShowtimes, commit.CommittedAt,
+			ctx, tx, theaterID, timeZone, newShowtimes, commit.CommittedAt,
 		); err != nil {
 			return err
 		}
@@ -869,7 +882,6 @@ func requestMonitoredSeatMapValidation(
 	tx pgx.Tx,
 	theaterID string,
 	timeZone string,
-	targetDate string,
 	showtimes []*catalogpb.Showtime,
 	now time.Time,
 ) error {
@@ -887,7 +899,7 @@ func requestMonitoredSeatMapValidation(
 	auditoriumIDs := make(map[string]struct{})
 	for _, showtime := range showtimes {
 		for _, target := range targets {
-			if executionTargetMatches(target, targetDate, showtime, now, location) {
+			if executionTargetMatches(target, showtime, now, location) {
 				auditoriumIDs[showtime.GetAuditorium().GetId()] = struct{}{}
 				break
 			}

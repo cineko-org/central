@@ -2,20 +2,23 @@ package probe
 
 import (
 	"fmt"
+	"sort"
 
 	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 )
 
 const (
-	CapabilityCGVScheduleCapture = "cgv.schedule.capture"
-	CapabilityCGVCatalogCapture  = "cgv.catalog.capture"
-	CapabilityCGVSeatMapCapture  = "cgv.seat-map.capture"
+	CapabilityCGVScheduleCapture         = "cgv.schedule.capture"
+	CapabilityCGVCatalogCapture          = "cgv.catalog.capture"
+	CapabilityCGVSeatMapCapture          = "cgv.seat-map.capture"
+	CapabilityCGVSeatAvailabilityCapture = "cgv.seat-availability.capture"
 )
 
 // IsSupportedCapability reports whether Central can assign the capability to a probe.
 func IsSupportedCapability(value string) bool {
 	switch value {
-	case CapabilityCGVScheduleCapture, CapabilityCGVCatalogCapture, CapabilityCGVSeatMapCapture:
+	case CapabilityCGVScheduleCapture, CapabilityCGVCatalogCapture, CapabilityCGVSeatMapCapture,
+		CapabilityCGVSeatAvailabilityCapture:
 		return true
 	default:
 		return false
@@ -33,6 +36,8 @@ func CapabilityKey(capability *observationpb.Capability) (string, error) {
 		return CapabilityCGVCatalogCapture, nil
 	case capability.GetSeatMapCapture() != nil:
 		return CapabilityCGVSeatMapCapture, nil
+	case capability.GetSeatAvailabilityCapture() != nil:
+		return CapabilityCGVSeatAvailabilityCapture, nil
 	default:
 		return "", fmt.Errorf("unsupported capability")
 	}
@@ -53,6 +58,7 @@ func CapabilityKeys(capabilities []*observationpb.Capability) ([]string, error) 
 		seen[key] = struct{}{}
 		keys = append(keys, key)
 	}
+	sort.Strings(keys)
 	return keys, nil
 }
 
@@ -68,6 +74,8 @@ func Capabilities(keys []string) ([]*observationpb.Capability, error) {
 			capability.SetCatalogCapture(&observationpb.CatalogCapture{})
 		case CapabilityCGVSeatMapCapture:
 			capability.SetSeatMapCapture(&observationpb.SeatMapCapture{})
+		case CapabilityCGVSeatAvailabilityCapture:
+			capability.SetSeatAvailabilityCapture(&observationpb.SeatAvailabilityCapture{})
 		default:
 			return nil, fmt.Errorf("unsupported capability %q", key)
 		}

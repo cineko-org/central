@@ -12,7 +12,6 @@ import (
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -115,8 +114,6 @@ func apiPresetResource(userID, name string) *clientpb.Resource {
 func apiMonitorResource(movieID string) *clientpb.Resource {
 	identity := &commonpb.ResourceIdentity{}
 	identity.SetId("monitor")
-	mode := &clientpb.MonitorMode{}
-	mode.SetOpening(&clientpb.OpeningMonitor{})
 	state := &clientpb.MonitorState{}
 	state.SetPending(&clientpb.MonitorPending{})
 	date := &commonpb.LocalDate{}
@@ -127,12 +124,10 @@ func apiMonitorResource(movieID string) *clientpb.Resource {
 	monitor.SetId("monitor")
 	monitor.SetUserId("user")
 	monitor.SetPresetId("preset")
-	monitor.SetMode(mode)
 	monitor.SetMovieId(movieID)
 	monitor.SetMovieTitle("Movie")
 	monitor.SetTargetDates([]*commonpb.LocalDate{date})
-	monitor.SetPollInterval(durationpb.New(2 * time.Second))
-	monitor.SetMaximumPollInterval(durationpb.New(3 * time.Second))
+	monitor.SetSearchHorizonDays(14)
 	monitor.SetState(state)
 	resource := &clientpb.Resource{}
 	resource.SetIdentity(identity)

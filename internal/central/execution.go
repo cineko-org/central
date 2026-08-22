@@ -114,24 +114,8 @@ func executionResult(request *executionpb.ResultRequest) (string, string) {
 	case request.GetFailed() != nil:
 		return "failed", strings.TrimSpace(request.GetFailed().GetReasonCode())
 	case request.GetRetryRequested() != nil:
-		return "failed", strings.TrimSpace(request.GetRetryRequested().GetReasonCode())
+		return "retry_requested", strings.TrimSpace(request.GetRetryRequested().GetReasonCode())
 	default:
 		return "", ""
 	}
-}
-
-// RetryExecution requeues one terminally failed command. The user boundary is
-// part of the mutation key so one Client can never reopen another user's work.
-func (service *ClientService) RetryExecution(
-	ctx context.Context,
-	principal ClientPrincipal,
-	commandID string,
-) error {
-	commandID = strings.TrimSpace(commandID)
-	if commandID == "" {
-		return ErrInvalid
-	}
-	return service.repository.RetryClientExecution(
-		ctx, principal.UserID, commandID, service.clock().UTC(),
-	)
 }

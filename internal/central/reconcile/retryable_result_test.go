@@ -20,7 +20,7 @@ func TestFailedResultRetriesAnotherEligibleProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.RequeuedAssignments != 1 || report.FailedAssignments != 0 {
+	if report.GetRequeuedAssignments() != 1 || report.GetFailedAssignments() != 0 {
 		t.Fatalf("report = %+v", report)
 	}
 	if got := cycle.requeued["failed_attempt"]; got != now.Add(2*time.Second) {
@@ -99,7 +99,7 @@ func TestFailedResultTerminalizesOnlyWhenRetryPolicyIsExhausted(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if report.FailedAssignments != 1 || report.RequeuedAssignments != 0 ||
+			if report.GetFailedAssignments() != 1 || report.GetRequeuedAssignments() != 0 ||
 				cycle.finished["failed_attempt"] != OutcomeFailed {
 				t.Fatalf("report = %+v, finished = %+v", report, cycle.finished)
 			}

@@ -17,7 +17,6 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/bootstrap"
-	"github.com/cineko-org/central/internal/central/reconcile"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
@@ -40,15 +39,17 @@ type Server struct {
 	pins                 pinService
 	probeBootstrapSigner *bootstrap.Signer
 	admin                *AdminAuth
-	reconciler           interface{ Snapshot() reconcile.Status }
-	adminConfiguration   *adminpb.Configuration
-	adminOperations      adminOperations
-	releasePublishHash   [32]byte
-	releasePublishReady  bool
-	trustedProxies       trustedProxySet
-	eventHeartbeat       time.Duration
-	optionErrors         []error
-	handler              http.Handler
+	reconciler           interface {
+		Snapshot() *adminpb.ReconcileStatus
+	}
+	adminConfiguration  *adminpb.Configuration
+	adminOperations     adminOperations
+	releasePublishHash  [32]byte
+	releasePublishReady bool
+	trustedProxies      trustedProxySet
+	eventHeartbeat      time.Duration
+	optionErrors        []error
+	handler             http.Handler
 }
 
 type pinService interface {
@@ -61,7 +62,9 @@ type pinService interface {
 
 type Option func(*Server)
 
-func WithReconciler(reconcilerStatus interface{ Snapshot() reconcile.Status }) Option {
+func WithReconciler(reconcilerStatus interface {
+	Snapshot() *adminpb.ReconcileStatus
+}) Option {
 	return func(server *Server) { server.reconciler = reconcilerStatus }
 }
 
@@ -164,7 +167,6 @@ func New(service *central.Service, options ...Option) (*Server, error) {
 	mux.HandleFunc("POST /v1/executions:claim", server.claimClientExecution)
 	mux.HandleFunc("PUT /v1/executions/{executionId}/heartbeat", server.heartbeatClientExecution)
 	mux.HandleFunc("PUT /v1/executions/{executionId}/result", server.completeClientExecution)
-	mux.HandleFunc("POST /v1/executions/{executionId}/retry", server.retryClientExecution)
 	mux.HandleFunc("PUT /v1/devices/{installationId}", server.upsertClientDevice)
 	mux.HandleFunc("GET /v1/client/bootstrap", server.clientBootstrap)
 	mux.HandleFunc("GET /v1/events/stream", server.streamClientEvents)
@@ -202,10 +204,10 @@ func (server *Server) reconcilerHealth(writer http.ResponseWriter, request *http
 	}
 	status := server.reconciler.Snapshot()
 	httpStatus := http.StatusOK
-	if !status.Healthy {
+	if !status.GetHealthy() {
 		httpStatus = http.StatusServiceUnavailable
 	}
-	server.writeProtoJSON(writer, httpStatus, reconcileStatusProto(status))
+	server.writeProtoJSON(writer, httpStatus, status)
 }
 
 func (server *Server) Handler() http.Handler { return server.handler }

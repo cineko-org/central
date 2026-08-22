@@ -98,17 +98,6 @@ func TestClientExecutionLifecycle(t *testing.T) {
 	if repository.hash != sha256.Sum256([]byte("lease")) {
 		t.Fatalf("completion lease hash = %x", repository.hash)
 	}
-	if err := service.RetryExecution(ctx, principal, " "); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("RetryExecution(invalid) = %v", err)
-	}
-	repository.err = errInjectedClient
-	if err := service.RetryExecution(ctx, principal, " execution "); !errors.Is(err, errInjectedClient) {
-		t.Fatalf("RetryExecution(repository error) = %v", err)
-	}
-	repository.err = nil
-	if err := service.RetryExecution(ctx, principal, " execution "); err != nil {
-		t.Fatalf("RetryExecution() = %v", err)
-	}
 }
 
 func TestExecutionDefaults(t *testing.T) {

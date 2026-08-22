@@ -4,8 +4,8 @@ This document is the service-point inventory for the current API. It describes p
 wire behavior only; deployment addresses, secret material, and network topology are
 intentionally outside this contract.
 
-The router has 56 literal service points and five resource-family declarations. The
-five declarations expand over five resource kinds, producing 81 concrete method/path
+The router has 55 literal service points and five resource-family declarations. The
+five declarations expand over five resource kinds, producing 80 concrete method/path
 service points in total.
 
 ## Shared rules
@@ -104,7 +104,6 @@ shown; this distinction is deliberate documentation of the implemented boundary.
 | `POST /v1/executions:claim` | leases the next eligible user execution to an installation | `200` command or `204` |
 | `PUT /v1/executions/{executionId}/heartbeat` | valid execution lease; extends it | `200` |
 | `PUT /v1/executions/{executionId}/result` | valid execution lease; records terminal or retryable outcome | `204` |
-| `POST /v1/executions/{executionId}/retry` | user-owned terminal failure only; reset is idempotent while queued | `204`, `404`, or `409` |
 | `PUT /v1/devices/{installationId}` | path is authoritative for installation ID; upsert | `200` device |
 | `GET /v1/client/bootstrap` | reads user resources, release generation, and device state | `200` |
 | `GET /v1/events/stream` | durable cursor from query/`Last-Event-ID`; session is revalidated | SSE stream or reset control event |

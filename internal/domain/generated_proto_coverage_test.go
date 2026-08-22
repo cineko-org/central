@@ -6,11 +6,10 @@ import (
 
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestGeneratedProtoPresetValidationBoundaries(t *testing.T) {
-	if ValidatePreset(nil, nil) == nil {
+	if ValidatePreset(nil) == nil {
 		t.Fatal("nil preset accepted")
 	}
 	base := validPresetProto()
@@ -25,31 +24,15 @@ func TestGeneratedProtoPresetValidationBoundaries(t *testing.T) {
 	} {
 		candidate := clonePreset(base)
 		mutate(candidate)
-		if ValidatePreset(candidate, nil) == nil {
+		if ValidatePreset(candidate) == nil {
 			t.Fatalf("invalid preset accepted: %+v", candidate)
 		}
 	}
 	noPreference := clonePreset(base)
 	noPreference.SetSeatPreference(nil)
-	if err := ValidatePreset(noPreference, nil); err != nil {
+	if err := ValidatePreset(noPreference); err != nil {
 		t.Fatalf("nil seat preference = %v", err)
 	}
-	seatMap := SeatMap{AuditoriumID: base.GetAuditoriumId(), Seats: []Seat{{Label: "A1"}}}
-	withExplicit := clonePreset(base)
-	withExplicit.GetSeatPreference().SetExplicitSeats([]string{"A1"})
-	if err := ValidatePreset(withExplicit, &seatMap); err != nil {
-		t.Fatalf("valid explicit seat = %v", err)
-	}
-	seatMap.AuditoriumID = "other"
-	if ValidatePreset(withExplicit, &seatMap) == nil {
-		t.Fatal("mismatched seat map accepted")
-	}
-	seatMap.AuditoriumID = base.GetAuditoriumId()
-	withExplicit.GetSeatPreference().SetExplicitSeats([]string{"missing"})
-	if ValidatePreset(withExplicit, &seatMap) == nil {
-		t.Fatal("missing explicit seat accepted")
-	}
-
 	zone := &clientpb.SeatZone{}
 	unnamedPreference := &clientpb.SeatPreference{}
 	unnamedPreference.SetPreferredZones([]*clientpb.SeatZone{zone})
@@ -112,10 +95,15 @@ func protoCloneZone(value *clientpb.SeatZone) *clientpb.SeatZone {
 	return copy
 }
 
+func protoCloneDate(value *commonpb.LocalDate) *commonpb.LocalDate {
+	copy := &commonpb.LocalDate{}
+	copy.SetYear(value.GetYear())
+	copy.SetMonth(value.GetMonth())
+	copy.SetDay(value.GetDay())
+	return copy
+}
+
 func TestGeneratedProtoMonitorValidationBoundaries(t *testing.T) {
-	if protoDuration(nil) != 0 {
-		t.Fatal("nil duration was not zero")
-	}
 	if ValidateMonitor(nil) == nil {
 		t.Fatal("nil monitor accepted")
 	}
@@ -126,19 +114,11 @@ func TestGeneratedProtoMonitorValidationBoundaries(t *testing.T) {
 		func(value *clientpb.Monitor) { value.SetPresetId("") },
 		func(value *clientpb.Monitor) { value.SetMovieId("") },
 		func(value *clientpb.Monitor) { value.SetTargetDates(nil); value.SetTargetWeekdays(nil) },
-		func(value *clientpb.Monitor) { value.SetMode(&clientpb.MonitorMode{}) },
-		func(value *clientpb.Monitor) {
-			mode := &clientpb.MonitorMode{}
-			mode.SetCancellation(&clientpb.CancellationMonitor{})
-			value.SetMode(mode)
-			value.SetTargetWeekdays([]int32{int32(time.Monday)})
-		},
-		func(value *clientpb.Monitor) { value.SetPollInterval(durationpb.New(time.Second)) },
-		func(value *clientpb.Monitor) {
-			value.SetMaximumPollInterval(durationpb.New(5 * time.Second))
-			value.SetPollInterval(durationpb.New(5 * time.Second))
-		},
 		func(value *clientpb.Monitor) { value.SetTargetDates([]*commonpb.LocalDate{nil}) },
+		func(value *clientpb.Monitor) {
+			date := value.GetTargetDates()[0]
+			value.SetTargetDates([]*commonpb.LocalDate{date, protoCloneDate(date)})
+		},
 		func(value *clientpb.Monitor) { value.SetTargetWeekdays([]int32{8}) },
 		func(value *clientpb.Monitor) {
 			value.SetTargetWeekdays([]int32{int32(time.Monday), int32(time.Monday)})
@@ -147,6 +127,7 @@ func TestGeneratedProtoMonitorValidationBoundaries(t *testing.T) {
 			value.SetTargetWeekdays([]int32{int32(time.Monday)})
 			value.SetSearchHorizonDays(0)
 		},
+		func(value *clientpb.Monitor) { value.SetSearchHorizonDays(DefaultSearchHorizonDays + 1) },
 		func(value *clientpb.Monitor) {
 			bad := &commonpb.LocalTime{}
 			bad.SetHour(24)
@@ -165,17 +146,10 @@ func TestGeneratedProtoMonitorValidationBoundaries(t *testing.T) {
 	if err := ValidateMonitor(valid); err != nil {
 		t.Fatalf("open time window = %v", err)
 	}
-	cancellation := cloneMonitor(base)
-	cancellationMode := &clientpb.MonitorMode{}
-	cancellationMode.SetCancellation(&clientpb.CancellationMonitor{})
-	cancellation.SetMode(cancellationMode)
-	if err := ValidateMonitor(cancellation); err != nil {
-		t.Fatalf("exact-date cancellation monitor = %v", err)
-	}
-	if err := validateTargetWeekdays(nil, 0); err != nil {
+	if err := validateTargetWeekdays(nil); err != nil {
 		t.Fatalf("empty weekdays = %v", err)
 	}
-	if err := validateTargetWeekdays([]int32{int32(time.Sunday)}, 1); err != nil {
+	if err := validateTargetWeekdays([]int32{int32(time.Sunday)}); err != nil {
 		t.Fatalf("valid weekday = %v", err)
 	}
 	if err := validateTimeWindow(nil, nil); err != nil {
@@ -257,13 +231,10 @@ func cloneMonitor(value *clientpb.Monitor) *clientpb.Monitor {
 	copy.SetUserId(value.GetUserId())
 	copy.SetPresetId(value.GetPresetId())
 	copy.SetMovieId(value.GetMovieId())
-	copy.SetMode(value.GetMode())
 	copy.SetTargetDates(value.GetTargetDates())
 	copy.SetTargetWeekdays(value.GetTargetWeekdays())
 	copy.SetSearchHorizonDays(value.GetSearchHorizonDays())
 	copy.SetEarliestTime(value.GetEarliestTime())
 	copy.SetLatestTime(value.GetLatestTime())
-	copy.SetPollInterval(value.GetPollInterval())
-	copy.SetMaximumPollInterval(value.GetMaximumPollInterval())
 	return copy
 }

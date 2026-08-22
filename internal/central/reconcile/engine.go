@@ -20,9 +20,12 @@ import (
 	"github.com/cineko-org/central/internal/observation/planning"
 	"github.com/cineko-org/central/internal/support/numeric"
 	"github.com/cineko-org/central/internal/telemetry"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -35,6 +38,7 @@ const (
 	catalogRefreshRetryDelay    = time.Minute
 	catalogRefreshWindow        = 10 * time.Minute
 	seatMapBackfillWindow       = 10 * time.Minute
+	seatAvailabilityWindow      = 30 * time.Second
 )
 
 var ErrAlreadyRunning = errors.New("reconciler is already running")
@@ -49,23 +53,13 @@ type Config struct {
 	Logger            *slog.Logger
 }
 
-type Status struct {
-	Running       bool      `json:"running"`
-	Healthy       bool      `json:"healthy"`
-	Leader        bool      `json:"leader"`
-	LastAttemptAt time.Time `json:"lastAttemptAt,omitempty"`
-	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
-	LastErrorAt   time.Time `json:"lastErrorAt,omitempty"`
-	LastErrorCode string    `json:"lastErrorCode,omitempty"`
-	LastReport    Report    `json:"lastReport"`
-}
-
 type Engine struct {
 	repository     Repository
 	config         Config
 	clock          func() time.Time
 	randomDuration func(time.Duration, time.Duration) (time.Duration, error)
 	newID          func() (string, error)
+	newTimer       func(time.Duration) schedulerTimer
 
 	mu            sync.RWMutex
 	running       bool
@@ -73,7 +67,7 @@ type Engine struct {
 	lastSuccessAt time.Time
 	lastErrorAt   time.Time
 	lastErrorCode string
-	lastReport    Report
+	lastReport    *adminpb.ReconcileReport
 }
 
 func New(repository Repository, config Config) (*Engine, error) {
@@ -87,6 +81,7 @@ func New(repository Repository, config Config) (*Engine, error) {
 	return &Engine{
 		repository: repository, config: config, clock: time.Now,
 		randomDuration: secureRandomDuration, newID: newAssignmentID,
+		newTimer: newSchedulerTimer,
 	}, nil
 }
 
@@ -133,31 +128,40 @@ func (engine *Engine) Run(ctx context.Context) error {
 	}
 	defer engine.setRunning(false)
 
-	engine.runAndRecord(ctx)
-	ticker := time.NewTicker(engine.config.TickInterval)
-	defer ticker.Stop()
+	wakeupContext, cancelWakeups := context.WithCancel(ctx)
+	defer cancelWakeups()
+	wakeups := engine.startWakeupListener(wakeupContext)
+	nextDeadline := engine.runAndRecord(ctx)
 	for {
+		delay := nextReconcileDelay(engine.clock().UTC(), nextDeadline, engine.config.TickInterval)
+		timer := engine.newTimer(delay)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return nil
-		case <-ticker.C:
-			engine.runAndRecord(ctx)
+		case <-wakeups:
+			timer.Stop()
+			nextDeadline = engine.runAndRecord(ctx)
+		case <-timer.C():
+			timer.Stop()
+			nextDeadline = engine.runAndRecord(ctx)
 		}
 	}
 }
 
-func (engine *Engine) RunOnce(ctx context.Context) (Report, error) {
+func (engine *Engine) RunOnce(ctx context.Context) (*adminpb.ReconcileReport, error) {
 	now := engine.clock().UTC()
-	report := Report{StartedAt: now}
+	report := &adminpb.ReconcileReport{}
+	report.SetStartedAt(timestamppb.New(now))
 	leader, err := engine.repository.RunLeaderCycle(ctx, func(cycle CycleRepository) error {
-		return engine.reconcile(ctx, cycle, now, &report)
+		return engine.reconcile(ctx, cycle, now, report)
 	})
-	report.Leader = leader
-	report.FinishedAt = engine.clock().UTC()
+	report.SetLeader(leader)
+	report.SetFinishedAt(timestamppb.New(engine.clock().UTC()))
 	return report, err
 }
 
-func (engine *Engine) Snapshot() Status {
+func (engine *Engine) Snapshot() *adminpb.ReconcileStatus {
 	engine.mu.RLock()
 	defer engine.mu.RUnlock()
 	healthDeadline := 3 * engine.config.TickInterval
@@ -167,36 +171,49 @@ func (engine *Engine) Snapshot() Status {
 	now := engine.clock().UTC()
 	healthy := engine.lastErrorCode == "" && !engine.lastSuccessAt.IsZero() &&
 		now.Sub(engine.lastSuccessAt) <= healthDeadline
-	return Status{
-		Running: engine.running, Healthy: healthy, Leader: engine.lastReport.Leader,
-		LastAttemptAt: engine.lastAttemptAt, LastSuccessAt: engine.lastSuccessAt,
-		LastErrorAt: engine.lastErrorAt, LastErrorCode: engine.lastErrorCode, LastReport: engine.lastReport,
+	status := &adminpb.ReconcileStatus{}
+	status.SetRunning(engine.running)
+	status.SetHealthy(healthy)
+	status.SetLeader(engine.lastReport.GetLeader())
+	if !engine.lastAttemptAt.IsZero() {
+		status.SetLastAttemptAt(timestamppb.New(engine.lastAttemptAt))
 	}
+	if !engine.lastSuccessAt.IsZero() {
+		status.SetLastSuccessAt(timestamppb.New(engine.lastSuccessAt))
+	}
+	if !engine.lastErrorAt.IsZero() {
+		status.SetLastErrorAt(timestamppb.New(engine.lastErrorAt))
+	}
+	status.SetLastErrorCode(engine.lastErrorCode)
+	if engine.lastReport != nil {
+		status.SetLastReport(proto.CloneOf(engine.lastReport))
+	}
+	return status
 }
 
 func (engine *Engine) reconcile(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	stale, err := cycle.MarkStaleProbes(ctx, now.Add(-engine.config.ProbeHeartbeatTTL), now)
 	if err != nil {
 		return fmt.Errorf("mark stale probes: %w", err)
 	}
-	report.StaleProbes = stale
+	report.SetStaleProbes(numeric.ClampInt32(stale))
 	deleted, err := cycle.DeleteRetiredProbes(ctx, now.Add(-engine.config.OfflineRetention))
 	if err != nil {
 		return fmt.Errorf("delete retired probes: %w", err)
 	}
-	report.DeletedProbes = deleted
+	report.SetDeletedProbes(numeric.ClampInt32(deleted))
 	deletedClientEvents, err := cycle.DeleteExpiredClientEvents(
 		ctx, now.Add(-defaultClientEventRetention), engine.config.BatchSize,
 	)
 	if err != nil {
 		return fmt.Errorf("delete expired Client events: %w", err)
 	}
-	report.DeletedClientEvents = deletedClientEvents
+	report.SetDeletedClientEvents(deletedClientEvents)
 	if err := engine.reconcileExpiredLeases(ctx, cycle, now, report); err != nil {
 		return err
 	}
@@ -215,6 +232,9 @@ func (engine *Engine) reconcile(
 	if err := engine.scheduleSeatMapBackfill(ctx, cycle, now, report); err != nil {
 		return err
 	}
+	if err := engine.scheduleSeatAvailability(ctx, cycle, now, report); err != nil {
+		return err
+	}
 	if err := engine.scheduleDuePolicies(ctx, cycle, now, report); err != nil {
 		return err
 	}
@@ -223,8 +243,49 @@ func (engine *Engine) reconcile(
 		return fmt.Errorf("read reconcile queue lag: %w", err)
 	}
 	if oldestDue != nil {
-		report.OldestDueAgeSeconds = max(0, int64(now.Sub(*oldestDue)/time.Second))
+		report.SetOldestDueAgeSeconds(max(0, int64(now.Sub(*oldestDue)/time.Second)))
 	}
+	return nil
+}
+
+func (engine *Engine) scheduleSeatAvailability(
+	ctx context.Context,
+	cycle CycleRepository,
+	now time.Time,
+	report *adminpb.ReconcileReport,
+) error {
+	target, err := cycle.SeatAvailabilityTarget(ctx, now)
+	if err != nil {
+		return fmt.Errorf("inspect exact-showtime availability: %w", err)
+	}
+	if target == nil {
+		return nil
+	}
+	policy := Policy{TaskKind: probedomain.CapabilityCGVSeatAvailabilityCapture}
+	candidates, err := cycle.EligibleProbes(ctx, policy, now, now.Add(-engine.config.ProbeHeartbeatTTL))
+	if err != nil {
+		return fmt.Errorf("list exact-showtime availability probes: %w", err)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	id, err := engine.newID()
+	if err != nil {
+		return fmt.Errorf("generate exact-showtime availability assignment id: %w", err)
+	}
+	assignment := NewAssignment{
+		ID: id, Priority: planning.PrioritySeatAvailability, Status: "queued", NotBefore: now,
+		Deadline: now.Add(seatAvailabilityWindow), CreatedAt: now,
+		Candidates: slices.Clone(candidates), Task: target.Task,
+	}
+	assignment.Task.SetEgress(managedScanEgress())
+	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
+		if errors.Is(err, ErrTargetBusy) {
+			return nil
+		}
+		return fmt.Errorf("create exact-showtime availability assignment: %w", err)
+	}
+	report.SetCreatedAssignments(report.GetCreatedAssignments() + 1)
 	return nil
 }
 
@@ -232,7 +293,7 @@ func (engine *Engine) scheduleSeatMapBackfill(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	target, err := cycle.SeatMapBackfillTarget(ctx, now)
 	if err != nil {
@@ -247,16 +308,16 @@ func (engine *Engine) scheduleSeatMapBackfill(
 		return fmt.Errorf("list seat-map backfill probes: %w", err)
 	}
 	if len(candidates) == 0 {
-		report.SeatMapBackfillWaiting = true
+		report.SetSeatMapBackfillWaiting(true)
 		return nil
 	}
 	id, err := engine.newID()
 	if err != nil {
 		return fmt.Errorf("generate seat-map backfill assignment id: %w", err)
 	}
-	priority := 70
+	priority := planning.PriorityBaselineObservation
 	if target.Requested {
-		priority = 95
+		priority = planning.PriorityRequestedSeatMap
 	}
 	assignment := NewAssignment{
 		ID: id, Priority: priority, Status: "queued", NotBefore: now,
@@ -266,13 +327,13 @@ func (engine *Engine) scheduleSeatMapBackfill(
 	assignment.Task.SetEgress(managedScanEgress())
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 		if errors.Is(err, ErrTargetBusy) {
-			report.SeatMapBackfillWaiting = true
+			report.SetSeatMapBackfillWaiting(true)
 			return nil
 		}
 		return fmt.Errorf("create seat-map backfill assignment: %w", err)
 	}
-	report.CreatedAssignments++
-	report.SeatMapBackfillCreated = true
+	report.SetCreatedAssignments(report.GetCreatedAssignments() + 1)
+	report.SetSeatMapBackfillCreated(true)
 	return nil
 }
 
@@ -280,7 +341,7 @@ func (engine *Engine) scheduleCatalogRefresh(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	required, err := cycle.CatalogRefreshRequired(ctx, now.Add(-catalogRefreshRetryDelay))
 	if err != nil {
@@ -295,7 +356,7 @@ func (engine *Engine) scheduleCatalogRefresh(
 		return fmt.Errorf("list catalog refresh probes: %w", err)
 	}
 	if len(candidates) == 0 {
-		report.CatalogRefreshWaiting = true
+		report.SetCatalogRefreshWaiting(true)
 		return nil
 	}
 	id, err := engine.newID()
@@ -310,19 +371,19 @@ func (engine *Engine) scheduleCatalogRefresh(
 	theater.SetRegion("system")
 	theater.SetName("CGV catalog")
 	assignment := NewAssignment{
-		ID: id, Priority: 100, Status: "queued", NotBefore: now,
+		ID: id, Priority: planning.PriorityCatalogRefresh, Status: "queued", NotBefore: now,
 		Deadline: now.Add(catalogRefreshWindow), CreatedAt: now, Candidates: slices.Clone(candidates),
 		Task: catalogAssignmentTask(theater, nil, "ko-KR", "Asia/Seoul"),
 	}
 	if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 		if errors.Is(err, ErrTargetBusy) {
-			report.CatalogRefreshWaiting = true
+			report.SetCatalogRefreshWaiting(true)
 			return nil
 		}
 		return fmt.Errorf("create catalog refresh assignment: %w", err)
 	}
-	report.CreatedAssignments++
-	report.CatalogRefreshCreated = true
+	report.SetCreatedAssignments(report.GetCreatedAssignments() + 1)
+	report.SetCatalogRefreshCreated(true)
 	return nil
 }
 
@@ -330,7 +391,7 @@ func (engine *Engine) reconcileExpiredLeases(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	leases, err := cycle.ExpiredLeases(ctx, now, engine.config.BatchSize)
 	if err != nil {
@@ -340,7 +401,7 @@ func (engine *Engine) reconcileExpiredLeases(
 		if err := cycle.ExpireLease(ctx, lease, now); err != nil {
 			return fmt.Errorf("expire assignment %s: %w", lease.AssignmentID, err)
 		}
-		report.ExpiredLeases++
+		report.SetExpiredLeases(report.GetExpiredLeases() + 1)
 		availability, err := cycle.RetryAvailability(ctx, lease.AssignmentID)
 		if err != nil {
 			return fmt.Errorf("inspect assignment %s retries: %w", lease.AssignmentID, err)
@@ -351,14 +412,14 @@ func (engine *Engine) reconcileExpiredLeases(
 				return err
 			}
 			if requeued {
-				report.RequeuedAssignments++
+				report.SetRequeuedAssignments(report.GetRequeuedAssignments() + 1)
 				continue
 			}
 		}
 		if err := cycle.FinishAssignment(ctx, lease.AssignmentID, OutcomeFailed, "eligible_probes_exhausted", now); err != nil {
 			return fmt.Errorf("fail assignment %s: %w", lease.AssignmentID, err)
 		}
-		report.FailedAssignments++
+		report.SetFailedAssignments(report.GetFailedAssignments() + 1)
 	}
 	return nil
 }
@@ -388,7 +449,7 @@ func (engine *Engine) reconcileRetryableFailures(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	failures, err := cycle.RetryableFailures(ctx, engine.config.BatchSize)
 	if err != nil {
@@ -407,7 +468,7 @@ func (engine *Engine) reconcileRetryableFailures(
 				return err
 			}
 			if requeued {
-				report.RequeuedAssignments++
+				report.SetRequeuedAssignments(report.GetRequeuedAssignments() + 1)
 				continue
 			}
 		}
@@ -420,7 +481,7 @@ func (engine *Engine) reconcileRetryableFailures(
 		); err != nil {
 			return fmt.Errorf("fail assignment %s: %w", failure.AssignmentID, err)
 		}
-		report.FailedAssignments++
+		report.SetFailedAssignments(report.GetFailedAssignments() + 1)
 	}
 	return nil
 }
@@ -429,7 +490,7 @@ func (engine *Engine) reconcileTimedOutAssignments(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	assignments, err := cycle.TimedOutAssignments(ctx, now, engine.config.BatchSize)
 	if err != nil {
@@ -444,9 +505,9 @@ func (engine *Engine) reconcileTimedOutAssignments(
 			return fmt.Errorf("finish timed out assignment %s: %w", assignment.AssignmentID, err)
 		}
 		if outcome == OutcomeMissed {
-			report.MissedAssignments++
+			report.SetMissedAssignments(report.GetMissedAssignments() + 1)
 		} else {
-			report.FailedAssignments++
+			report.SetFailedAssignments(report.GetFailedAssignments() + 1)
 		}
 	}
 	return nil
@@ -456,7 +517,7 @@ func (engine *Engine) advanceTerminalPolicies(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	runs, err := cycle.TerminalPolicyRuns(ctx, now, engine.config.BatchSize)
 	if err != nil {
@@ -479,7 +540,7 @@ func (engine *Engine) advanceTerminalPolicies(
 		if err := cycle.AdvancePolicy(ctx, run, nextRunAt, now); err != nil {
 			return fmt.Errorf("advance policy %s: %w", run.PolicyID, err)
 		}
-		report.AdvancedPolicies++
+		report.SetAdvancedPolicies(report.GetAdvancedPolicies() + 1)
 	}
 	return nil
 }
@@ -488,7 +549,7 @@ func (engine *Engine) scheduleDuePolicies(
 	ctx context.Context,
 	cycle CycleRepository,
 	now time.Time,
-	report *Report,
+	report *adminpb.ReconcileReport,
 ) error {
 	policies, err := cycle.DuePolicies(ctx, now, engine.config.BatchSize)
 	if err != nil {
@@ -500,7 +561,7 @@ func (engine *Engine) scheduleDuePolicies(
 			if suspendErr := cycle.SuspendPolicy(ctx, policy.ID, "invalid_policy", now); suspendErr != nil {
 				return fmt.Errorf("suspend invalid policy %s: %w", policy.ID, suspendErr)
 			}
-			report.SuspendedPolicies++
+			report.SetSuspendedPolicies(report.GetSuspendedPolicies() + 1)
 			engine.config.Logger.ErrorContext(ctx, "Observation policy suspended",
 				"domain", "observation", "event", "observation.policy.suspended", "outcome", "failed",
 				"policy_id", policy.ID, "reason", "invalid_policy", "error_type", telemetry.ErrorType(err))
@@ -526,18 +587,18 @@ func (engine *Engine) scheduleDuePolicies(
 		}
 		if err := cycle.CreateAssignment(ctx, assignment); err != nil {
 			if errors.Is(err, ErrTargetBusy) {
-				report.DeferredPolicies++
+				report.SetDeferredPolicies(report.GetDeferredPolicies() + 1)
 				continue
 			}
 			return fmt.Errorf("create policy %s assignment: %w", policy.ID, err)
 		}
-		report.CreatedAssignments++
+		report.SetCreatedAssignments(report.GetCreatedAssignments() + 1)
 		if assignment.Status == OutcomeMissed {
-			report.MissedAssignments++
+			report.SetMissedAssignments(report.GetMissedAssignments() + 1)
 			if err := engine.advanceMissedPolicy(ctx, cycle, policy, assignment, now); err != nil {
 				return err
 			}
-			report.AdvancedPolicies++
+			report.SetAdvancedPolicies(report.GetAdvancedPolicies() + 1)
 		}
 	}
 	return nil
@@ -557,10 +618,14 @@ func (engine *Engine) newAssignment(
 	if len(candidates) == 0 {
 		status, reason, finishedAt = OutcomeMissed, "no_eligible_probe", now
 	}
+	targetDates, err := normalizeAssignmentTargetDates(plan.TargetDates)
+	if err != nil {
+		return NewAssignment{}, fmt.Errorf("normalize assignment target dates: %w", err)
+	}
 	return NewAssignment{
 		ID: id, PolicyID: policy.ID, Priority: policy.Priority, Status: status,
 		Lane: plan.Lane, HotTargetFingerprint: plan.HotTargetFingerprint,
-		Task:      scheduleAssignmentTask(policy.Theater, plan.TargetDates, policy.Locale, policy.TimeZone),
+		Task:      scheduleAssignmentTask(policy.Theater, targetDates, policy.Locale, policy.TimeZone),
 		NotBefore: now, Deadline: now.Add(policy.ExecutionWindow), FinishedAt: finishedAt,
 		ReasonCode: reason, CreatedAt: now, Candidates: slices.Clone(candidates),
 	}, nil
@@ -611,13 +676,42 @@ func observationAssignmentTask(setPayload func(*observationpb.AssignmentTask)) *
 	return task
 }
 
+func normalizeAssignmentTargetDates(values []string) ([]string, error) {
+	result := slices.Clone(values)
+	seen := make(map[string]struct{}, len(result))
+	for _, value := range result {
+		if _, err := time.Parse(time.DateOnly, value); err != nil {
+			return nil, fmt.Errorf("assignment target date is invalid: %s", value)
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return nil, fmt.Errorf("duplicate assignment target date %s", value)
+		}
+		seen[value] = struct{}{}
+	}
+	slices.Sort(result)
+	return result, nil
+}
+
 func protoLocalDates(values []string) []*commonpb.LocalDate {
-	dates := make([]*commonpb.LocalDate, 0, len(values))
+	parsedDates := make([]time.Time, 0, len(values))
 	for _, value := range values {
 		parsed, err := time.Parse(time.DateOnly, value)
 		if err != nil {
 			continue
 		}
+		parsedDates = append(parsedDates, parsed)
+	}
+	slices.SortFunc(parsedDates, func(left, right time.Time) int {
+		if left.Before(right) {
+			return -1
+		}
+		if left.After(right) {
+			return 1
+		}
+		return 0
+	})
+	dates := make([]*commonpb.LocalDate, 0, len(parsedDates))
+	for _, parsed := range parsedDates {
 		date := &commonpb.LocalDate{}
 		date.SetYear(numeric.ClampInt32(parsed.Year()))
 		date.SetMonth(numeric.ClampInt32(int(parsed.Month())))
@@ -687,13 +781,13 @@ func validatePolicyRuntime(policy Policy) (*time.Location, error) {
 	return location, nil
 }
 
-func (engine *Engine) runAndRecord(ctx context.Context) {
+func (engine *Engine) runAndRecord(ctx context.Context) *time.Time {
 	report, err := engine.RunOnce(ctx)
 	now := engine.clock().UTC()
 	engine.mu.Lock()
-	previousLeader := engine.lastReport.Leader
+	previousLeader := engine.lastReport.GetLeader()
 	engine.lastAttemptAt = now
-	engine.lastReport = report
+	engine.lastReport = proto.CloneOf(report)
 	if err == nil {
 		engine.lastSuccessAt = now
 		engine.lastErrorCode = ""
@@ -702,33 +796,124 @@ func (engine *Engine) runAndRecord(ctx context.Context) {
 		engine.lastErrorCode = "cycle_failed"
 	}
 	engine.mu.Unlock()
-	duration := report.FinishedAt.Sub(report.StartedAt).Milliseconds()
+	duration := report.GetFinishedAt().AsTime().Sub(report.GetStartedAt().AsTime()).Milliseconds()
 	if err != nil {
 		engine.config.Logger.ErrorContext(ctx, "Observation reconciliation failed",
 			"domain", "observation", "event", "observation.reconcile.completed", "outcome", "failed",
 			"reason", "cycle_failed", "error_type", telemetry.ErrorType(err), "duration_ms", duration,
-			"leader", report.Leader)
-	} else if report.Leader && reportHasActivity(report) {
+			"leader", report.GetLeader())
+	} else if report.GetLeader() && reportHasActivity(report) {
 		engine.config.Logger.InfoContext(ctx, "Observation reconciliation completed",
 			"domain", "observation", "event", "observation.reconcile.completed", "outcome", "succeeded",
-			"duration_ms", duration, "created_assignments", report.CreatedAssignments,
-			"requeued_assignments", report.RequeuedAssignments, "failed_assignments", report.FailedAssignments,
-			"missed_assignments", report.MissedAssignments, "stale_probes", report.StaleProbes,
-			"oldest_due_age_seconds", report.OldestDueAgeSeconds)
+			"duration_ms", duration, "created_assignments", report.GetCreatedAssignments(),
+			"requeued_assignments", report.GetRequeuedAssignments(), "failed_assignments", report.GetFailedAssignments(),
+			"missed_assignments", report.GetMissedAssignments(), "stale_probes", report.GetStaleProbes(),
+			"oldest_due_age_seconds", report.GetOldestDueAgeSeconds())
 	}
-	if previousLeader != report.Leader {
+	if previousLeader != report.GetLeader() {
 		engine.config.Logger.InfoContext(ctx, "Observation leadership changed",
 			"domain", "observation", "event", "observation.leadership.changed", "outcome", "succeeded",
-			"leader", report.Leader)
+			"leader", report.GetLeader())
 	}
+	if err != nil {
+		return nil
+	}
+	deadlineRepository, ok := engine.repository.(ReconcileDeadlineRepository)
+	if !ok {
+		return nil
+	}
+	deadline, deadlineErr := deadlineRepository.NextReconcileDeadline(ctx, now)
+	if deadlineErr != nil {
+		engine.config.Logger.WarnContext(ctx, "Observation reconcile deadline unavailable",
+			"domain", "observation", "event", "observation.reconcile.deadline", "outcome", "failed",
+			"error_type", telemetry.ErrorType(deadlineErr))
+		return nil
+	}
+	return deadline
 }
 
-func reportHasActivity(report Report) bool {
-	return report.StaleProbes+report.DeletedProbes+report.ExpiredLeases+report.RequeuedAssignments+
-		report.FailedAssignments+report.MissedAssignments+report.AdvancedPolicies+
-		report.CreatedAssignments+report.DeferredPolicies+report.SuspendedPolicies > 0 ||
-		report.DeletedClientEvents > 0 || report.CatalogRefreshCreated || report.CatalogRefreshWaiting ||
-		report.SeatMapBackfillCreated || report.SeatMapBackfillWaiting
+func (engine *Engine) startWakeupListener(ctx context.Context) <-chan struct{} {
+	waiter, ok := engine.repository.(ReconcileWakeupRepository)
+	if !ok {
+		return nil
+	}
+	wakeups := make(chan struct{}, 1)
+	go func() {
+		for {
+			err := waiter.WaitForReconcileWakeup(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				engine.config.Logger.WarnContext(ctx, "Observation reconcile wakeup unavailable",
+					"domain", "observation", "event", "observation.reconcile.wakeup", "outcome", "failed",
+					"error_type", telemetry.ErrorType(err))
+				retryDelay := engine.config.TickInterval
+				if retryDelay > time.Second {
+					retryDelay = time.Second
+				}
+				retryTimer := time.NewTimer(retryDelay)
+				select {
+				case <-ctx.Done():
+					if !retryTimer.Stop() {
+						select {
+						case <-retryTimer.C:
+						default:
+						}
+					}
+					return
+				case <-retryTimer.C:
+				}
+				continue
+			}
+			select {
+			case wakeups <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return wakeups
+}
+
+// schedulerTimer is deliberately smaller than time.Timer so the run loop can
+// be tested without sleeping. Production uses time.NewTimer; tests can provide
+// a deterministic channel and observe Stop on cancellation.
+type schedulerTimer struct {
+	channel <-chan time.Time
+	stop    func() bool
+}
+
+func (timer schedulerTimer) C() <-chan time.Time { return timer.channel }
+
+func (timer schedulerTimer) Stop() bool {
+	if timer.stop == nil {
+		return false
+	}
+	return timer.stop()
+}
+
+func newSchedulerTimer(delay time.Duration) schedulerTimer {
+	timer := time.NewTimer(delay)
+	return schedulerTimer{channel: timer.C, stop: timer.Stop}
+}
+
+func nextReconcileDelay(now time.Time, deadline *time.Time, maintenance time.Duration) time.Duration {
+	if deadline == nil {
+		return maintenance
+	}
+	delay := deadline.Sub(now)
+	if delay <= 0 || delay >= maintenance {
+		return maintenance
+	}
+	return delay
+}
+
+func reportHasActivity(report *adminpb.ReconcileReport) bool {
+	return report.GetStaleProbes()+report.GetDeletedProbes()+report.GetExpiredLeases()+report.GetRequeuedAssignments()+
+		report.GetFailedAssignments()+report.GetMissedAssignments()+report.GetAdvancedPolicies()+
+		report.GetCreatedAssignments()+report.GetDeferredPolicies()+report.GetSuspendedPolicies() > 0 ||
+		report.GetDeletedClientEvents() > 0 || report.GetCatalogRefreshCreated() || report.GetCatalogRefreshWaiting() ||
+		report.GetSeatMapBackfillCreated() || report.GetSeatMapBackfillWaiting()
 }
 
 func (engine *Engine) setRunning(value bool) bool {

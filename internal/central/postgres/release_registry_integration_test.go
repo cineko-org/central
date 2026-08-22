@@ -59,6 +59,13 @@ func TestPostgresReleaseRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE desktop_release_registry_state
+		SET active_manifest_sha256 = repeat('0', 64), updated_at = now()
+		WHERE singleton = true
+	`); err != nil {
+		t.Fatalf("stale release fingerprint fixture: %v", err)
+	}
 	service, err := central.NewClientService(store, time.Hour)
 	if err != nil {
 		t.Fatal(err)

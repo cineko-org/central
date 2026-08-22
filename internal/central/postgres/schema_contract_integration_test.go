@@ -48,8 +48,8 @@ func TestPostgresMigratedSchemaMatchesContractDocumentation(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(tables) != 33 {
-		t.Fatalf("migrated schema tables = %d, want 33", len(tables))
+	if len(tables) != 59 {
+		t.Fatalf("migrated schema tables = %d, want 59", len(tables))
 	}
 	contract := string(document)
 	for table, columns := range tables {

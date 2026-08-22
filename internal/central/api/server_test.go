@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	"github.com/cineko-org/central/internal/central/reconcile"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
@@ -223,7 +223,10 @@ func TestReconcilerHealth(t *testing.T) {
 	unavailable := request(t, withoutReconciler.Handler(), http.MethodGet, "/health/reconciler", nil, nil)
 	assertAPIError(t, unavailable, http.StatusServiceUnavailable, "reconciler_unavailable")
 
-	provider := &reconcilerStatus{status: reconcile.Status{Healthy: true, Leader: true}}
+	status := &adminpb.ReconcileStatus{}
+	status.SetHealthy(true)
+	status.SetLeader(true)
+	provider := &reconcilerStatus{status: status}
 	server, err := New(service, WithReconciler(provider))
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +235,7 @@ func TestReconcilerHealth(t *testing.T) {
 	if healthy.Code != http.StatusOK {
 		t.Fatalf("healthy status = %d, body = %s", healthy.Code, healthy.Body.String())
 	}
-	provider.status.Healthy = false
+	provider.status.SetHealthy(false)
 	unhealthy := request(t, server.Handler(), http.MethodGet, "/health/reconciler", nil, nil)
 	if unhealthy.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unhealthy status = %d, body = %s", unhealthy.Code, unhealthy.Body.String())
@@ -324,10 +327,12 @@ type apiRepository struct {
 }
 
 type reconcilerStatus struct {
-	status reconcile.Status
+	status *adminpb.ReconcileStatus
 }
 
-func (provider *reconcilerStatus) Snapshot() reconcile.Status { return provider.status }
+func (provider *reconcilerStatus) Snapshot() *adminpb.ReconcileStatus {
+	return proto.CloneOf(provider.status)
+}
 
 func (*apiRepository) Ready(context.Context) error { return nil }
 

@@ -19,10 +19,11 @@ flowchart LR
   scans.
 - A pending or running booking monitor raises the matching theater to the demand range. A triggered monitor no longer
   raises discovery priority because its exact showtime is already known.
-- Opening demand is rechecked after a randomized 2-5 second delay, subject to the duration of the previous scan. It
-  always outranks ordinary and recent-change collection work.
-- Recent-change analysis uses 15-30 seconds, cancellation monitoring uses 30-45 seconds, and ordinary collection uses
-  5-15 minutes. These values are product policy, not admin form inputs.
+- Unknown-showtime demand is rechecked after a randomized 2-5 second delay, subject to the duration of the previous
+  scan. Once the exact showtime is known, its shared live-seat snapshot is also due after 2-5 seconds. Both always
+  outrank recent-change and ordinary collection work.
+- Recent-change analysis uses 15-30 seconds and ordinary collection uses 5-15 minutes. These values are product
+  policy, not admin form inputs.
 - A newly observed showtime with a previous complete absence activates the burst range for the configured duration.
 - Every range is additive random jitter: maximum must be greater than minimum. Exact fixed polling is rejected.
 - The first-ever capture is left-censored and cannot prove when a showtime opened.
@@ -35,18 +36,20 @@ flowchart LR
 
 ## Scheduling order
 
-Central selects work by lane first and due time second:
+Central assigns each work class a fixed, non-overlapping priority band and then selects the oldest due work inside
+that class. The `hot` and `baseline` values are bounded-date coverage lanes inside schedule discovery, not separate
+products or user-selectable monitor modes:
 
 | Lane | Work |
 | --- | --- |
 | `P0` | Active booking demand whose matching showtime is not yet known |
-| `P1` | Recently changed theater/date coverage during its observation window |
-| `P2` | Known-showtime cancellation-seat demand |
+| `P1` | Exact-showtime live-seat availability for a known target |
+| `P2` | Recently changed theater/date coverage during its observation window |
 | `P3` | Ordinary shared observation |
 
-Numeric policy priority only breaks ties inside the same lane. It cannot lift an ordinary scan above active booking
-demand. Recent-change work returns to its normal lane when its observation window expires. An older due time wins
-inside the same lane.
+The bands are fixed at P0 90, P1 85, P2 60, and P3 at most 30. Catalog refresh and static seat-layout work remain P3,
+so an operator refresh cannot delay a due booking target. The queue does not accumulate scores. Recent-change work
+returns to its normal class when its observation window expires.
 
 CGV login is not required to enter the live seat page. Probes may therefore collect anonymous seat observations for
 analysis, while the user-scoped Client always reads the seats again immediately before selection. Account and
@@ -75,7 +78,7 @@ the same theater is never run concurrently. Central stores a canonical hash of
 the active monitor projection in task data; a changed target preempts a queued
 baseline before the next hot assignment is created.
 
-The state sequence is `hot -> baseline(one date) -> hot`; a new hot target is
+The schedule-discovery coverage sequence is `hot -> baseline(one date) -> hot`; a new hot target is
 therefore never hidden behind a multi-day baseline assignment. The planner's
 14-date cursor test proves that continuous demand still reaches every date in
 the rolling horizon. On the reviewed CGV path, the previous 14-date baseline
@@ -105,3 +108,12 @@ Production wake latency is not claimed here because no live Central database
 workload was available in this change; the repository integration test proves
 the committed assignment notification path when `CINEKO_CENTRAL_TEST_DATABASE_URL`
 is provided, while the default unit suite proves the durable wait/retry boundary.
+
+The reconciler now arms an adaptive timer from the earliest durable P0/P1
+deadline and listens for committed assignment/client-resource wakeups. Under
+the same deterministic test condition (a 2-second fast-lane deadline and a
+5-second maintenance interval), the old fixed ticker waited 5 seconds while
+the scheduler arms a 2-second timer: a 3-second (60%) reduction in nominal
+wake delay. The test is structural rather than a production latency
+benchmark; the maintenance fallback remains bounded at 5 seconds when no
+deadline is available or a deadline is already due.

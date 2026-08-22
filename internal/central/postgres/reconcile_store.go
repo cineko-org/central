@@ -8,6 +8,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/central/reconcile"
+	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	"github.com/cineko-org/central/internal/observation/planning"
 	"github.com/cineko-org/central/internal/support/numeric"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -336,30 +338,35 @@ func (store *cycleStore) TerminalPolicyRuns(
 ) ([]reconcile.TerminalPolicyRun, error) {
 	rows, err := store.tx.Query(ctx, `
 		WITH demand_theaters AS (
-			SELECT preset.payload->>'theaterId' AS theater_id,
-				BOOL_OR(COALESCE(monitor.payload->>'mode', 'opening') IN ('', 'opening')) AS opening_active,
-				BOOL_OR(monitor.payload->>'mode' = 'cancellation') AS cancellation_active
-			FROM client_resources AS monitor
-			JOIN client_resources AS preset
+			SELECT preset.theater_id, true AS booking_active
+			FROM client_monitors AS monitor
+			JOIN client_resources AS monitor_resource
+				ON monitor_resource.user_id = monitor.user_id
+				AND monitor_resource.kind = 'monitors'
+				AND monitor_resource.id = monitor.id
+				AND monitor_resource.deleted_at IS NULL
+			JOIN client_presets AS preset
 				ON preset.user_id = monitor.user_id
-				AND preset.kind = 'presets'
-				AND preset.id = monitor.payload->>'presetId'
-				AND preset.deleted_at IS NULL
-			WHERE monitor.kind = 'monitors' AND monitor.deleted_at IS NULL
-				AND monitor.payload->>'status' IN ('pending', 'running')
-			GROUP BY preset.payload->>'theaterId'
+				AND preset.resource_kind = 'presets'
+				AND preset.id = monitor.preset_id
+			JOIN client_resources AS preset_resource
+				ON preset_resource.user_id = preset.user_id
+				AND preset_resource.kind = 'presets'
+				AND preset_resource.id = preset.id
+				AND preset_resource.deleted_at IS NULL
+			WHERE monitor.resource_kind = 'monitors'
+				AND monitor.state IN ('pending', 'running')
+			GROUP BY preset.theater_id
 		)
 		SELECT policy.id, policy.enabled, terminal.finished_at, terminal.status,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN COALESCE(demand.booking_active, false) THEN 2
 				WHEN policy.burst_until > $1 THEN 15
-				WHEN COALESCE(demand.cancellation_active, false) THEN 30
 				ELSE 300
 			END,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 5
+				WHEN COALESCE(demand.booking_active, false) THEN 5
 				WHEN policy.burst_until > $1 THEN 30
-				WHEN COALESCE(demand.cancellation_active, false) THEN 45
 				ELSE 900
 			END
 		FROM observation_policies AS policy
@@ -428,27 +435,27 @@ func (store *cycleStore) DuePolicies(
 	limit int,
 ) ([]reconcile.Policy, error) {
 	rows, err := store.tx.Query(ctx, `
-		WITH demand_monitors AS (
-			SELECT preset.payload->>'theaterId' AS theater_id,
-				COALESCE(monitor.payload->>'mode', 'opening') AS mode,
-				jsonb_build_object(
-					'targetDates', COALESCE(monitor.payload->'targetDates', '[]'::jsonb),
-					'targetWeekdays', COALESCE(monitor.payload->'targetWeekdays', '[]'::jsonb),
-					'searchHorizonDays', COALESCE(monitor.payload->'searchHorizonDays', '0'::jsonb)
-				) AS target
-			FROM client_resources AS monitor
-			JOIN client_resources AS preset
+	WITH demand_monitors AS (
+			SELECT preset.theater_id
+			FROM client_monitors AS monitor
+			JOIN client_resources AS monitor_resource
+				ON monitor_resource.user_id = monitor.user_id
+				AND monitor_resource.kind = 'monitors'
+				AND monitor_resource.id = monitor.id
+				AND monitor_resource.deleted_at IS NULL
+			JOIN client_presets AS preset
 				ON preset.user_id = monitor.user_id
-				AND preset.kind = 'presets'
-				AND preset.id = monitor.payload->>'presetId'
-				AND preset.deleted_at IS NULL
-			WHERE monitor.kind = 'monitors' AND monitor.deleted_at IS NULL
-				AND monitor.payload->>'status' IN ('pending', 'running')
+				AND preset.resource_kind = 'presets'
+				AND preset.id = monitor.preset_id
+			JOIN client_resources AS preset_resource
+				ON preset_resource.user_id = preset.user_id
+				AND preset_resource.kind = 'presets'
+				AND preset_resource.id = preset.id
+				AND preset_resource.deleted_at IS NULL
+			WHERE monitor.resource_kind = 'monitors'
+				AND monitor.state IN ('pending', 'running')
 		), demand_theaters AS (
-			SELECT theater_id,
-				BOOL_OR(mode IN ('', 'opening')) AS opening_active,
-				BOOL_OR(mode = 'cancellation') AS cancellation_active,
-				COALESCE(jsonb_agg(target) FILTER (WHERE mode IN ('', 'opening', 'cancellation')), '[]'::jsonb) AS monitor_targets
+			SELECT theater_id, true AS booking_active
 			FROM demand_monitors
 			GROUP BY theater_id
 		), latest_hot AS (
@@ -478,27 +485,23 @@ func (store *cycleStore) DuePolicies(
 			policy.theater_name, policy.target_date_mode, policy.target_dates::text[], LEAST(policy.horizon_days, 14),
 			policy.locale, policy.time_zone, policy.egress_policy_id,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 90
-				WHEN policy.burst_until > $1 THEN 60
-				WHEN COALESCE(demand.cancellation_active, false) THEN 40
-				ELSE 10
+				WHEN COALESCE(demand.booking_active, false) THEN $2::integer
+				WHEN policy.burst_until > $1 THEN $3::integer
+				ELSE $4::integer
 			END AS effective_priority,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 2
+				WHEN COALESCE(demand.booking_active, false) THEN 2
 				WHEN policy.burst_until > $1 THEN 15
-				WHEN COALESCE(demand.cancellation_active, false) THEN 30
 				ELSE 300
 			END,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 5
+				WHEN COALESCE(demand.booking_active, false) THEN 5
 				WHEN policy.burst_until > $1 THEN 30
-				WHEN COALESCE(demand.cancellation_active, false) THEN 45
 				ELSE 900
 			END,
 			policy.execution_window_seconds,
 			policy.max_interval_seconds,
 			COALESCE(policy.next_run_at, $1), policy.last_finished_at, COALESCE(policy.last_outcome, ''),
-			COALESCE(demand.monitor_targets, '[]'::jsonb),
 			latest_hot.finished_at, latest_hot.target_dates, latest_hot.fingerprint,
 			latest_baseline.finished_at, latest_baseline.target_date
 		FROM observation_policies AS policy
@@ -506,7 +509,7 @@ func (store *cycleStore) DuePolicies(
 		LEFT JOIN latest_hot ON latest_hot.policy_id = policy.id
 		LEFT JOIN latest_baseline ON latest_baseline.policy_id = policy.id
 		WHERE policy.enabled AND policy.deleted_at IS NULL
-			AND (policy.next_run_at <= $1 OR demand.opening_active OR demand.cancellation_active)
+			AND (policy.next_run_at <= $1 OR demand.booking_active)
 			AND NOT EXISTS (
 				SELECT 1 FROM observation_assignments AS active
 				WHERE active.policy_id = policy.id
@@ -514,13 +517,14 @@ func (store *cycleStore) DuePolicies(
 					AND NOT (
 						active.status = 'queued'
 						AND active.lane = 'baseline'
-						AND (demand.opening_active OR demand.cancellation_active)
+						AND demand.booking_active
 					)
 			)
 		ORDER BY effective_priority DESC, policy.next_run_at, policy.id
 		FOR UPDATE OF policy SKIP LOCKED
-		LIMIT $2
-	`, now, limit)
+		LIMIT $5
+	`, now, planning.PriorityScheduleDiscovery, planning.PriorityRecentChange,
+		planning.PriorityBaselineObservation, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query due observation policies: %w", err)
 	}
@@ -535,6 +539,13 @@ func (store *cycleStore) DuePolicies(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate due observation policies: %w", err)
+	}
+	rows.Close()
+	for i := range policies {
+		policies[i].HotTargets, err = loadDuePolicyMonitorTargets(ctx, store.tx, policies[i].Theater.GetId())
+		if err != nil {
+			return nil, err
+		}
 	}
 	return policies, nil
 }
@@ -667,7 +678,7 @@ func (store *cycleStore) SeatMapBackfillTarget(
 				SELECT 1 FROM observation_assignments AS assignment
 				WHERE assignment.task_kind = $2
 					AND assignment.status IN ('queued', 'leased', 'retry_pending')
-					AND assignment.task_data->'seatMap'->'auditorium'->>'id' = auditorium.id
+					AND assignment.auditorium_id = auditorium.id
 			)
 		ORDER BY auditorium.seat_map_requested_at DESC NULLS LAST, auditorium.updated_at
 		FOR UPDATE OF auditorium SKIP LOCKED
@@ -712,6 +723,185 @@ func (store *cycleStore) SeatMapBackfillTarget(
 	return target, nil
 }
 
+// SeatAvailabilityTarget returns one due exact showtime shared by every
+// matching active monitor. Completion time, not assignment creation time,
+// drives the deterministic 2-5 second cadence.
+func (store *cycleStore) SeatAvailabilityTarget(
+	ctx context.Context,
+	now time.Time,
+) (*reconcile.SeatAvailabilityTarget, error) {
+	rows, err := store.tx.Query(ctx, `
+		SELECT theater.id, theater.provider_id, theater.source_key, theater.region, theater.name,
+			showtime.id, showtime.provider_id, showtime.source_key, showtime.schedule_date::text,
+			showtime.starts_at, showtime.ends_at,
+			movie.id, movie.provider_id, movie.source_key, movie.title, movie.poster_url,
+			auditorium.id, auditorium.theater_id, auditorium.source_key, auditorium.name,
+			auditorium.screen_types, auditorium.capacity,
+			COALESCE(version.layout_hash, '')
+		FROM showtimes AS showtime
+		JOIN theaters AS theater ON theater.id = showtime.theater_id AND theater.active
+		JOIN movies AS movie ON movie.id = showtime.movie_id AND movie.active
+		JOIN auditoriums AS auditorium ON auditorium.id = showtime.auditorium_id AND auditorium.active
+		LEFT JOIN seat_map_versions AS version ON version.id = auditorium.current_seat_map_version_id
+		LEFT JOIN LATERAL (
+			SELECT assignment.id, assignment.finished_at
+			FROM observation_assignments AS assignment
+			WHERE assignment.task_kind = $2 AND assignment.showtime_id = showtime.id
+				AND assignment.status IN ('completed', 'partial', 'failed', 'missed')
+			ORDER BY assignment.finished_at DESC NULLS LAST, assignment.created_at DESC
+			LIMIT 1
+		) AS latest ON true
+		WHERE showtime.active AND showtime.starts_at > $1
+			AND showtime.provider_id = $3
+			AND theater.provider_id = $3
+			AND movie.provider_id = $3
+			AND EXISTS (
+				SELECT 1
+				FROM client_monitors AS monitor
+				JOIN client_resources AS monitor_resource
+					ON monitor_resource.user_id = monitor.user_id
+					AND monitor_resource.kind = 'monitors'
+					AND monitor_resource.id = monitor.id
+					AND monitor_resource.deleted_at IS NULL
+				JOIN client_presets AS preset
+					ON preset.user_id = monitor.user_id AND preset.id = monitor.preset_id
+				JOIN client_resources AS preset_resource
+					ON preset_resource.user_id = preset.user_id
+					AND preset_resource.kind = 'presets'
+					AND preset_resource.id = preset.id
+					AND preset_resource.deleted_at IS NULL
+				WHERE monitor.state IN ('pending', 'running')
+					AND monitor.movie_id = showtime.movie_id
+					AND preset.auditorium_id = showtime.auditorium_id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM observation_assignments AS active
+				WHERE active.task_kind = $2 AND active.showtime_id = showtime.id
+					AND active.status IN ('queued', 'leased', 'retry_pending')
+			)
+			AND (
+				latest.finished_at IS NULL
+				OR latest.finished_at + make_interval(
+					secs => 2 + mod(hashtext(latest.id)::bigint + 2147483648, 4)::integer
+				) <= $1
+			)
+		ORDER BY latest.finished_at NULLS FIRST, showtime.starts_at, showtime.id
+		LIMIT 100
+	`, now, probedomain.CapabilityCGVSeatAvailabilityCapture, catalogdomain.ProviderCGV)
+	if err != nil {
+		return nil, fmt.Errorf("query exact-showtime availability targets: %w", err)
+	}
+	defer rows.Close()
+	type seatAvailabilityCandidate struct {
+		theater  *catalogpb.Theater
+		showtime *catalogpb.Showtime
+	}
+	candidates := make([]seatAvailabilityCandidate, 0)
+	for rows.Next() {
+		theater, showtime, err := scanSeatAvailabilityTarget(rows)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, seatAvailabilityCandidate{theater: theater, showtime: showtime})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate exact-showtime availability targets: %w", err)
+	}
+	rows.Close()
+
+	location, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		return nil, fmt.Errorf("load exact-showtime matching location: %w", err)
+	}
+	targetsByTheater := make(map[string][]executionTarget)
+	for _, candidate := range candidates {
+		theater := candidate.theater
+		showtime := candidate.showtime
+		targets, loaded := targetsByTheater[theater.GetId()]
+		if !loaded {
+			targets, err = loadExecutionTargets(ctx, store.tx, theater.GetId())
+			if err != nil {
+				return nil, err
+			}
+			targetsByTheater[theater.GetId()] = targets
+		}
+		matched := false
+		for _, target := range targets {
+			if executionTargetMatches(target, showtime, now, location) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		availability := &observationpb.SeatAvailabilityTask{}
+		availability.SetTheater(theater)
+		availability.SetAuditorium(showtime.GetAuditorium())
+		availability.SetShowtime(showtime)
+		availability.SetLocale("ko-KR")
+		availability.SetTimeZone("Asia/Seoul")
+		task := &observationpb.AssignmentTask{}
+		task.SetEgress(managedAssignmentEgress())
+		task.SetSeatAvailability(availability)
+		return &reconcile.SeatAvailabilityTarget{Task: task}, nil
+	}
+	return nil, nil
+}
+
+func scanSeatAvailabilityTarget(row pgx.Row) (*catalogpb.Theater, *catalogpb.Showtime, error) {
+	var theaterID, theaterProviderID, theaterSourceKey, theaterRegion, theaterName string
+	var showtimeID, showtimeProviderID, showtimeSourceKey, scheduleDate string
+	var movieID, movieProviderID, movieSourceKey, movieTitle, moviePosterURL string
+	var auditoriumID, auditoriumTheaterID, auditoriumSourceKey, auditoriumName, layoutHash string
+	var screenTypes []string
+	var auditoriumCapacity int32
+	var startsAt, endsAt time.Time
+	if err := row.Scan(
+		&theaterID, &theaterProviderID, &theaterSourceKey, &theaterRegion, &theaterName,
+		&showtimeID, &showtimeProviderID, &showtimeSourceKey, &scheduleDate, &startsAt, &endsAt,
+		&movieID, &movieProviderID, &movieSourceKey, &movieTitle, &moviePosterURL,
+		&auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName,
+		&screenTypes, &auditoriumCapacity, &layoutHash,
+	); err != nil {
+		return nil, nil, fmt.Errorf("scan exact-showtime availability target: %w", err)
+	}
+	parsedScheduleDate, err := time.Parse(time.DateOnly, scheduleDate)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse exact-showtime schedule date: %w", err)
+	}
+	theater := &catalogpb.Theater{}
+	theater.SetId(theaterID)
+	theater.SetProviderId(theaterProviderID)
+	theater.SetSourceKey(theaterSourceKey)
+	theater.SetRegion(theaterRegion)
+	theater.SetName(theaterName)
+	movie := &catalogpb.Movie{}
+	movie.SetId(movieID)
+	movie.SetProviderId(movieProviderID)
+	movie.SetSourceKey(movieSourceKey)
+	movie.SetTitle(movieTitle)
+	movie.SetPosterUrl(moviePosterURL)
+	auditorium := catalogpb.Auditorium_builder{ScreenTypes: screenTypes}.Build()
+	auditorium.SetId(auditoriumID)
+	auditorium.SetTheaterId(auditoriumTheaterID)
+	auditorium.SetSourceKey(auditoriumSourceKey)
+	auditorium.SetName(auditoriumName)
+	auditorium.SetCapacity(auditoriumCapacity)
+	auditorium.SetCurrentLayoutHash(layoutHash)
+	showtime := catalogpb.Showtime_builder{
+		Movie: movie, Auditorium: auditorium,
+		StartsAt: timestamppb.New(startsAt), EndsAt: timestamppb.New(endsAt),
+	}.Build()
+	showtime.SetId(showtimeID)
+	showtime.SetProviderId(showtimeProviderID)
+	showtime.SetSourceKey(showtimeSourceKey)
+	showtime.SetTheaterId(theaterID)
+	showtime.SetScheduleDate(catalogLocalDate(parsedScheduleDate))
+	showtime.SetCapacity(auditoriumCapacity)
+	return theater, showtime, nil
+}
+
 func (store *cycleStore) CreateAssignment(ctx context.Context, assignment reconcile.NewAssignment) error {
 	targetDates, err := assignmentTargetDates(assignment.Task)
 	if err != nil {
@@ -742,16 +932,16 @@ func (store *cycleStore) insertAssignment(
 	var insertedID string
 	err := store.tx.QueryRow(ctx, `
 		INSERT INTO observation_assignments (
-			id, policy_id, task_kind, theater_id, theater_provider_id, theater_source_key,
+			id, policy_id, task_kind, auditorium_id, showtime_id, theater_id, theater_provider_id, theater_source_key,
 			theater_region, theater_name, target_dates,
 			locale, time_zone, egress_policy_id, priority, status, not_before, deadline,
 			terminal_reason, finished_at, created_at, updated_at, task_data, lane, hot_target_fingerprint
 		) VALUES (
-			$1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19, $20, $21, $22
+			$1, NULLIF($2, ''), $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $21, $22, $23, $24
 		)
 		ON CONFLICT DO NOTHING
 		RETURNING id
-	`, assignment.ID, assignment.PolicyID, assignmentTaskKind(assignment.Task), assignmentTaskTheater(assignment.Task).GetId(),
+	`, assignment.ID, assignment.PolicyID, assignmentTaskKind(assignment.Task), assignmentTaskAuditoriumID(assignment.Task), assignmentTaskShowtimeID(assignment.Task), assignmentTaskTheater(assignment.Task).GetId(),
 		assignmentTaskTheater(assignment.Task).GetProviderId(), assignmentTaskTheater(assignment.Task).GetSourceKey(),
 		assignmentTaskTheater(assignment.Task).GetRegion(), assignmentTaskTheater(assignment.Task).GetName(), targetDates, assignmentTaskLocale(assignment.Task),
 		assignmentTaskTimeZone(assignment.Task), string(central.EgressPolicyScanDefault), assignment.Priority, assignment.Status,
@@ -869,7 +1059,6 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	var lastHotTargetDates []string
 	var lastHotTargetFingerprint *string
 	var lastBaselineTargetDate *string
-	var monitorTargetsRaw []byte
 	var theaterID, providerID, sourceKey, region, name string
 	err := row.Scan(
 		&policy.ID, &policy.Enabled, &policy.TaskKind, &theaterID,
@@ -877,7 +1066,7 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 		&name, &policy.TargetDateMode, &policy.TargetDates, &horizonDays,
 		&policy.Locale, &policy.TimeZone, &policy.EgressPolicyID, &policy.Priority,
 		&minimumSeconds, &maximumSeconds, &executionWindowSeconds, &baselineMaximumSeconds,
-		&policy.NextRunAt, &lastFinishedAt, &policy.LastOutcome, &monitorTargetsRaw,
+		&policy.NextRunAt, &lastFinishedAt, &policy.LastOutcome,
 		&lastHotFinishedAt, &lastHotTargetDates, &lastHotTargetFingerprint,
 		&lastBaselineFinishedAt, &lastBaselineTargetDate,
 	)
@@ -913,13 +1102,86 @@ func scanPolicy(row rowScanner) (reconcile.Policy, error) {
 	policy.MaximumInterval = time.Duration(maximumSeconds) * time.Second
 	policy.BaselineMaximumInterval = time.Duration(baselineMaximumSeconds) * time.Second
 	policy.ExecutionWindow = time.Duration(executionWindowSeconds) * time.Second
-	if len(monitorTargetsRaw) > 0 {
-		policy.HotTargets, err = planning.DecodeMonitorTargets(monitorTargetsRaw)
-		if err != nil {
-			return reconcile.Policy{}, err
-		}
-	}
 	return policy, nil
+}
+
+// loadDuePolicyMonitorTargets reads active monitor demand from normalized
+// columns. Keeping this as typed rows avoids rebuilding a JSON projection just
+// to feed the planner's in-process model.
+func loadDuePolicyMonitorTargets(
+	ctx context.Context,
+	queryer clientResourceQueryer,
+	theaterID string,
+) ([]planning.MonitorTarget, error) {
+	rows, err := queryer.Query(ctx, `
+		SELECT monitor.state, monitor.search_horizon_days,
+			COALESCE(ARRAY(
+				SELECT target_date::text
+				FROM client_monitor_target_dates AS target_date
+				WHERE target_date.user_id = monitor.user_id
+					AND target_date.monitor_id = monitor.id
+				ORDER BY target_date.position
+			), ARRAY[]::text[]),
+			COALESCE(ARRAY(
+				SELECT target_weekday::integer
+				FROM client_monitor_target_weekdays AS target_weekday
+				WHERE target_weekday.user_id = monitor.user_id
+					AND target_weekday.monitor_id = monitor.id
+				ORDER BY target_weekday.position
+			), ARRAY[]::integer[])
+		FROM client_monitors AS monitor
+		JOIN client_resources AS monitor_resource
+			ON monitor_resource.user_id = monitor.user_id
+			AND monitor_resource.kind = 'monitors'
+			AND monitor_resource.id = monitor.id
+			AND monitor_resource.deleted_at IS NULL
+		JOIN client_presets AS preset
+			ON preset.user_id = monitor.user_id
+			AND preset.resource_kind = 'presets'
+			AND preset.id = monitor.preset_id
+		JOIN client_resources AS preset_resource
+			ON preset_resource.user_id = preset.user_id
+			AND preset_resource.kind = 'presets'
+			AND preset_resource.id = preset.id
+			AND preset_resource.deleted_at IS NULL
+		WHERE monitor.resource_kind = 'monitors'
+			AND preset.theater_id = $1
+		ORDER BY monitor.id
+	`, theaterID)
+	if err != nil {
+		return nil, fmt.Errorf("query active Client monitor targets: %w", err)
+	}
+	defer rows.Close()
+	targets := make([]planning.MonitorTarget, 0)
+	for rows.Next() {
+		var state string
+		var searchHorizonDays int
+		var targetDates []string
+		var targetWeekdays []int32
+		if err := rows.Scan(&state, &searchHorizonDays, &targetDates, &targetWeekdays); err != nil {
+			return nil, fmt.Errorf("scan active Client monitor target: %w", err)
+		}
+		switch state {
+		case "pending", "running":
+		case "triggered", "booked", "failed", "stopped", "payment-unknown":
+			continue
+		default:
+			return nil, fmt.Errorf("unknown normalized Client monitor state %q", state)
+		}
+		weekdays := make([]int, len(targetWeekdays))
+		for i, weekday := range targetWeekdays {
+			weekdays[i] = int(weekday)
+		}
+		targets = append(targets, planning.MonitorTarget{
+			TargetDates:       targetDates,
+			TargetWeekdays:    weekdays,
+			SearchHorizonDays: searchHorizonDays,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active Client monitor targets: %w", err)
+	}
+	return targets, nil
 }
 
 func nullableTime(value time.Time) *time.Time {
@@ -941,6 +1203,8 @@ func assignmentTaskKind(task *observationpb.AssignmentTask) string {
 		return probedomain.CapabilityCGVCatalogCapture
 	case task.GetSeatMap() != nil:
 		return probedomain.CapabilityCGVSeatMapCapture
+	case task.GetSeatAvailability() != nil:
+		return probedomain.CapabilityCGVSeatAvailabilityCapture
 	default:
 		return ""
 	}
@@ -953,7 +1217,27 @@ func assignmentTaskTheater(task *observationpb.AssignmentTask) *catalogpb.Theate
 	if task.GetCatalog() != nil {
 		return task.GetCatalog().GetTheater()
 	}
-	return task.GetSeatMap().GetTheater()
+	if task.GetSeatMap() != nil {
+		return task.GetSeatMap().GetTheater()
+	}
+	return task.GetSeatAvailability().GetTheater()
+}
+
+func assignmentTaskAuditoriumID(task *observationpb.AssignmentTask) string {
+	if task.GetSeatMap() != nil && task.GetSeatMap().GetAuditorium() != nil {
+		return task.GetSeatMap().GetAuditorium().GetId()
+	}
+	if task.GetSeatAvailability() != nil && task.GetSeatAvailability().GetAuditorium() != nil {
+		return task.GetSeatAvailability().GetAuditorium().GetId()
+	}
+	return ""
+}
+
+func assignmentTaskShowtimeID(task *observationpb.AssignmentTask) string {
+	if task.GetSeatAvailability() == nil || task.GetSeatAvailability().GetShowtime() == nil {
+		return ""
+	}
+	return task.GetSeatAvailability().GetShowtime().GetId()
 }
 
 func assignmentTaskLocale(task *observationpb.AssignmentTask) string {
@@ -963,7 +1247,10 @@ func assignmentTaskLocale(task *observationpb.AssignmentTask) string {
 	if task.GetCatalog() != nil {
 		return task.GetCatalog().GetLocale()
 	}
-	return task.GetSeatMap().GetLocale()
+	if task.GetSeatMap() != nil {
+		return task.GetSeatMap().GetLocale()
+	}
+	return task.GetSeatAvailability().GetLocale()
 }
 
 func assignmentTaskTimeZone(task *observationpb.AssignmentTask) string {
@@ -973,7 +1260,10 @@ func assignmentTaskTimeZone(task *observationpb.AssignmentTask) string {
 	if task.GetCatalog() != nil {
 		return task.GetCatalog().GetTimeZone()
 	}
-	return task.GetSeatMap().GetTimeZone()
+	if task.GetSeatMap() != nil {
+		return task.GetSeatMap().GetTimeZone()
+	}
+	return task.GetSeatAvailability().GetTimeZone()
 }
 
 func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, error) {
@@ -985,6 +1275,8 @@ func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, err
 		values = task.GetCatalog().GetTargetDates()
 	case task.GetSeatMap() != nil:
 		values = task.GetSeatMap().GetTargetDates()
+	case task.GetSeatAvailability() != nil && task.GetSeatAvailability().GetShowtime() != nil:
+		values = []*commonpb.LocalDate{task.GetSeatAvailability().GetShowtime().GetScheduleDate()}
 	}
 	dates := make([]time.Time, 0, len(values))
 	for _, value := range values {
@@ -995,6 +1287,12 @@ func assignmentTargetDates(task *observationpb.AssignmentTask) ([]time.Time, err
 		dates = append(dates, date)
 	}
 	return dates, nil
+}
+
+func managedAssignmentEgress() *commonpb.EgressPolicy {
+	egress := &commonpb.EgressPolicy{}
+	egress.SetManagedScan(&commonpb.ManagedScanEgress{})
+	return egress
 }
 
 // seatMapBackfillDates returns the bounded provider window used to find any

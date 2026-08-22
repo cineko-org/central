@@ -30,7 +30,7 @@ func TestServiceCommitsFailedAttemptForRepositoryRetryDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	if receipt.GetRunId() != result.GetRunId() || repository.commit.Result.GetFailed() == nil ||
-		repository.commit.CommittedAt != now || len(repository.commit.Payload) == 0 ||
+		repository.commit.CommittedAt != now ||
 		repository.commit.PayloadHash == "" {
 		t.Fatalf("receipt = %+v, commit = %+v", receipt, repository.commit)
 	}

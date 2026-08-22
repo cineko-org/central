@@ -7,12 +7,9 @@ import (
 
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func validMonitorProto() *clientpb.Monitor {
-	mode := &clientpb.MonitorMode{}
-	mode.SetOpening(&clientpb.OpeningMonitor{})
 	state := &clientpb.MonitorState{}
 	state.SetPending(&clientpb.MonitorPending{})
 	monitor := &clientpb.Monitor{}
@@ -20,10 +17,8 @@ func validMonitorProto() *clientpb.Monitor {
 	monitor.SetUserId("u1")
 	monitor.SetPresetId("p1")
 	monitor.SetMovieId("movie_1")
-	monitor.SetMode(mode)
 	monitor.SetState(state)
-	monitor.SetPollInterval(durationpb.New(5 * time.Second))
-	monitor.SetMaximumPollInterval(durationpb.New(10 * time.Second))
+	monitor.SetSearchHorizonDays(DefaultSearchHorizonDays)
 	monitor.SetTargetDates([]*commonpb.LocalDate{protoDate(8, 10)})
 	return monitor
 }
@@ -113,11 +108,8 @@ func TestMonitorScheduleUsesLocalCalendarDate(t *testing.T) {
 	monitor.SetLatestTime(protoTime(6))
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, location)
 	saturday := time.Date(2026, 8, 15, 1, 0, 0, 0, location)
-	if !MonitorMatchesSchedule(monitor, "2026-08-15", saturday, now, location) {
+	if !MonitorMatchesSchedule(monitor, saturday, now, location) {
 		t.Fatal("MonitorMatchesSchedule() rejected Saturday 01:00")
-	}
-	if MonitorMatchesSchedule(monitor, "2026-08-14", saturday, now, location) {
-		t.Fatal("MonitorMatchesSchedule() attributed Saturday 01:00 to Friday")
 	}
 }
 
@@ -139,16 +131,11 @@ func TestMonitorTargetDatesAndExpiry(t *testing.T) {
 	}
 }
 
-func TestCancellationMonitorRequiresExactDates(t *testing.T) {
+func TestMonitorHorizonIsBoundedByProductPolicy(t *testing.T) {
 	t.Parallel()
 	monitor := validMonitorProto()
-	mode := &clientpb.MonitorMode{}
-	mode.SetCancellation(&clientpb.CancellationMonitor{})
-	monitor.SetMode(mode)
-	monitor.SetTargetDates(nil)
-	monitor.SetTargetWeekdays([]int32{int32(time.Saturday)})
-	monitor.SetSearchHorizonDays(28)
+	monitor.SetSearchHorizonDays(DefaultSearchHorizonDays + 1)
 	if err := ValidateMonitor(monitor); err == nil {
-		t.Fatal("ValidateMonitor() accepted recurring weekdays for cancellation monitoring")
+		t.Fatal("ValidateMonitor() accepted a horizon above the product limit")
 	}
 }

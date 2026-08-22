@@ -13,10 +13,12 @@ import (
 	"github.com/cineko-org/central/internal/central"
 	"github.com/cineko-org/central/internal/domain/clientresources"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -434,8 +436,16 @@ func (store *Store) ListClientResources(
 	userID string,
 	kind string,
 ) ([]*clientpb.Resource, error) {
-	rows, err := store.pool.Query(ctx, `
-		SELECT kind, id, user_id, revision, payload, created_at, updated_at
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin client resource list: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		SELECT kind, id, user_id, revision, created_at, updated_at
 		FROM client_resources
 		WHERE user_id = $1 AND kind = $2 AND deleted_at IS NULL
 		ORDER BY updated_at DESC, id
@@ -444,21 +454,35 @@ func (store *Store) ListClientResources(
 		return nil, fmt.Errorf("list client resources: %w", err)
 	}
 	defer rows.Close()
-	return collectClientResources(rows)
+	stored, err := collectStoredClientResources(rows)
+	if err != nil {
+		return nil, err
+	}
+	resources := make([]*clientpb.Resource, 0, len(stored))
+	for index := range stored {
+		if err := loadClientResourceBody(ctx, tx, &stored[index]); err != nil {
+			return nil, fmt.Errorf("load client resource body: %w", err)
+		}
+		resource, err := stored[index].proto()
+		if err != nil {
+			return nil, fmt.Errorf("build client resource: %w", err)
+		}
+		resources = append(resources, resource)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit client resource list: %w", err)
+	}
+	return resources, nil
 }
 
-func collectClientResources(rows pgx.Rows) ([]*clientpb.Resource, error) {
-	resources := make([]*clientpb.Resource, 0)
+func collectStoredClientResources(rows pgx.Rows) ([]storedClientResource, error) {
+	resources := make([]storedClientResource, 0)
 	for rows.Next() {
 		stored, err := scanStoredClientResource(rows)
 		if err != nil {
 			return nil, err
 		}
-		resource, err := stored.proto()
-		if err != nil {
-			return nil, fmt.Errorf("decode client resource: %w", err)
-		}
-		resources = append(resources, resource)
+		resources = append(resources, stored)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate client resources: %w", err)
@@ -472,8 +496,16 @@ func (store *Store) GetClientResource(
 	kind string,
 	id string,
 ) (*clientpb.Resource, error) {
-	stored, err := scanStoredClientResource(store.pool.QueryRow(ctx, `
-		SELECT kind, id, user_id, revision, payload, created_at, updated_at
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin client resource get: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err := scanStoredClientResource(tx.QueryRow(ctx, `
+		SELECT kind, id, user_id, revision, created_at, updated_at
 		FROM client_resources
 		WHERE user_id = $1 AND kind = $2 AND id = $3 AND deleted_at IS NULL
 	`, userID, kind, id))
@@ -483,9 +515,15 @@ func (store *Store) GetClientResource(
 	if err != nil {
 		return nil, fmt.Errorf("get client resource: %w", err)
 	}
+	if err := loadClientResourceBody(ctx, tx, &stored); err != nil {
+		return nil, fmt.Errorf("load client resource body: %w", err)
+	}
 	resource, err := stored.proto()
 	if err != nil {
-		return nil, fmt.Errorf("decode client resource: %w", err)
+		return nil, fmt.Errorf("build client resource: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit client resource get: %w", err)
 	}
 	return resource, nil
 }
@@ -524,9 +562,21 @@ func (store *Store) mutateClientResource(
 		}
 		return resource.proto()
 	}
+	retryCommandID, rearmExecution, err := prepareMonitorExecutionRearm(ctx, tx, mutation, deleting)
+	if err != nil {
+		return nil, err
+	}
+	if err := invalidateDeletedMonitorExecutions(ctx, tx, mutation, deleting); err != nil {
+		return nil, err
+	}
 	resource, create, err := applyClientResourceMutation(ctx, tx, mutation, operation, deleting)
 	if err != nil {
 		return nil, err
+	}
+	if rearmExecution {
+		if err := rearmMonitorExecution(ctx, tx, mutation, retryCommandID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		if create && isConcurrentClientResourceCreate(err) {
@@ -535,6 +585,105 @@ func (store *Store) mutateClientResource(
 		return nil, fmt.Errorf("commit client resource mutation: %w", err)
 	}
 	return resource.proto()
+}
+
+// invalidateDeletedMonitorExecutions keeps non-Monitor mutations out of the
+// execution lifecycle while preserving the command-before-resource lock order.
+func invalidateDeletedMonitorExecutions(
+	ctx context.Context,
+	tx pgx.Tx,
+	mutation central.ResourceMutation,
+	deleting bool,
+) error {
+	if !deleting || mutation.Kind != "monitors" {
+		return nil
+	}
+	return invalidateMonitorExecutions(ctx, tx, mutation)
+}
+
+// prepareMonitorExecutionRearm locks the execution command before the Monitor
+// resource. Execution completion uses the same lock order, preventing a retry
+// mutation from deadlocking with a result arriving from another installation.
+func prepareMonitorExecutionRearm(
+	ctx context.Context,
+	tx pgx.Tx,
+	mutation central.ResourceMutation,
+	deleting bool,
+) (string, bool, error) {
+	if deleting || mutation.Kind != "monitors" ||
+		mutation.Resource.GetMonitor().GetState().GetPending() == nil {
+		return "", false, nil
+	}
+	var commandID string
+	err := tx.QueryRow(ctx, `
+		SELECT id
+		FROM client_execution_commands
+		WHERE user_id = $1 AND monitor_id = $2
+			AND status IN ('failed', 'completed') AND starts_at > $3
+		ORDER BY created_at DESC, id
+		LIMIT 1 FOR UPDATE
+	`, mutation.UserID, mutation.ID, mutation.Now).Scan(&commandID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("lock monitor execution retry candidate: %w", err)
+	}
+	current, deleted, err := lockClientResource(ctx, tx, mutation.UserID, mutation.Kind, mutation.ID)
+	if errors.Is(err, pgx.ErrNoRows) || deleted {
+		return commandID, false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("lock monitor for execution retry: %w", err)
+	}
+	state := current.body.GetMonitor().GetState()
+	return commandID, state.GetTriggered() != nil || state.GetPaymentUnknown() != nil ||
+		state.GetFailed() != nil || state.GetStopped() != nil, nil
+}
+
+// rearmMonitorExecution applies the user's explicit Monitor retry to the most
+// recent future execution. If no command exists, the pending Monitor simply
+// resumes shared discovery and a later observation will create one.
+func rearmMonitorExecution(
+	ctx context.Context,
+	tx pgx.Tx,
+	mutation central.ResourceMutation,
+	commandID string,
+) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE client_execution_commands
+		SET status = 'queued', leased_installation_id = NULL, last_installation_id = NULL,
+			lease_token_hash = NULL, lease_expires_at = NULL, attempt_count = 0,
+			reason_code = '', completed_at = NULL, updated_at = $3
+		WHERE id = $1 AND user_id = $2 AND status IN ('failed', 'completed')
+	`, commandID, mutation.UserID, mutation.Now)
+	if err != nil {
+		return fmt.Errorf("rearm monitor execution: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("rearm monitor execution %q: command state changed", commandID)
+	}
+	return recordExecutionReadyEvent(
+		ctx, tx, mutation.UserID, commandID, mutation.ID,
+		"explicit_monitor_retry", "explicit-monitor-retry:"+mutation.CommandID, mutation.Now,
+	)
+}
+
+// invalidateMonitorExecutions locks commands before the monitor row. Execution
+// completion uses the same order, so delete and completion cannot deadlock.
+// A later revision failure rolls this update back with the resource mutation.
+func invalidateMonitorExecutions(ctx context.Context, tx pgx.Tx, mutation central.ResourceMutation) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE client_execution_commands
+		SET status = 'failed', leased_installation_id = NULL,
+			last_installation_id = COALESCE(leased_installation_id, last_installation_id),
+			lease_token_hash = NULL, lease_expires_at = NULL,
+			reason_code = 'monitor_deleted', completed_at = $3, updated_at = $3
+		WHERE user_id = $1 AND monitor_id = $2 AND status IN ('queued', 'leased')
+	`, mutation.UserID, mutation.ID, mutation.Now); err != nil {
+		return fmt.Errorf("invalidate deleted monitor executions: %w", err)
+	}
+	return nil
 }
 
 func lockClientUser(ctx context.Context, tx pgx.Tx, userID string) error {
@@ -606,13 +755,9 @@ func prepareClientMutation(
 		if mutation.ExpectedRevision != nil {
 			return storedClientResource{}, false, central.ErrRevisionConflict
 		}
-		payload, payloadErr := clientresources.Payload(mutation.Resource)
-		if payloadErr != nil {
-			return storedClientResource{}, false, payloadErr
-		}
 		return storedClientResource{
 			kind: mutation.Kind, id: mutation.ID, userID: mutation.UserID,
-			revision: 1, payload: payload, createdAt: mutation.Now, updatedAt: mutation.Now,
+			revision: 1, body: cloneClientResource(mutation.Resource), createdAt: mutation.Now, updatedAt: mutation.Now,
 		}, true, nil
 	}
 	if deleted {
@@ -627,11 +772,7 @@ func prepareClientMutation(
 	current.revision++
 	current.updatedAt = mutation.Now
 	if !deleting {
-		payload, payloadErr := clientresources.Payload(mutation.Resource)
-		if payloadErr != nil {
-			return storedClientResource{}, false, payloadErr
-		}
-		current.payload = payload
+		current.body = cloneClientResource(mutation.Resource)
 	}
 	return current, false, nil
 }
@@ -645,19 +786,22 @@ func writeClientResource(
 ) error {
 	if create {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
-			VALUES ($1, $2, $3, 1, $4, $5, $5)
-		`, resource.userID, resource.kind, resource.id, resource.payload, resource.createdAt); err != nil {
+			INSERT INTO client_resources (user_id, kind, id, revision, created_at, updated_at)
+			VALUES ($1, $2, $3, 1, $4, $4)
+		`, resource.userID, resource.kind, resource.id, resource.createdAt); err != nil {
 			return fmt.Errorf("create client resource: %w", err)
 		}
-		return nil
+		return writeClientResourceBody(ctx, tx, resource)
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE client_resources SET revision = $4, payload = $5, updated_at = $6, deleted_at = $7
+		UPDATE client_resources SET revision = $4, updated_at = $5, deleted_at = $6
 		WHERE user_id = $1 AND kind = $2 AND id = $3
-	`, resource.userID, resource.kind, resource.id, resource.revision, resource.payload,
+	`, resource.userID, resource.kind, resource.id, resource.revision,
 		resource.updatedAt, nullableDeletion(deleting, resource.updatedAt)); err != nil {
 		return fmt.Errorf("update client resource: %w", err)
+	}
+	if !deleting {
+		return writeClientResourceBody(ctx, tx, resource)
 	}
 	return nil
 }
@@ -703,13 +847,19 @@ func lockClientResource(
 	var resource storedClientResource
 	var deletedAt *time.Time
 	err := tx.QueryRow(ctx, `
-		SELECT kind, id, user_id, revision, payload, created_at, updated_at, deleted_at
+		SELECT kind, id, user_id, revision, created_at, updated_at, deleted_at
 		FROM client_resources WHERE user_id = $1 AND kind = $2 AND id = $3 FOR UPDATE
 	`, userID, kind, id).Scan(
 		&resource.kind, &resource.id, &resource.userID, &resource.revision,
-		&resource.payload, &resource.createdAt, &resource.updatedAt, &deletedAt,
+		&resource.createdAt, &resource.updatedAt, &deletedAt,
 	)
-	return resource, deletedAt != nil, err
+	if err != nil {
+		return resource, deletedAt != nil, err
+	}
+	if err := loadClientResourceBody(ctx, tx, &resource); err != nil {
+		return storedClientResource{}, false, fmt.Errorf("load locked client resource body: %w", err)
+	}
+	return resource, deletedAt != nil, nil
 }
 
 func recordClientMutation(
@@ -720,6 +870,14 @@ func recordClientMutation(
 	eventType string,
 	resource storedClientResource,
 ) error {
+	payload := []byte("{}")
+	if !strings.HasSuffix(eventType, ".deleted") {
+		var err error
+		payload, err = resourcePayload(resource)
+		if err != nil {
+			return fmt.Errorf("encode client event resource: %w", err)
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO client_commands (
 			user_id, command_id, operation, resource_kind, resource_id, result_revision, created_at
@@ -734,7 +892,7 @@ func recordClientMutation(
 			id, user_id, event_type, resource_kind, resource_id, resource_revision, payload, occurred_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, eventID, mutation.UserID, eventType, mutation.Kind, mutation.ID,
-		resource.revision, resource.payload, mutation.Now); err != nil {
+		resource.revision, payload, mutation.Now); err != nil {
 		return fmt.Errorf("record client event: %w", err)
 	}
 	return nil
@@ -843,24 +1001,47 @@ type storedClientResource struct {
 	id        string
 	userID    string
 	revision  int64
-	payload   []byte
+	body      *clientpb.Resource
 	createdAt time.Time
 	updatedAt time.Time
 }
 
 func (resource storedClientResource) proto() (*clientpb.Resource, error) {
-	return clientresources.Decode(
-		resource.kind, resource.id, resource.revision, resource.createdAt, resource.updatedAt, resource.payload,
-	)
+	if resource.body == nil || clientresources.Kind(resource.body) != resource.kind {
+		return nil, fmt.Errorf("missing normalized %s resource body", resource.kind)
+	}
+	result := cloneClientResource(resource.body)
+	identity := &commonpb.ResourceIdentity{}
+	identity.SetId(resource.id)
+	identity.SetRevision(resource.revision)
+	identity.SetCreatedAt(timestamppb.New(resource.createdAt))
+	identity.SetUpdatedAt(timestamppb.New(resource.updatedAt))
+	result.SetIdentity(identity)
+	return result, nil
 }
 
 func scanStoredClientResource(scanner resourceScanner) (storedClientResource, error) {
 	var resource storedClientResource
 	err := scanner.Scan(
 		&resource.kind, &resource.id, &resource.userID, &resource.revision,
-		&resource.payload, &resource.createdAt, &resource.updatedAt,
+		&resource.createdAt, &resource.updatedAt,
 	)
 	return resource, err
+}
+
+func cloneClientResource(resource *clientpb.Resource) *clientpb.Resource {
+	if resource == nil {
+		return nil
+	}
+	return proto.CloneOf(resource)
+}
+
+func resourcePayload(resource storedClientResource) ([]byte, error) {
+	message, err := resource.proto()
+	if err != nil {
+		return nil, err
+	}
+	return clientresources.Payload(message)
 }
 
 func nullableDeletion(deleting bool, now time.Time) *time.Time {

@@ -510,12 +510,8 @@ func validAssignmentTask(now time.Time) *observationpb.AssignmentTask {
 
 func validResult(now time.Time) *observationpb.AssignmentResult {
 	snapshot := validCatalogSnapshot(now)
-	date := &commonpb.LocalDate{}
-	date.SetYear(2026)
-	date.SetMonth(8)
-	date.SetDay(20)
 	capture := &observationpb.Capture{}
-	capture.SetTargetDate(date)
+	capture.SetTargetDate(proto.CloneOf(snapshot.GetShowtimes()[0].GetScheduleDate()))
 	capture.SetComplete(true)
 	capture.SetObservedAt(timestamppb.New(now.Add(9 * time.Second)))
 	capture.SetShowtimes([]*catalogpb.Showtime{proto.CloneOf(snapshot.GetShowtimes()[0])})
@@ -707,6 +703,8 @@ func assignmentCapability(task *observationpb.AssignmentTask) string {
 		return probedomain.CapabilityCGVCatalogCapture
 	case task.GetSeatMap() != nil:
 		return probedomain.CapabilityCGVSeatMapCapture
+	case task.GetSeatAvailability() != nil:
+		return probedomain.CapabilityCGVSeatAvailabilityCapture
 	default:
 		return ""
 	}

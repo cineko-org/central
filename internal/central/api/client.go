@@ -229,20 +229,6 @@ func bindExecutionID(messageID, pathID string, set func(string)) bool {
 	return messageID == pathID
 }
 
-func (server *Server) retryClientExecution(writer http.ResponseWriter, request *http.Request) {
-	principal, ok := server.authenticatedClient(writer, request)
-	if !ok {
-		return
-	}
-	if err := server.clients.RetryExecution(
-		request.Context(), principal, request.PathValue("executionId"),
-	); err != nil {
-		server.writeError(writer, request, err)
-		return
-	}
-	writer.WriteHeader(http.StatusNoContent)
-}
-
 func (server *Server) upsertClientDevice(writer http.ResponseWriter, request *http.Request) {
 	principal, ok := server.authenticatedClient(writer, request)
 	if !ok {

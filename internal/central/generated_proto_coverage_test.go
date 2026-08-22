@@ -629,13 +629,14 @@ func TestGeneratedProtoProbeBootstrapBoundaries(t *testing.T) {
 		capabilityMessage(probedomain.CapabilityCGVScheduleCapture),
 		capabilityMessage(probedomain.CapabilityCGVCatalogCapture),
 		capabilityMessage(probedomain.CapabilityCGVSeatMapCapture),
+		capabilityMessage(probedomain.CapabilityCGVSeatAvailabilityCapture),
 	}) {
-		t.Fatal("three-capability Probe set rejected")
+		t.Fatal("four-capability Probe set rejected")
 	}
 	if capabilityName(nil) != "" || capabilityName(&observationpb.Capability{}) != "" {
 		t.Fatal("empty capability name accepted")
 	}
-	for _, capability := range []string{probedomain.CapabilityCGVScheduleCapture, probedomain.CapabilityCGVCatalogCapture, probedomain.CapabilityCGVSeatMapCapture} {
+	for _, capability := range []string{probedomain.CapabilityCGVScheduleCapture, probedomain.CapabilityCGVCatalogCapture, probedomain.CapabilityCGVSeatMapCapture, probedomain.CapabilityCGVSeatAvailabilityCapture} {
 		if capabilityName(capabilityMessage(capability)) != capability {
 			t.Fatalf("capability name = %q", capabilityName(capabilityMessage(capability)))
 		}
@@ -699,7 +700,7 @@ func TestGeneratedProtoCatalogAndExecutionBoundaries(t *testing.T) {
 			t.Fatalf("completed execution result = %q/%q", status, reason)
 		case request != nil && request.GetFailed() != nil && (status != "failed" || reason != "failed"):
 			t.Fatalf("failed execution result = %q/%q", status, reason)
-		case request != nil && request.GetRetryRequested() != nil && (status != "failed" || reason != "retry"):
+		case request != nil && request.GetRetryRequested() != nil && (status != "retry_requested" || reason != "retry"):
 			t.Fatalf("retry execution result = %q/%q", status, reason)
 		case request != nil && request.GetCompleted() == nil && request.GetFailed() == nil && request.GetRetryRequested() == nil && (status != "" || reason != ""):
 			t.Fatalf("empty execution result = %q/%q", status, reason)
@@ -748,6 +749,8 @@ func capabilityMessage(name string) *observationpb.Capability {
 		capability.SetCatalogCapture(&observationpb.CatalogCapture{})
 	case probedomain.CapabilityCGVSeatMapCapture:
 		capability.SetSeatMapCapture(&observationpb.SeatMapCapture{})
+	case probedomain.CapabilityCGVSeatAvailabilityCapture:
+		capability.SetSeatAvailabilityCapture(&observationpb.SeatAvailabilityCapture{})
 	}
 	return capability
 }

@@ -2529,25 +2529,14 @@ func (b0 GetDataSummaryResponse_builder) Build() *GetDataSummaryResponse {
 }
 
 type ObservationPolicyInput struct {
-	state                           protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_TheaterId            *string                `protobuf:"bytes,1,opt,name=theater_id,json=theaterId"`
-	xxx_hidden_Enabled              bool                   `protobuf:"varint,2,opt,name=enabled"`
-	xxx_hidden_HorizonDays          int32                  `protobuf:"varint,3,opt,name=horizon_days,json=horizonDays"`
-	xxx_hidden_Priority             int32                  `protobuf:"varint,4,opt,name=priority"`
-	xxx_hidden_BaselineMinSeconds   int32                  `protobuf:"varint,5,opt,name=baseline_min_seconds,json=baselineMinSeconds"`
-	xxx_hidden_BaselineMaxSeconds   int32                  `protobuf:"varint,6,opt,name=baseline_max_seconds,json=baselineMaxSeconds"`
-	xxx_hidden_DemandMinSeconds     int32                  `protobuf:"varint,7,opt,name=demand_min_seconds,json=demandMinSeconds"`
-	xxx_hidden_DemandMaxSeconds     int32                  `protobuf:"varint,8,opt,name=demand_max_seconds,json=demandMaxSeconds"`
-	xxx_hidden_BurstMinSeconds      int32                  `protobuf:"varint,9,opt,name=burst_min_seconds,json=burstMinSeconds"`
-	xxx_hidden_BurstMaxSeconds      int32                  `protobuf:"varint,10,opt,name=burst_max_seconds,json=burstMaxSeconds"`
-	xxx_hidden_BurstDurationSeconds int32                  `protobuf:"varint,11,opt,name=burst_duration_seconds,json=burstDurationSeconds"`
-	xxx_hidden_Locale               *string                `protobuf:"bytes,12,opt,name=locale"`
-	xxx_hidden_TimeZone             *string                `protobuf:"bytes,13,opt,name=time_zone,json=timeZone"`
-	xxx_hidden_EgressPolicyId       *string                `protobuf:"bytes,14,opt,name=egress_policy_id,json=egressPolicyId"`
-	XXX_raceDetectHookData          protoimpl.RaceDetectHookData
-	XXX_presence                    [1]uint32
-	unknownFields                   protoimpl.UnknownFields
-	sizeCache                       protoimpl.SizeCache
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_TheaterId   *string                `protobuf:"bytes,1,opt,name=theater_id,json=theaterId"`
+	xxx_hidden_Enabled     bool                   `protobuf:"varint,2,opt,name=enabled"`
+	xxx_hidden_HorizonDays int32                  `protobuf:"varint,3,opt,name=horizon_days,json=horizonDays"`
+	XXX_raceDetectHookData protoimpl.RaceDetectHookData
+	XXX_presence           [1]uint32
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ObservationPolicyInput) Reset() {
@@ -2599,160 +2588,19 @@ func (x *ObservationPolicyInput) GetHorizonDays() int32 {
 	return 0
 }
 
-func (x *ObservationPolicyInput) GetPriority() int32 {
-	if x != nil {
-		return x.xxx_hidden_Priority
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetBaselineMinSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_BaselineMinSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetBaselineMaxSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_BaselineMaxSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetDemandMinSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_DemandMinSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetDemandMaxSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_DemandMaxSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetBurstMinSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_BurstMinSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetBurstMaxSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_BurstMaxSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetBurstDurationSeconds() int32 {
-	if x != nil {
-		return x.xxx_hidden_BurstDurationSeconds
-	}
-	return 0
-}
-
-func (x *ObservationPolicyInput) GetLocale() string {
-	if x != nil {
-		if x.xxx_hidden_Locale != nil {
-			return *x.xxx_hidden_Locale
-		}
-		return ""
-	}
-	return ""
-}
-
-func (x *ObservationPolicyInput) GetTimeZone() string {
-	if x != nil {
-		if x.xxx_hidden_TimeZone != nil {
-			return *x.xxx_hidden_TimeZone
-		}
-		return ""
-	}
-	return ""
-}
-
-func (x *ObservationPolicyInput) GetEgressPolicyId() string {
-	if x != nil {
-		if x.xxx_hidden_EgressPolicyId != nil {
-			return *x.xxx_hidden_EgressPolicyId
-		}
-		return ""
-	}
-	return ""
-}
-
 func (x *ObservationPolicyInput) SetTheaterId(v string) {
 	x.xxx_hidden_TheaterId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 14)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 3)
 }
 
 func (x *ObservationPolicyInput) SetEnabled(v bool) {
 	x.xxx_hidden_Enabled = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 14)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 3)
 }
 
 func (x *ObservationPolicyInput) SetHorizonDays(v int32) {
 	x.xxx_hidden_HorizonDays = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 14)
-}
-
-func (x *ObservationPolicyInput) SetPriority(v int32) {
-	x.xxx_hidden_Priority = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 14)
-}
-
-func (x *ObservationPolicyInput) SetBaselineMinSeconds(v int32) {
-	x.xxx_hidden_BaselineMinSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 14)
-}
-
-func (x *ObservationPolicyInput) SetBaselineMaxSeconds(v int32) {
-	x.xxx_hidden_BaselineMaxSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 14)
-}
-
-func (x *ObservationPolicyInput) SetDemandMinSeconds(v int32) {
-	x.xxx_hidden_DemandMinSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 6, 14)
-}
-
-func (x *ObservationPolicyInput) SetDemandMaxSeconds(v int32) {
-	x.xxx_hidden_DemandMaxSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 14)
-}
-
-func (x *ObservationPolicyInput) SetBurstMinSeconds(v int32) {
-	x.xxx_hidden_BurstMinSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 8, 14)
-}
-
-func (x *ObservationPolicyInput) SetBurstMaxSeconds(v int32) {
-	x.xxx_hidden_BurstMaxSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 9, 14)
-}
-
-func (x *ObservationPolicyInput) SetBurstDurationSeconds(v int32) {
-	x.xxx_hidden_BurstDurationSeconds = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 10, 14)
-}
-
-func (x *ObservationPolicyInput) SetLocale(v string) {
-	x.xxx_hidden_Locale = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 11, 14)
-}
-
-func (x *ObservationPolicyInput) SetTimeZone(v string) {
-	x.xxx_hidden_TimeZone = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 12, 14)
-}
-
-func (x *ObservationPolicyInput) SetEgressPolicyId(v string) {
-	x.xxx_hidden_EgressPolicyId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 13, 14)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
 func (x *ObservationPolicyInput) HasTheaterId() bool {
@@ -2776,83 +2624,6 @@ func (x *ObservationPolicyInput) HasHorizonDays() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
 }
 
-func (x *ObservationPolicyInput) HasPriority() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
-}
-
-func (x *ObservationPolicyInput) HasBaselineMinSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
-}
-
-func (x *ObservationPolicyInput) HasBaselineMaxSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
-}
-
-func (x *ObservationPolicyInput) HasDemandMinSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 6)
-}
-
-func (x *ObservationPolicyInput) HasDemandMaxSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 7)
-}
-
-func (x *ObservationPolicyInput) HasBurstMinSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 8)
-}
-
-func (x *ObservationPolicyInput) HasBurstMaxSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 9)
-}
-
-func (x *ObservationPolicyInput) HasBurstDurationSeconds() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 10)
-}
-
-func (x *ObservationPolicyInput) HasLocale() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 11)
-}
-
-func (x *ObservationPolicyInput) HasTimeZone() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 12)
-}
-
-func (x *ObservationPolicyInput) HasEgressPolicyId() bool {
-	if x == nil {
-		return false
-	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 13)
-}
-
 func (x *ObservationPolicyInput) ClearTheaterId() {
 	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 0)
 	x.xxx_hidden_TheaterId = nil
@@ -2868,78 +2639,12 @@ func (x *ObservationPolicyInput) ClearHorizonDays() {
 	x.xxx_hidden_HorizonDays = 0
 }
 
-func (x *ObservationPolicyInput) ClearPriority() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
-	x.xxx_hidden_Priority = 0
-}
-
-func (x *ObservationPolicyInput) ClearBaselineMinSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
-	x.xxx_hidden_BaselineMinSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearBaselineMaxSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
-	x.xxx_hidden_BaselineMaxSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearDemandMinSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 6)
-	x.xxx_hidden_DemandMinSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearDemandMaxSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 7)
-	x.xxx_hidden_DemandMaxSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearBurstMinSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 8)
-	x.xxx_hidden_BurstMinSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearBurstMaxSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 9)
-	x.xxx_hidden_BurstMaxSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearBurstDurationSeconds() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 10)
-	x.xxx_hidden_BurstDurationSeconds = 0
-}
-
-func (x *ObservationPolicyInput) ClearLocale() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 11)
-	x.xxx_hidden_Locale = nil
-}
-
-func (x *ObservationPolicyInput) ClearTimeZone() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 12)
-	x.xxx_hidden_TimeZone = nil
-}
-
-func (x *ObservationPolicyInput) ClearEgressPolicyId() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 13)
-	x.xxx_hidden_EgressPolicyId = nil
-}
-
 type ObservationPolicyInput_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	TheaterId            *string
-	Enabled              *bool
-	HorizonDays          *int32
-	Priority             *int32
-	BaselineMinSeconds   *int32
-	BaselineMaxSeconds   *int32
-	DemandMinSeconds     *int32
-	DemandMaxSeconds     *int32
-	BurstMinSeconds      *int32
-	BurstMaxSeconds      *int32
-	BurstDurationSeconds *int32
-	Locale               *string
-	TimeZone             *string
-	EgressPolicyId       *string
+	TheaterId   *string
+	Enabled     *bool
+	HorizonDays *int32
 }
 
 func (b0 ObservationPolicyInput_builder) Build() *ObservationPolicyInput {
@@ -2947,60 +2652,16 @@ func (b0 ObservationPolicyInput_builder) Build() *ObservationPolicyInput {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.TheaterId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 14)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 3)
 		x.xxx_hidden_TheaterId = b.TheaterId
 	}
 	if b.Enabled != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 14)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 3)
 		x.xxx_hidden_Enabled = *b.Enabled
 	}
 	if b.HorizonDays != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 14)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
 		x.xxx_hidden_HorizonDays = *b.HorizonDays
-	}
-	if b.Priority != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 14)
-		x.xxx_hidden_Priority = *b.Priority
-	}
-	if b.BaselineMinSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 14)
-		x.xxx_hidden_BaselineMinSeconds = *b.BaselineMinSeconds
-	}
-	if b.BaselineMaxSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 14)
-		x.xxx_hidden_BaselineMaxSeconds = *b.BaselineMaxSeconds
-	}
-	if b.DemandMinSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 6, 14)
-		x.xxx_hidden_DemandMinSeconds = *b.DemandMinSeconds
-	}
-	if b.DemandMaxSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 14)
-		x.xxx_hidden_DemandMaxSeconds = *b.DemandMaxSeconds
-	}
-	if b.BurstMinSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 8, 14)
-		x.xxx_hidden_BurstMinSeconds = *b.BurstMinSeconds
-	}
-	if b.BurstMaxSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 9, 14)
-		x.xxx_hidden_BurstMaxSeconds = *b.BurstMaxSeconds
-	}
-	if b.BurstDurationSeconds != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 10, 14)
-		x.xxx_hidden_BurstDurationSeconds = *b.BurstDurationSeconds
-	}
-	if b.Locale != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 11, 14)
-		x.xxx_hidden_Locale = b.Locale
-	}
-	if b.TimeZone != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 12, 14)
-		x.xxx_hidden_TimeZone = b.TimeZone
-	}
-	if b.EgressPolicyId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 13, 14)
-		x.xxx_hidden_EgressPolicyId = b.EgressPolicyId
 	}
 	return m0
 }
@@ -3134,26 +2795,26 @@ func (b0 BurstMode_builder) Build() *BurstMode {
 	return m0
 }
 
-type CancellationMode struct {
+type SeatAvailabilityMode struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CancellationMode) Reset() {
-	*x = CancellationMode{}
+func (x *SeatAvailabilityMode) Reset() {
+	*x = SeatAvailabilityMode{}
 	mi := &file_cineko_admin_admin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CancellationMode) String() string {
+func (x *SeatAvailabilityMode) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CancellationMode) ProtoMessage() {}
+func (*SeatAvailabilityMode) ProtoMessage() {}
 
-func (x *CancellationMode) ProtoReflect() protoreflect.Message {
+func (x *SeatAvailabilityMode) ProtoReflect() protoreflect.Message {
 	mi := &file_cineko_admin_admin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -3165,13 +2826,13 @@ func (x *CancellationMode) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-type CancellationMode_builder struct {
+type SeatAvailabilityMode_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
 }
 
-func (b0 CancellationMode_builder) Build() *CancellationMode {
-	m0 := &CancellationMode{}
+func (b0 SeatAvailabilityMode_builder) Build() *SeatAvailabilityMode {
+	m0 := &SeatAvailabilityMode{}
 	b, x := &b0, m0
 	_, _ = b, x
 	return m0
@@ -3236,10 +2897,10 @@ func (x *ObservationMode) GetBurst() *BurstMode {
 	return nil
 }
 
-func (x *ObservationMode) GetCancellation() *CancellationMode {
+func (x *ObservationMode) GetSeatAvailability() *SeatAvailabilityMode {
 	if x != nil {
-		if x, ok := x.xxx_hidden_Mode.(*observationMode_Cancellation); ok {
-			return x.Cancellation
+		if x, ok := x.xxx_hidden_Mode.(*observationMode_SeatAvailability); ok {
+			return x.SeatAvailability
 		}
 	}
 	return nil
@@ -3269,12 +2930,12 @@ func (x *ObservationMode) SetBurst(v *BurstMode) {
 	x.xxx_hidden_Mode = &observationMode_Burst{v}
 }
 
-func (x *ObservationMode) SetCancellation(v *CancellationMode) {
+func (x *ObservationMode) SetSeatAvailability(v *SeatAvailabilityMode) {
 	if v == nil {
 		x.xxx_hidden_Mode = nil
 		return
 	}
-	x.xxx_hidden_Mode = &observationMode_Cancellation{v}
+	x.xxx_hidden_Mode = &observationMode_SeatAvailability{v}
 }
 
 func (x *ObservationMode) HasMode() bool {
@@ -3308,11 +2969,11 @@ func (x *ObservationMode) HasBurst() bool {
 	return ok
 }
 
-func (x *ObservationMode) HasCancellation() bool {
+func (x *ObservationMode) HasSeatAvailability() bool {
 	if x == nil {
 		return false
 	}
-	_, ok := x.xxx_hidden_Mode.(*observationMode_Cancellation)
+	_, ok := x.xxx_hidden_Mode.(*observationMode_SeatAvailability)
 	return ok
 }
 
@@ -3338,8 +2999,8 @@ func (x *ObservationMode) ClearBurst() {
 	}
 }
 
-func (x *ObservationMode) ClearCancellation() {
-	if _, ok := x.xxx_hidden_Mode.(*observationMode_Cancellation); ok {
+func (x *ObservationMode) ClearSeatAvailability() {
+	if _, ok := x.xxx_hidden_Mode.(*observationMode_SeatAvailability); ok {
 		x.xxx_hidden_Mode = nil
 	}
 }
@@ -3348,7 +3009,7 @@ const ObservationMode_Mode_not_set_case case_ObservationMode_Mode = 0
 const ObservationMode_Baseline_case case_ObservationMode_Mode = 1
 const ObservationMode_Demand_case case_ObservationMode_Mode = 2
 const ObservationMode_Burst_case case_ObservationMode_Mode = 3
-const ObservationMode_Cancellation_case case_ObservationMode_Mode = 4
+const ObservationMode_SeatAvailability_case case_ObservationMode_Mode = 4
 
 func (x *ObservationMode) WhichMode() case_ObservationMode_Mode {
 	if x == nil {
@@ -3361,8 +3022,8 @@ func (x *ObservationMode) WhichMode() case_ObservationMode_Mode {
 		return ObservationMode_Demand_case
 	case *observationMode_Burst:
 		return ObservationMode_Burst_case
-	case *observationMode_Cancellation:
-		return ObservationMode_Cancellation_case
+	case *observationMode_SeatAvailability:
+		return ObservationMode_SeatAvailability_case
 	default:
 		return ObservationMode_Mode_not_set_case
 	}
@@ -3372,10 +3033,10 @@ type ObservationMode_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
 	// Fields of oneof xxx_hidden_Mode:
-	Baseline     *BaselineMode
-	Demand       *DemandMode
-	Burst        *BurstMode
-	Cancellation *CancellationMode
+	Baseline         *BaselineMode
+	Demand           *DemandMode
+	Burst            *BurstMode
+	SeatAvailability *SeatAvailabilityMode
 	// -- end of xxx_hidden_Mode
 }
 
@@ -3392,8 +3053,8 @@ func (b0 ObservationMode_builder) Build() *ObservationMode {
 	if b.Burst != nil {
 		x.xxx_hidden_Mode = &observationMode_Burst{b.Burst}
 	}
-	if b.Cancellation != nil {
-		x.xxx_hidden_Mode = &observationMode_Cancellation{b.Cancellation}
+	if b.SeatAvailability != nil {
+		x.xxx_hidden_Mode = &observationMode_SeatAvailability{b.SeatAvailability}
 	}
 	return m0
 }
@@ -3424,8 +3085,8 @@ type observationMode_Burst struct {
 	Burst *BurstMode `protobuf:"bytes,3,opt,name=burst,oneof"`
 }
 
-type observationMode_Cancellation struct {
-	Cancellation *CancellationMode `protobuf:"bytes,4,opt,name=cancellation,oneof"`
+type observationMode_SeatAvailability struct {
+	SeatAvailability *SeatAvailabilityMode `protobuf:"bytes,4,opt,name=seat_availability,json=seatAvailability,oneof"`
 }
 
 func (*observationMode_Baseline) isObservationMode_Mode() {}
@@ -3434,7 +3095,7 @@ func (*observationMode_Demand) isObservationMode_Mode() {}
 
 func (*observationMode_Burst) isObservationMode_Mode() {}
 
-func (*observationMode_Cancellation) isObservationMode_Mode() {}
+func (*observationMode_SeatAvailability) isObservationMode_Mode() {}
 
 type CompletedOutcome struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
@@ -8781,35 +8442,23 @@ const file_cineko_admin_admin_proto_rawDesc = "" +
 	"\x1blatest_schedule_observed_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\x18latestScheduleObservedAt\"\x17\n" +
 	"\x15GetDataSummaryRequest\"M\n" +
 	"\x16GetDataSummaryResponse\x123\n" +
-	"\asummary\x18\x01 \x01(\v2\x19.cineko.admin.DataSummaryR\asummary\"\xd4\x04\n" +
+	"\asummary\x18\x01 \x01(\v2\x19.cineko.admin.DataSummaryR\asummary\"\x8b\x01\n" +
 	"\x16ObservationPolicyInput\x12)\n" +
 	"\n" +
 	"theater_id\x18\x01 \x01(\tB\n" +
 	"\xbaH\a\xc8\x01\x01r\x02\x10\x01R\ttheaterId\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12,\n" +
-	"\fhorizon_days\x18\x03 \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x0e(\x01R\vhorizonDays\x12\x1a\n" +
-	"\bpriority\x18\x04 \x01(\x05R\bpriority\x120\n" +
-	"\x14baseline_min_seconds\x18\x05 \x01(\x05R\x12baselineMinSeconds\x120\n" +
-	"\x14baseline_max_seconds\x18\x06 \x01(\x05R\x12baselineMaxSeconds\x12,\n" +
-	"\x12demand_min_seconds\x18\a \x01(\x05R\x10demandMinSeconds\x12,\n" +
-	"\x12demand_max_seconds\x18\b \x01(\x05R\x10demandMaxSeconds\x12*\n" +
-	"\x11burst_min_seconds\x18\t \x01(\x05R\x0fburstMinSeconds\x12*\n" +
-	"\x11burst_max_seconds\x18\n" +
-	" \x01(\x05R\x0fburstMaxSeconds\x124\n" +
-	"\x16burst_duration_seconds\x18\v \x01(\x05R\x14burstDurationSeconds\x12\x16\n" +
-	"\x06locale\x18\f \x01(\tR\x06locale\x12\x1b\n" +
-	"\ttime_zone\x18\r \x01(\tR\btimeZone\x12(\n" +
-	"\x10egress_policy_id\x18\x0e \x01(\tR\x0eegressPolicyId\"\x0e\n" +
+	"\fhorizon_days\x18\x03 \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x0e(\x01R\vhorizonDays\"\x0e\n" +
 	"\fBaselineMode\"\f\n" +
 	"\n" +
 	"DemandMode\"\v\n" +
-	"\tBurstMode\"\x12\n" +
-	"\x10CancellationMode\"\x85\x02\n" +
+	"\tBurstMode\"\x16\n" +
+	"\x14SeatAvailabilityMode\"\x92\x02\n" +
 	"\x0fObservationMode\x128\n" +
 	"\bbaseline\x18\x01 \x01(\v2\x1a.cineko.admin.BaselineModeH\x00R\bbaseline\x122\n" +
 	"\x06demand\x18\x02 \x01(\v2\x18.cineko.admin.DemandModeH\x00R\x06demand\x12/\n" +
-	"\x05burst\x18\x03 \x01(\v2\x17.cineko.admin.BurstModeH\x00R\x05burst\x12D\n" +
-	"\fcancellation\x18\x04 \x01(\v2\x1e.cineko.admin.CancellationModeH\x00R\fcancellationB\r\n" +
+	"\x05burst\x18\x03 \x01(\v2\x17.cineko.admin.BurstModeH\x00R\x05burst\x12Q\n" +
+	"\x11seat_availability\x18\x04 \x01(\v2\".cineko.admin.SeatAvailabilityModeH\x00R\x10seatAvailabilityB\r\n" +
 	"\x04mode\x12\x05\xbaH\x02\b\x01\"\x12\n" +
 	"\x10CompletedOutcome\"\x10\n" +
 	"\x0ePartialOutcome\"\x0f\n" +
@@ -9040,7 +8689,7 @@ var file_cineko_admin_admin_proto_goTypes = []any{
 	(*BaselineMode)(nil),                       // 22: cineko.admin.BaselineMode
 	(*DemandMode)(nil),                         // 23: cineko.admin.DemandMode
 	(*BurstMode)(nil),                          // 24: cineko.admin.BurstMode
-	(*CancellationMode)(nil),                   // 25: cineko.admin.CancellationMode
+	(*SeatAvailabilityMode)(nil),               // 25: cineko.admin.SeatAvailabilityMode
 	(*ObservationMode)(nil),                    // 26: cineko.admin.ObservationMode
 	(*CompletedOutcome)(nil),                   // 27: cineko.admin.CompletedOutcome
 	(*PartialOutcome)(nil),                     // 28: cineko.admin.PartialOutcome
@@ -9111,7 +8760,7 @@ var file_cineko_admin_admin_proto_depIdxs = []int32{
 	22, // 15: cineko.admin.ObservationMode.baseline:type_name -> cineko.admin.BaselineMode
 	23, // 16: cineko.admin.ObservationMode.demand:type_name -> cineko.admin.DemandMode
 	24, // 17: cineko.admin.ObservationMode.burst:type_name -> cineko.admin.BurstMode
-	25, // 18: cineko.admin.ObservationMode.cancellation:type_name -> cineko.admin.CancellationMode
+	25, // 18: cineko.admin.ObservationMode.seat_availability:type_name -> cineko.admin.SeatAvailabilityMode
 	27, // 19: cineko.admin.ObservationOutcome.completed:type_name -> cineko.admin.CompletedOutcome
 	28, // 20: cineko.admin.ObservationOutcome.partial:type_name -> cineko.admin.PartialOutcome
 	29, // 21: cineko.admin.ObservationOutcome.failed:type_name -> cineko.admin.FailedOutcome
@@ -9215,7 +8864,7 @@ func file_cineko_admin_admin_proto_init() {
 		(*observationMode_Baseline)(nil),
 		(*observationMode_Demand)(nil),
 		(*observationMode_Burst)(nil),
-		(*observationMode_Cancellation)(nil),
+		(*observationMode_SeatAvailability)(nil),
 	}
 	file_cineko_admin_admin_proto_msgTypes[31].OneofWrappers = []any{
 		(*observationOutcome_Completed)(nil),
