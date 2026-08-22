@@ -147,6 +147,19 @@ func TestNormalizeSeatMapCanonicalizesLayout(t *testing.T) {
 	}
 }
 
+func TestNormalizeSeatMapMatchesCGVProbeCanonicalHash(t *testing.T) {
+	now := time.Date(2026, 8, 21, 5, 0, 0, 0, time.UTC)
+	snapshot := seatMapFixture("auditorium-1", 2, cgvSeatMapContractFixture(), nil)
+
+	if err := NormalizeSeatMap(snapshot, now); err != nil {
+		t.Fatal(err)
+	}
+	const want = "c64db650f1c11a6de3988acbdd5a92b1cbe01115835073c9c0bc080c2b6734f8"
+	if snapshot.GetLayoutHash() != want {
+		t.Fatalf("CGV Probe-compatible layout hash = %s, want %s", snapshot.GetLayoutHash(), want)
+	}
+}
+
 func TestNormalizeSeatMapCollapsesDefaultFieldPresence(t *testing.T) {
 	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
 	withoutDefaults := seatMapFixture("auditorium", 1, validSeatMapLayout(1), nil)
@@ -255,6 +268,65 @@ func validSeatMapLayout(count int) *seatmappb.Layout {
 	block.SetMaxY(1)
 	layout := &seatmappb.Layout{}
 	layout.SetSeats(seats)
+	layout.SetZones([]*seatmappb.LayoutZone{zone})
+	layout.SetBlocks([]*seatmappb.LayoutBlock{block})
+	return layout
+}
+
+// cgvSeatMapContractFixture mirrors Probe's provider fixture. Its golden hash
+// makes Probe and Central changes fail independently when normalization drifts.
+func cgvSeatMapContractFixture() *seatmappb.Layout {
+	const auditoriumID = "auditorium-1"
+	newSeat := func(label string, number int32, x float64, leftAisle, rightAisle bool, features []string) *seatmappb.Seat {
+		seat := &seatmappb.Seat{}
+		seat.SetId(SeatID(auditoriumID, label))
+		seat.SetAuditoriumId(auditoriumID)
+		seat.SetLabel(label)
+		seat.SetRow("A")
+		seat.SetNumber(number)
+		seat.SetX(x)
+		seat.SetY(2.0 / 35.0)
+		seat.SetType("wheelchair")
+		seat.SetZoneName("Light존")
+		seat.SetZoneKind("Light존")
+		seat.SetSaleFormCode("04")
+		seat.SetSaleFormName("이동식")
+		seat.SetLeftAisle(leftAisle)
+		seat.SetRightAisle(rightAisle)
+		seat.SetFeatures(features)
+		seat.SetSourceLabel(label)
+		seat.SetSourceSeatKindCode("01")
+		seat.SetSourceSeatKindName("일반석")
+		return seat
+	}
+	zone := &seatmappb.LayoutZone{}
+	zone.SetCode("02001")
+	zone.SetName("Light존")
+	zone.SetKindCode("02")
+	zone.SetKindName("Light존")
+	zone.SetMinX(7.0 / 101.0)
+	zone.SetMaxX(93.0 / 101.0)
+	zone.SetMinY(1.0 / 35.0)
+	zone.SetMaxY(5.0 / 35.0)
+	zone.SetCapacity(2)
+	block := &seatmappb.LayoutBlock{}
+	block.SetCode("01001")
+	block.SetName("입구")
+	block.SetKindCode("01")
+	block.SetKindName("입구")
+	block.SetMinX(67.0 / 101.0)
+	block.SetMaxX(68.0 / 101.0)
+	block.SetMinY(0)
+	block.SetMaxY(1.0 / 35.0)
+	layout := &seatmappb.Layout{}
+	layout.SetSeats([]*seatmappb.Seat{
+		newSeat("A19", 19, 42.0/101.0, false, true, []string{
+			"removable", "right-aisle", "sale-form:이동식", "wheelchair-area", "zone:Light존",
+		}),
+		newSeat("A22", 22, 48.0/101.0, true, false, []string{
+			"left-aisle", "removable", "sale-form:이동식", "wheelchair-area", "zone:Light존",
+		}),
+	})
 	layout.SetZones([]*seatmappb.LayoutZone{zone})
 	layout.SetBlocks([]*seatmappb.LayoutBlock{block})
 	return layout

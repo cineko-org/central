@@ -6,35 +6,42 @@ import (
 	"sort"
 	"time"
 
-	"github.com/cineko-org/central/internal/domain"
+	"github.com/cineko-org/central/internal/support/numeric"
+	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// AdminObservationIntelligence derives opening and seat-availability patterns
+// from complete schedule captures without treating availability loss as a sale.
 func (store *Store) AdminObservationIntelligence(
 	ctx context.Context,
 	location *time.Location,
-) (domain.ScheduleIntelligence, error) {
+) (*adminpb.ObservationIntelligence, error) {
 	if location == nil {
 		location = time.UTC
 	}
 	result, err := store.scheduleIntelligenceSummary(ctx)
 	if err != nil {
-		return domain.ScheduleIntelligence{}, err
+		return nil, err
 	}
-	result.OpeningPatterns, err = store.openingPatterns(ctx, location.String())
+	openingPatterns, err := store.openingPatterns(ctx, location.String())
 	if err != nil {
-		return domain.ScheduleIntelligence{}, err
+		return nil, err
 	}
-	result.DemandPatterns, err = store.demandPatterns(ctx)
+	result.SetOpeningPatterns(openingPatterns)
+	demandPatterns, err := store.demandPatterns(ctx)
 	if err != nil {
-		return domain.ScheduleIntelligence{}, err
+		return nil, err
 	}
+	result.SetDemandPatterns(demandPatterns)
 	return result, nil
 }
 
 func (store *Store) scheduleIntelligenceSummary(
 	ctx context.Context,
-) (domain.ScheduleIntelligence, error) {
-	var result domain.ScheduleIntelligence
+) (*adminpb.ObservationIntelligence, error) {
+	result := &adminpb.ObservationIntelligence{}
+	var snapshotCount, showtimeObservations int
 	var lastObservedAt *time.Time
 	err := store.pool.QueryRow(ctx, `
 		WITH captures AS (
@@ -50,12 +57,14 @@ func (store *Store) scheduleIntelligenceSummary(
 				AND complete_capture.target_date = observation.target_date
 			WHERE complete_capture.complete
 		) FROM captures
-	`).Scan(&result.SnapshotCount, &lastObservedAt, &result.ShowtimeObservations)
+	`).Scan(&snapshotCount, &lastObservedAt, &showtimeObservations)
 	if err != nil {
-		return domain.ScheduleIntelligence{}, fmt.Errorf("summarize schedule intelligence: %w", err)
+		return nil, fmt.Errorf("summarize schedule intelligence: %w", err)
 	}
+	result.SetSnapshotCount(numeric.ClampInt32(snapshotCount))
+	result.SetShowtimeObservations(numeric.ClampInt32(showtimeObservations))
 	if lastObservedAt != nil {
-		result.LastObservedAt = lastObservedAt.UTC()
+		result.SetLastObservedAt(timestamppb.New(lastObservedAt.UTC()))
 	}
 	return result, nil
 }
@@ -63,7 +72,7 @@ func (store *Store) scheduleIntelligenceSummary(
 func (store *Store) openingPatterns(
 	ctx context.Context,
 	timeZone string,
-) ([]domain.OpeningPattern, error) {
+) ([]*adminpb.OpeningPattern, error) {
 	rows, err := store.pool.Query(ctx, `
 		WITH complete_captures AS (
 			SELECT capture.assignment_id, capture.run_id, capture.target_date,
@@ -135,20 +144,33 @@ func (store *Store) openingPatterns(
 		return nil, fmt.Errorf("query opening patterns: %w", err)
 	}
 	defer rows.Close()
-	patterns := make([]domain.OpeningPattern, 0)
+	patterns := make([]*adminpb.OpeningPattern, 0)
 	for rows.Next() {
-		var pattern domain.OpeningPattern
+		pattern := &adminpb.OpeningPattern{}
+		var theaterID, theaterName, auditoriumID, auditoriumName, movie string
+		var screenTypes []string
+		var sampleSize, typicalLeadHours, typicalPrecisionMinutes int
 		var typicalMinute int
+		var lastObservedAt time.Time
 		if err := rows.Scan(
-			&pattern.TheaterID, &pattern.TheaterName, &pattern.AuditoriumID,
-			&pattern.AuditoriumName, &pattern.Movie, &pattern.ScreenTypes, &pattern.SampleSize,
-			&typicalMinute, &pattern.TypicalLeadHours, &pattern.TypicalPrecisionMins,
-			&pattern.LastObservedAt,
+			&theaterID, &theaterName, &auditoriumID,
+			&auditoriumName, &movie, &screenTypes, &sampleSize,
+			&typicalMinute, &typicalLeadHours, &typicalPrecisionMinutes,
+			&lastObservedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan opening pattern: %w", err)
 		}
-		pattern.TypicalOpenTime = fmt.Sprintf("%02d:%02d", typicalMinute/60, typicalMinute%60)
-		pattern.LastObservedAt = pattern.LastObservedAt.UTC()
+		pattern.SetTheaterId(theaterID)
+		pattern.SetTheaterName(theaterName)
+		pattern.SetAuditoriumId(auditoriumID)
+		pattern.SetAuditoriumName(auditoriumName)
+		pattern.SetMovie(movie)
+		pattern.SetScreenTypes(screenTypes)
+		pattern.SetSampleSize(numeric.ClampInt32(sampleSize))
+		pattern.SetTypicalOpenTime(fmt.Sprintf("%02d:%02d", typicalMinute/60, typicalMinute%60))
+		pattern.SetTypicalLeadHours(numeric.ClampInt32(typicalLeadHours))
+		pattern.SetTypicalPrecisionMinutes(numeric.ClampInt32(typicalPrecisionMinutes))
+		pattern.SetLastObservedAt(timestamppb.New(lastObservedAt.UTC()))
 		patterns = append(patterns, pattern)
 	}
 	if err := rows.Err(); err != nil {
@@ -159,7 +181,7 @@ func (store *Store) openingPatterns(
 
 func (store *Store) demandPatterns(
 	ctx context.Context,
-) ([]domain.DemandPattern, error) {
+) ([]*adminpb.DemandPattern, error) {
 	rows, err := store.pool.Query(ctx, `
 		WITH observations AS (
 			SELECT observation.*, assignment.theater_name
@@ -251,30 +273,46 @@ func (store *Store) demandPatterns(
 		return nil, fmt.Errorf("query demand patterns: %w", err)
 	}
 	defer rows.Close()
-	patterns := make([]domain.DemandPattern, 0)
+	patterns := make([]*adminpb.DemandPattern, 0)
 	for rows.Next() {
-		var pattern domain.DemandPattern
+		pattern := &adminpb.DemandPattern{}
+		var theaterID, theaterName, auditoriumID, auditoriumName, movie string
+		var occurrenceCount, firstHourSampleSize, typicalFirstHourSellThrough int
+		var halfSoldSampleSize, typicalHalfSoldMinutes, soldOutSampleSize, typicalSoldOutMinutes int
+		var lastObservedAt time.Time
 		if err := rows.Scan(
-			&pattern.TheaterID, &pattern.TheaterName, &pattern.AuditoriumID,
-			&pattern.AuditoriumName, &pattern.Movie, &pattern.OccurrenceCount,
-			&pattern.FirstHourSampleSize, &pattern.TypicalFirstHourSellThrough,
-			&pattern.HalfSoldSampleSize, &pattern.TypicalHalfSoldMinutes,
-			&pattern.SoldOutSampleSize, &pattern.TypicalSoldOutMinutes,
-			&pattern.LastObservedAt,
+			&theaterID, &theaterName, &auditoriumID,
+			&auditoriumName, &movie, &occurrenceCount,
+			&firstHourSampleSize, &typicalFirstHourSellThrough,
+			&halfSoldSampleSize, &typicalHalfSoldMinutes,
+			&soldOutSampleSize, &typicalSoldOutMinutes,
+			&lastObservedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan demand pattern: %w", err)
 		}
-		pattern.LastObservedAt = pattern.LastObservedAt.UTC()
+		pattern.SetTheaterId(theaterID)
+		pattern.SetTheaterName(theaterName)
+		pattern.SetAuditoriumId(auditoriumID)
+		pattern.SetAuditoriumName(auditoriumName)
+		pattern.SetMovie(movie)
+		pattern.SetOccurrenceCount(numeric.ClampInt32(occurrenceCount))
+		pattern.SetFirstHourSampleSize(numeric.ClampInt32(firstHourSampleSize))
+		pattern.SetTypicalFirstHourSellThrough(numeric.ClampInt32(typicalFirstHourSellThrough))
+		pattern.SetHalfSoldSampleSize(numeric.ClampInt32(halfSoldSampleSize))
+		pattern.SetTypicalHalfSoldMinutes(numeric.ClampInt32(typicalHalfSoldMinutes))
+		pattern.SetSoldOutSampleSize(numeric.ClampInt32(soldOutSampleSize))
+		pattern.SetTypicalSoldOutMinutes(numeric.ClampInt32(typicalSoldOutMinutes))
+		pattern.SetLastObservedAt(timestamppb.New(lastObservedAt.UTC()))
 		patterns = append(patterns, pattern)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate demand patterns: %w", err)
 	}
 	sort.SliceStable(patterns, func(left, right int) bool {
-		if patterns[left].OccurrenceCount == patterns[right].OccurrenceCount {
-			return patterns[left].LastObservedAt.After(patterns[right].LastObservedAt)
+		if patterns[left].GetOccurrenceCount() == patterns[right].GetOccurrenceCount() {
+			return patterns[left].GetLastObservedAt().AsTime().After(patterns[right].GetLastObservedAt().AsTime())
 		}
-		return patterns[left].OccurrenceCount > patterns[right].OccurrenceCount
+		return patterns[left].GetOccurrenceCount() > patterns[right].GetOccurrenceCount()
 	})
 	return patterns, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
+	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	executionpb "github.com/cineko-org/contracts/gen/go/cineko/execution"
 
 	"github.com/jackc/pgx/v5"
@@ -29,21 +30,8 @@ func (store *Store) ClaimClientExecution(
 		return nil, fmt.Errorf("begin Client execution claim: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		UPDATE client_execution_commands
-		SET status = CASE WHEN attempt_count >= 3 OR starts_at <= $2 THEN 'failed' ELSE 'queued' END,
-			last_installation_id = leased_installation_id, leased_installation_id = NULL,
-			lease_token_hash = NULL, lease_expires_at = NULL,
-			reason_code = CASE
-				WHEN starts_at <= $2 THEN 'showtime_started'
-				WHEN attempt_count >= 3 THEN 'lease_attempts_exhausted'
-				ELSE 'lease_expired'
-			END,
-			completed_at = CASE WHEN attempt_count >= 3 OR starts_at <= $2 THEN $2 ELSE NULL END,
-			updated_at = $2
-		WHERE user_id = $1 AND status = 'leased' AND lease_expires_at <= $2
-	`, claim.UserID, claim.Now); err != nil {
-		return nil, fmt.Errorf("expire Client execution leases: %w", err)
+	if err := expireClientExecutionLeases(ctx, tx, claim.UserID, claim.Now); err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE client_execution_commands
@@ -59,34 +47,45 @@ func (store *Store) ClaimClientExecution(
 	var payload []byte
 	err = tx.QueryRow(ctx, `
 		WITH active_targets AS (
-			SELECT monitors.id AS monitor_id,
-				presets.payload->>'auditoriumId' AS auditorium_id
-			FROM client_resources AS monitors
-			JOIN client_resources AS presets
+			SELECT monitors.id AS monitor_id, presets.auditorium_id
+			FROM client_monitors AS monitors
+			JOIN client_resources AS monitor_resource
+				ON monitor_resource.user_id = monitors.user_id
+				AND monitor_resource.kind = 'monitors'
+				AND monitor_resource.id = monitors.id
+				AND monitor_resource.deleted_at IS NULL
+			JOIN client_presets AS presets
 				ON presets.user_id = monitors.user_id
-				AND presets.kind = 'presets'
-				AND presets.id = monitors.payload->>'presetId'
-				AND presets.deleted_at IS NULL
-			WHERE monitors.user_id = $1 AND monitors.kind = 'monitors'
-				AND monitors.deleted_at IS NULL
-				AND monitors.payload->>'status' IN ('pending', 'running')
+				AND presets.resource_kind = 'presets'
+				AND presets.id = monitors.preset_id
+			JOIN client_resources AS preset_resource
+				ON preset_resource.user_id = presets.user_id
+				AND preset_resource.kind = 'presets'
+				AND preset_resource.id = presets.id
+				AND preset_resource.deleted_at IS NULL
+			WHERE monitors.user_id = $1
+				AND monitors.resource_kind = 'monitors'
+				AND monitors.state IN ('pending', 'running')
 		)
 		SELECT command.id, command.monitor_id, command.payload,
 			command.attempt_count, command.created_at
 		FROM client_execution_commands AS command
 		LEFT JOIN active_targets AS target ON target.monitor_id = command.monitor_id
+		-- The command payload is the immutable showtime snapshot. Catalog rows may
+		-- be retired after enqueueing, but that must not strand the command.
+		LEFT JOIN showtimes AS showtime ON showtime.id = command.showtime_id
 		WHERE command.user_id = $1 AND command.status = 'queued'
 			AND command.attempt_count < 3 AND command.starts_at > $3
 		ORDER BY (
 			CASE WHEN target.monitor_id IS NOT NULL
-				AND target.auditorium_id = command.payload->'showtime'->'auditorium'->>'id'
+				AND target.auditorium_id = showtime.auditorium_id
 				THEN 0 ELSE 1 END
-		) ASC,
-		command.created_at DESC,
-		(command.last_installation_id = $2),
-		command.id
-		LIMIT 1 FOR UPDATE SKIP LOCKED
-	`, claim.UserID, claim.InstallationID, claim.Now).Scan(
+			) ASC,
+			command.created_at DESC,
+			(command.last_installation_id = $2),
+			command.id
+		LIMIT 1 FOR UPDATE OF command SKIP LOCKED
+		`, claim.UserID, claim.InstallationID, claim.Now).Scan(
 		&commandID, &monitorID, &payload, &attempt, &createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -118,6 +117,52 @@ func (store *Store) ClaimClientExecution(
 		return nil, fmt.Errorf("commit Client execution claim: %w", err)
 	}
 	return command, nil
+}
+
+// expireClientExecutionLeases closes an ambiguous execution instead of silently
+// assigning it again. The previous Client may already have selected seats or
+// reached payment before losing its lease, so only an explicit user retry is safe.
+func expireClientExecutionLeases(ctx context.Context, tx pgx.Tx, userID string, now time.Time) error {
+	rows, err := tx.Query(ctx, `
+		UPDATE client_execution_commands
+		SET status = 'failed',
+			last_installation_id = leased_installation_id, leased_installation_id = NULL,
+			lease_token_hash = NULL, lease_expires_at = NULL,
+			reason_code = 'execution_lease_lost', completed_at = $2, updated_at = $2
+		WHERE user_id = $1 AND status = 'leased' AND lease_expires_at <= $2
+		RETURNING id, monitor_id
+	`, userID, now)
+	if err != nil {
+		return fmt.Errorf("expire Client execution leases: %w", err)
+	}
+	type expiredLease struct {
+		commandID string
+		monitorID string
+	}
+	expired := make([]expiredLease, 0)
+	for rows.Next() {
+		var lease expiredLease
+		if err := rows.Scan(&lease.commandID, &lease.monitorID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan expired Client execution lease: %w", err)
+		}
+		expired = append(expired, lease)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate expired Client execution leases: %w", err)
+	}
+	rows.Close()
+	for _, lease := range expired {
+		completion := central.ExecutionCompletion{
+			UserID: userID, CommandID: lease.commandID,
+			Status: "failed", ReasonCode: "execution_lease_lost", Now: now,
+		}
+		if err := finishExecutionMonitor(ctx, tx, completion, lease.monitorID); err != nil {
+			return fmt.Errorf("finish expired Client execution monitor: %w", err)
+		}
+	}
+	return nil
 }
 
 func (store *Store) HeartbeatClientExecution(
@@ -159,6 +204,18 @@ func (store *Store) CompleteClientExecution(ctx context.Context, completion cent
 	if err := updateClientExecutionCompletion(ctx, tx, completion, nextStatus, completedAt); err != nil {
 		return err
 	}
+	if nextStatus == "failed" && executionWaitsForAvailability(completion.ReasonCode) {
+		if err := markExecutionAvailabilityUnavailable(
+			ctx, tx, completion.UserID, locked.monitorID, locked.showtimeID, completion.Now,
+		); err != nil {
+			return err
+		}
+	}
+	if nextStatus == "failed" && !executionWaitsForAvailability(completion.ReasonCode) {
+		if err := finishExecutionMonitor(ctx, tx, completion, locked.monitorID); err != nil {
+			return err
+		}
+	}
 	if nextStatus == "queued" {
 		identity := fmt.Sprintf("automatic-retry:%d:%s", locked.attempts, completion.Now.Format(time.RFC3339Nano))
 		if err := recordExecutionReadyEvent(
@@ -180,6 +237,7 @@ type lockedExecutionCompletion struct {
 	expiresAt  *time.Time
 	attempts   int
 	monitorID  string
+	showtimeID string
 }
 
 func lockClientExecutionCompletion(
@@ -189,7 +247,7 @@ func lockClientExecutionCompletion(
 ) (lockedExecutionCompletion, error) {
 	var locked lockedExecutionCompletion
 	err := tx.QueryRow(ctx, `
-		SELECT status, lease_token_hash, lease_expires_at, attempt_count, monitor_id
+		SELECT status, lease_token_hash, lease_expires_at, attempt_count, monitor_id, showtime_id
 		FROM client_execution_commands WHERE id = $1 AND user_id = $2 FOR UPDATE
 	`, completion.CommandID, completion.UserID).Scan(
 		&locked.status,
@@ -197,6 +255,7 @@ func lockClientExecutionCompletion(
 		&locked.expiresAt,
 		&locked.attempts,
 		&locked.monitorID,
+		&locked.showtimeID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lockedExecutionCompletion{}, central.ErrNotFound
@@ -218,12 +277,66 @@ func (locked lockedExecutionCompletion) matchesLease(completion central.Executio
 func executionCompletionState(completion central.ExecutionCompletion, attempts int) (string, any) {
 	nextStatus := completion.Status
 	completedAt := any(completion.Now)
-	waitsForAvailability := executionWaitsForAvailability(completion.ReasonCode)
-	if nextStatus == "failed" && attempts < 3 && !waitsForAvailability {
-		nextStatus = "queued"
-		completedAt = nil
+	if nextStatus == "retry_requested" {
+		if attempts < 3 {
+			nextStatus = "queued"
+			completedAt = nil
+		} else {
+			nextStatus = "failed"
+		}
 	}
 	return nextStatus, completedAt
+}
+
+// finishExecutionMonitor publishes the terminal execution outcome through the
+// same normalized resource and event stream consumed by every Client device.
+func finishExecutionMonitor(
+	ctx context.Context,
+	tx pgx.Tx,
+	completion central.ExecutionCompletion,
+	monitorID string,
+) error {
+	resource, deleted, err := lockClientResource(ctx, tx, completion.UserID, "monitors", monitorID)
+	if errors.Is(err, pgx.ErrNoRows) || deleted {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock execution monitor: %w", err)
+	}
+	monitor := resource.body.GetMonitor()
+	if monitor == nil {
+		return errors.New("execution monitor resource is missing its monitor body")
+	}
+	if !monitor.GetState().HasPending() && !monitor.GetState().HasRunning() {
+		return nil
+	}
+	state := monitor.GetState()
+	if executionOutcomeIsUnknown(completion.ReasonCode) {
+		state.SetPaymentUnknown(&clientpb.MonitorPaymentUnknown{})
+	} else {
+		monitorFailure := &clientpb.MonitorFailed{}
+		monitorFailure.SetReason(completion.ReasonCode)
+		state.SetFailed(monitorFailure)
+	}
+	monitor.SetUpdatedAt(timestamppb.New(completion.Now))
+	resource.revision++
+	resource.updatedAt = completion.Now
+	if err := writeClientResource(ctx, tx, resource, false, false); err != nil {
+		return err
+	}
+	mutation := central.ResourceMutation{
+		UserID: completion.UserID, Kind: "monitors", ID: monitorID,
+		Resource: resource.body, CommandID: "execution-failure:" + completion.CommandID,
+		Now: completion.Now,
+	}
+	if err := recordClientMutation(ctx, tx, mutation, "execution-failure", "monitors.updated", resource); err != nil {
+		return fmt.Errorf("publish terminal execution monitor: %w", err)
+	}
+	return nil
+}
+
+func executionOutcomeIsUnknown(reasonCode string) bool {
+	return reasonCode == "execution_lease_lost" || reasonCode == "client_interrupted"
 }
 
 func updateClientExecutionCompletion(
@@ -250,59 +363,4 @@ func updateClientExecutionCompletion(
 func executionWaitsForAvailability(reasonCode string) bool {
 	return reasonCode == executionReasonPreferredSeatsUnavailable ||
 		reasonCode == executionReasonShowtimeUnavailable
-}
-
-func (store *Store) RetryClientExecution(
-	ctx context.Context,
-	userID string,
-	commandID string,
-	now time.Time,
-) error {
-	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
-	if err != nil {
-		return fmt.Errorf("begin Client execution retry: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var monitorID string
-	err = tx.QueryRow(ctx, `
-		UPDATE client_execution_commands SET
-			status = 'queued', leased_installation_id = NULL, last_installation_id = NULL,
-			lease_token_hash = NULL, lease_expires_at = NULL, attempt_count = 0,
-			reason_code = '', completed_at = NULL, updated_at = $3
-		WHERE id = $1 AND user_id = $2 AND status = 'failed'
-		RETURNING monitor_id
-	`, commandID, userID, now).Scan(&monitorID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("retry Client execution command: %w", err)
-	}
-	if err == nil {
-		identity := "explicit-retry:" + now.Format(time.RFC3339Nano)
-		if err := recordExecutionReadyEvent(
-			ctx, tx, userID, commandID, monitorID, "explicit_retry", identity, now,
-		); err != nil {
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit Client execution retry: %w", err)
-		}
-		return nil
-	}
-	var status string
-	err = tx.QueryRow(ctx, `
-		SELECT status FROM client_execution_commands WHERE id = $1 AND user_id = $2
-		FOR UPDATE
-	`, commandID, userID).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return central.ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("read Client execution retry state: %w", err)
-	}
-	if status == "queued" {
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit idempotent Client execution retry: %w", err)
-		}
-		return nil
-	}
-	return central.ErrConflict
 }

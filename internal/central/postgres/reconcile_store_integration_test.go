@@ -11,6 +11,7 @@ import (
 	"github.com/cineko-org/central/internal/central/reconcile"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	observationpb "github.com/cineko-org/contracts/gen/go/cineko/observation"
 	probepb "github.com/cineko-org/contracts/gen/go/cineko/probe"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
@@ -270,4 +271,164 @@ func TestSeatMapBackfillWithoutShowtimeCommitsCapturedLayout(t *testing.T) {
 			seatCount, featureCount, sourceClassCount, zoneCount, blockCount,
 		)
 	}
+}
+
+func TestSeatAvailabilityTargetRestrictsToCGVProvider(t *testing.T) {
+	if testDatabaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := t.Context()
+	store, err := Open(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	const (
+		userID            = "user_seat_availability_provider_filter"
+		otherProviderID   = "provider_seat_availability_other"
+		otherTheaterID    = "theater_seat_availability_other"
+		otherAuditoriumID = "auditorium_seat_availability_other"
+		otherMovieID      = "movie_seat_availability_other"
+		otherShowtimeID   = "showtime_seat_availability_other"
+		otherPresetID     = "preset_seat_availability_other"
+		otherMonitorID    = "monitor_seat_availability_other"
+		cgvTheaterID      = "theater_seat_availability_cgv"
+		cgvAuditoriumID   = "auditorium_seat_availability_cgv"
+		cgvMovieID        = "movie_seat_availability_cgv"
+		cgvShowtimeID     = "showtime_seat_availability_cgv"
+		cgvPresetID       = "preset_seat_availability_cgv"
+		cgvMonitorID      = "monitor_seat_availability_cgv"
+	)
+	cleanup := func() {
+		cleanupClientResourceUser(t, store, userID)
+		cleanupClientResourceCatalog(t, store, otherProviderID,
+			[]string{otherTheaterID}, []string{otherAuditoriumID}, []string{otherMovieID})
+		cleanupClientResourceCatalog(t, store, catalogdomain.ProviderCGV,
+			[]string{cgvTheaterID}, []string{cgvAuditoriumID}, []string{cgvMovieID})
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	location, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduleDate := now.Add(2 * time.Hour).In(location).Format(time.DateOnly)
+	otherShowtime := seatAvailabilityTargetShowtime(
+		otherShowtimeID, otherProviderID, otherTheaterID, otherMovieID, otherAuditoriumID,
+		now.Add(time.Hour), scheduleDate,
+	)
+	cgvShowtime := seatAvailabilityTargetShowtime(
+		cgvShowtimeID, catalogdomain.ProviderCGV, cgvTheaterID, cgvMovieID, cgvAuditoriumID,
+		now.Add(2*time.Hour), scheduleDate,
+	)
+	seedClientResourceCatalog(t, store, otherProviderID, otherTheaterID, otherAuditoriumID, otherMovieID, otherShowtime)
+	seedClientResourceCatalog(t, store, catalogdomain.ProviderCGV, cgvTheaterID, cgvAuditoriumID, cgvMovieID, cgvShowtime)
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO client_users (id, display_name, created_at, updated_at)
+		VALUES ($1, 'Seat availability provider filter', $2, $2)
+	`, userID, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct {
+		providerID, theaterID, auditoriumID, movieID, presetID, monitorID string
+		showtimeID                                                        string
+	}{{
+		providerID: otherProviderID, theaterID: otherTheaterID, auditoriumID: otherAuditoriumID,
+		movieID: otherMovieID, presetID: otherPresetID, monitorID: otherMonitorID,
+		showtimeID: otherShowtimeID,
+	}, {
+		providerID: catalogdomain.ProviderCGV, theaterID: cgvTheaterID, auditoriumID: cgvAuditoriumID,
+		movieID: cgvMovieID, presetID: cgvPresetID, monitorID: cgvMonitorID,
+		showtimeID: cgvShowtimeID,
+	}} {
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO client_resources (user_id, kind, id, revision, payload, created_at, updated_at)
+			VALUES ($1, 'presets', $2, 1, '{}'::jsonb, $3, $3),
+			       ($1, 'monitors', $4, 1, '{}'::jsonb, $3, $3)
+		`, userID, target.presetID, now, target.monitorID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO client_presets (
+				user_id, resource_kind, id, name, theater_id, auditorium_id, seat_count,
+				has_seat_preference, together, avoid_edges, preset_created_at, preset_updated_at
+			) VALUES ($1, 'presets', $2, 'Provider filter preset', $3, $4, 1, false, false, false, $5, $5)
+		`, userID, target.presetID, target.theaterID, target.auditoriumID, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO client_monitors (
+				user_id, resource_kind, id, preset_id, movie_id, movie_title,
+				search_horizon_days, state, monitor_created_at, monitor_updated_at
+			) VALUES ($1, 'monitors', $2, $3, $4, 'Provider filter movie', 14, 'pending', $5, $5)
+		`, userID, target.monitorID, target.presetID, target.movieID, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `
+			INSERT INTO client_monitor_target_dates (user_id, monitor_id, position, target_date)
+			VALUES ($1, $2, 0, $3::date)
+		`, userID, target.monitorID, scheduleDate); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	target, err := (&cycleStore{tx: tx}).SeatAvailabilityTarget(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target == nil || target.Task.GetSeatAvailability() == nil ||
+		target.Task.GetSeatAvailability().GetShowtime().GetId() != cgvShowtimeID ||
+		target.Task.GetSeatAvailability().GetShowtime().GetProviderId() != catalogdomain.ProviderCGV {
+		t.Fatalf("seat-availability target = %+v", target)
+	}
+}
+
+func cleanupClientResourceUser(t *testing.T, store *Store, userID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := store.pool.Exec(ctx, `DELETE FROM client_resources WHERE user_id = $1`, userID); err != nil {
+		t.Errorf("clean Client resource user resources: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `DELETE FROM client_users WHERE id = $1`, userID); err != nil {
+		t.Errorf("clean Client resource user: %v", err)
+	}
+}
+
+func seatAvailabilityTargetShowtime(
+	id, providerID, theaterID, movieID, auditoriumID string,
+	startsAt time.Time, scheduleDate string,
+) *catalogpb.Showtime {
+	movie := &catalogpb.Movie{}
+	movie.SetId(movieID)
+	movie.SetProviderId(providerID)
+	movie.SetSourceKey(movieID)
+	movie.SetTitle("Provider filter movie")
+	auditorium := &catalogpb.Auditorium{}
+	auditorium.SetId(auditoriumID)
+	auditorium.SetTheaterId(theaterID)
+	auditorium.SetSourceKey(auditoriumID)
+	auditorium.SetName("Provider filter auditorium")
+	auditorium.SetScreenTypes([]string{"STANDARD"})
+	auditorium.SetCapacity(100)
+	showtime := &catalogpb.Showtime{}
+	showtime.SetId(id)
+	showtime.SetProviderId(providerID)
+	showtime.SetSourceKey(id)
+	showtime.SetTheaterId(theaterID)
+	showtime.SetMovie(movie)
+	showtime.SetAuditorium(auditorium)
+	showtime.SetScheduleDate(localDateMessage(scheduleDate))
+	showtime.SetStartsAt(timestamppb.New(startsAt))
+	showtime.SetEndsAt(timestamppb.New(startsAt.Add(90 * time.Minute)))
+	showtime.SetAvailableSeats(50)
+	showtime.SetCapacity(100)
+	return showtime
 }

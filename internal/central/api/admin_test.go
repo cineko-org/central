@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	"github.com/cineko-org/central/internal/domain"
 	catalogdomain "github.com/cineko-org/central/internal/domain/catalog"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
@@ -37,7 +36,7 @@ type adminOperationsFake struct {
 	deleteProbeErr error
 	summary        *adminpb.DataSummary
 	policies       []*adminpb.ObservationPolicy
-	intelligence   domain.ScheduleIntelligence
+	intelligence   *adminpb.ObservationIntelligence
 	err            error
 }
 
@@ -104,7 +103,7 @@ func (operations *adminOperationsFake) DeleteAdminObservationPolicy(context.Cont
 func (operations *adminOperationsFake) AdminObservationIntelligence(
 	context.Context,
 	*time.Location,
-) (domain.ScheduleIntelligence, error) {
+) (*adminpb.ObservationIntelligence, error) {
 	return operations.intelligence, operations.err
 }
 
@@ -260,8 +259,11 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 	summary := &adminpb.DataSummary{}
 	summary.SetScheduleCaptures(42)
 	summary.SetShowtimeObservations(200)
+	intelligenceSummary := &adminpb.ObservationIntelligence{}
+	intelligenceSummary.SetSnapshotCount(0)
+	intelligenceSummary.SetShowtimeObservations(0)
 	operations := &adminOperationsFake{
-		probes: []*adminpb.Probe{probe}, summary: summary,
+		probes: []*adminpb.Probe{probe}, summary: summary, intelligence: intelligenceSummary,
 	}
 	server, err := New(
 		service, WithAdminAuth(auth), WithTrustedProxyCIDRs("192.0.2.0/24"),
@@ -340,17 +342,10 @@ func TestAdminAPIRequiresAdminSession(t *testing.T) {
 	}
 	createdPolicy := operations.policies[len(operations.policies)-1]
 	createdInput := createdPolicy.GetInput()
-	if createdInput.GetPriority() != observationPolicyPriority ||
-		createdInput.GetBaselineMinSeconds() != observationBaselineMinSeconds ||
-		createdInput.GetBaselineMaxSeconds() != observationBaselineMaxSeconds ||
-		createdInput.GetDemandMinSeconds() != observationDemandStoredMinSeconds ||
-		createdInput.GetDemandMaxSeconds() != observationDemandStoredMaxSeconds ||
-		createdInput.GetBurstMinSeconds() != observationBurstStoredMinSeconds ||
-		createdInput.GetBurstMaxSeconds() != observationBurstStoredMaxSeconds ||
-		createdInput.GetBurstDurationSeconds() != observationBurstDurationSeconds ||
-		createdInput.GetLocale() != "ko-KR" || createdInput.GetTimeZone() != "Asia/Seoul" ||
-		createdInput.GetEgressPolicyId() != "scan_default" {
-		t.Fatalf("Central did not own observation scheduling defaults: %v", createdInput)
+	if createdInput.GetTheaterId() != theaterID ||
+		!createdInput.GetEnabled() ||
+		createdInput.GetHorizonDays() != 14 {
+		t.Fatalf("Central did not preserve the operator-owned policy input: %v", createdInput)
 	}
 	invalidHorizon := proto.CloneOf(validPolicy)
 	invalidHorizon.SetHorizonDays(15)

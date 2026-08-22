@@ -9,10 +9,7 @@ import (
 	"time"
 
 	"github.com/cineko-org/central/internal/central"
-	"github.com/cineko-org/central/internal/central/reconcile"
-	"github.com/cineko-org/central/internal/support/numeric"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (server *Server) adminLogin(writer http.ResponseWriter, request *http.Request) {
@@ -81,7 +78,7 @@ func (server *Server) adminStatus(writer http.ResponseWriter, request *http.Requ
 	status := &adminpb.Status{}
 	status.SetReady(ready)
 	if server.reconciler != nil {
-		status.SetReconciler(reconcileStatusProto(server.reconciler.Snapshot()))
+		status.SetReconciler(server.reconciler.Snapshot())
 	}
 	response := &adminpb.GetStatusResponse{}
 	response.SetStatus(status)
@@ -152,53 +149,6 @@ func cookieMaxAge(expiresAt time.Time) int {
 		return -1
 	}
 	return int(time.Until(expiresAt).Seconds())
-}
-
-func reconcileStatusProto(value reconcile.Status) *adminpb.ReconcileStatus {
-	status := &adminpb.ReconcileStatus{}
-	status.SetRunning(value.Running)
-	status.SetHealthy(value.Healthy)
-	status.SetLeader(value.Leader)
-	if !value.LastAttemptAt.IsZero() {
-		status.SetLastAttemptAt(timestamppb.New(value.LastAttemptAt))
-	}
-	if !value.LastSuccessAt.IsZero() {
-		status.SetLastSuccessAt(timestamppb.New(value.LastSuccessAt))
-	}
-	if !value.LastErrorAt.IsZero() {
-		status.SetLastErrorAt(timestamppb.New(value.LastErrorAt))
-	}
-	status.SetLastErrorCode(value.LastErrorCode)
-	status.SetLastReport(reconcileReportProto(value.LastReport))
-	return status
-}
-
-func reconcileReportProto(value reconcile.Report) *adminpb.ReconcileReport {
-	report := &adminpb.ReconcileReport{}
-	report.SetLeader(value.Leader)
-	if !value.StartedAt.IsZero() {
-		report.SetStartedAt(timestamppb.New(value.StartedAt))
-	}
-	if !value.FinishedAt.IsZero() {
-		report.SetFinishedAt(timestamppb.New(value.FinishedAt))
-	}
-	report.SetStaleProbes(numeric.ClampInt32(value.StaleProbes))
-	report.SetDeletedProbes(numeric.ClampInt32(value.DeletedProbes))
-	report.SetDeletedClientEvents(value.DeletedClientEvents)
-	report.SetExpiredLeases(numeric.ClampInt32(value.ExpiredLeases))
-	report.SetRequeuedAssignments(numeric.ClampInt32(value.RequeuedAssignments))
-	report.SetFailedAssignments(numeric.ClampInt32(value.FailedAssignments))
-	report.SetMissedAssignments(numeric.ClampInt32(value.MissedAssignments))
-	report.SetAdvancedPolicies(numeric.ClampInt32(value.AdvancedPolicies))
-	report.SetCreatedAssignments(numeric.ClampInt32(value.CreatedAssignments))
-	report.SetDeferredPolicies(numeric.ClampInt32(value.DeferredPolicies))
-	report.SetSuspendedPolicies(numeric.ClampInt32(value.SuspendedPolicies))
-	report.SetCatalogRefreshCreated(value.CatalogRefreshCreated)
-	report.SetCatalogRefreshWaiting(value.CatalogRefreshWaiting)
-	report.SetSeatMapBackfillCreated(value.SeatMapBackfillCreated)
-	report.SetSeatMapBackfillWaiting(value.SeatMapBackfillWaiting)
-	report.SetOldestDueAgeSeconds(value.OldestDueAgeSeconds)
-	return report
 }
 
 func (server *Server) secureRequest(request *http.Request) bool {

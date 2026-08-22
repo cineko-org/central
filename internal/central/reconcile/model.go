@@ -102,26 +102,9 @@ type SeatMapBackfillTarget struct {
 	Requested bool
 }
 
-type Report struct {
-	Leader                 bool      `json:"leader"`
-	StartedAt              time.Time `json:"startedAt"`
-	FinishedAt             time.Time `json:"finishedAt"`
-	StaleProbes            int       `json:"staleProbes"`
-	DeletedProbes          int       `json:"deletedProbes"`
-	DeletedClientEvents    int64     `json:"deletedClientEvents"`
-	ExpiredLeases          int       `json:"expiredLeases"`
-	RequeuedAssignments    int       `json:"requeuedAssignments"`
-	FailedAssignments      int       `json:"failedAssignments"`
-	MissedAssignments      int       `json:"missedAssignments"`
-	AdvancedPolicies       int       `json:"advancedPolicies"`
-	CreatedAssignments     int       `json:"createdAssignments"`
-	DeferredPolicies       int       `json:"deferredPolicies"`
-	SuspendedPolicies      int       `json:"suspendedPolicies"`
-	CatalogRefreshCreated  bool      `json:"catalogRefreshCreated"`
-	CatalogRefreshWaiting  bool      `json:"catalogRefreshWaiting"`
-	SeatMapBackfillCreated bool      `json:"seatMapBackfillCreated"`
-	SeatMapBackfillWaiting bool      `json:"seatMapBackfillWaiting"`
-	OldestDueAgeSeconds    int64     `json:"oldestDueAgeSeconds"`
+// SeatAvailabilityTarget is one exact showtime whose shared live-seat state is due.
+type SeatAvailabilityTarget struct {
+	Task *observationpb.AssignmentTask
 }
 
 type CycleRepository interface {
@@ -139,6 +122,7 @@ type CycleRepository interface {
 	AdvancePolicy(context.Context, TerminalPolicyRun, *time.Time, time.Time) error
 	CatalogRefreshRequired(context.Context, time.Time) (bool, error)
 	SeatMapBackfillTarget(context.Context, time.Time) (*SeatMapBackfillTarget, error)
+	SeatAvailabilityTarget(context.Context, time.Time) (*SeatAvailabilityTarget, error)
 	DuePolicies(context.Context, time.Time, int) ([]Policy, error)
 	PreemptQueuedBaseline(context.Context, string, time.Time) error
 	EligibleProbes(context.Context, Policy, time.Time, time.Time) ([]CandidateProbe, error)
@@ -149,4 +133,21 @@ type CycleRepository interface {
 
 type Repository interface {
 	RunLeaderCycle(context.Context, func(CycleRepository) error) (bool, error)
+}
+
+// ReconcileDeadlineRepository is an optional repository capability. Engines
+// using an implementation without it retain the bounded maintenance cadence.
+type ReconcileDeadlineRepository interface {
+	// NextReconcileDeadline returns the earliest durable fast-lane deadline.
+	// A nil result means that no P0/P1 work is currently scheduled. The engine
+	// still runs its bounded maintenance interval in that case.
+	NextReconcileDeadline(context.Context, time.Time) (*time.Time, error)
+}
+
+// ReconcileWakeupRepository is an optional event path for changes that can
+// move a fast-lane deadline earlier than the maintenance timer. The engine
+// still keeps the timer as the correctness fallback when no waiter exists or
+// a notification connection is temporarily unavailable.
+type ReconcileWakeupRepository interface {
+	WaitForReconcileWakeup(context.Context) error
 }

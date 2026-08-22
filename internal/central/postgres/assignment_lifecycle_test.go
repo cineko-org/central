@@ -124,18 +124,23 @@ func TestPostgresFailedResultIsReassignedBeforeTerminalFailure(t *testing.T) {
 	}
 	failure := integrationResultCommit(t, claimed, probeOne, leaseOne)
 	failure.Result.SetRunId("run_retryable_failure")
-	failure.Result.SetFailed(observationpb.Failed_builder{}.Build())
+	failed := &observationpb.Failed{}
+	failed.SetReasonCode("provider_temporary")
+	failed.SetRetryable(true)
+	failure.Result.SetFailed(failed)
 	refreshCommitPayload(t, &failure)
 	failedReceipt, err := store.CommitResult(ctx, failure)
 	if err != nil || failedReceipt.GetAccepted() == nil {
 		t.Fatalf("failed result receipt = %+v, %v", failedReceipt, err)
 	}
-	var status string
-	if err := store.pool.QueryRow(ctx, `SELECT status FROM observation_assignments WHERE id = $1`, assignment.ID).Scan(&status); err != nil {
+	var status, reason string
+	if err := store.pool.QueryRow(ctx, `
+		SELECT status, terminal_reason FROM observation_assignments WHERE id = $1
+	`, assignment.ID).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if status != "retry_pending" {
-		t.Fatalf("status after failed result = %q", status)
+	if status != "retry_pending" || reason != "provider_temporary" {
+		t.Fatalf("retryable result state = %q, %q", status, reason)
 	}
 	if _, err := engine.RunOnce(ctx); err != nil {
 		t.Fatal(err)
@@ -218,7 +223,10 @@ func TestPostgresFailedResultExhaustsOneAttemptPerEligibleNetwork(t *testing.T) 
 	}
 	failure := integrationResultCommit(t, claimed, probeOne, leaseHash)
 	failure.Result.SetRunId("run_retryable_network_failure")
-	failure.Result.SetFailed(observationpb.Failed_builder{}.Build())
+	failed := &observationpb.Failed{}
+	failed.SetReasonCode("network_temporary")
+	failed.SetRetryable(true)
+	failure.Result.SetFailed(failed)
 	refreshCommitPayload(t, &failure)
 	if _, err := store.CommitResult(ctx, failure); err != nil {
 		t.Fatal(err)
@@ -227,7 +235,7 @@ func TestPostgresFailedResultExhaustsOneAttemptPerEligibleNetwork(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.FailedAssignments != 1 || report.RequeuedAssignments != 0 {
+	if report.GetFailedAssignments() != 1 || report.GetRequeuedAssignments() != 0 {
 		t.Fatalf("report = %+v", report)
 	}
 	var status, reason string
@@ -238,6 +246,85 @@ func TestPostgresFailedResultExhaustsOneAttemptPerEligibleNetwork(t *testing.T) 
 	}
 	if status != "failed" || reason != "eligible_probes_exhausted" {
 		t.Fatalf("terminal assignment = %q, %q", status, reason)
+	}
+}
+
+func TestPostgresNonRetryableFailedResultIsTerminalAndAudited(t *testing.T) {
+	if testDatabaseURL == "" {
+		t.Skip("CINEKO_CENTRAL_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, testDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+
+	const (
+		policyID = "policy_nonretryable_result"
+		probeID  = "probe_nonretryable_result"
+	)
+	cleanupReconcileRows(t, store, []string{policyID}, []string{probeID})
+	t.Cleanup(func() { cleanupReconcileRows(t, store, []string{policyID}, []string{probeID}) })
+	now := time.Now().UTC()
+	registerIntegrationProbe(t, store, probeID, "install_"+probeID, now)
+	seedIntegrationPolicy(t, store, policyID, "theater_nonretryable_result", now.Add(-time.Second))
+	engine, err := newAssignmentTestReconciler(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assignment := assignmentForPolicy(t, store, policyID)
+	keepOnlyAssignmentCandidates(t, store, assignment.ID, []string{probeID})
+	leaseHash := sha256.Sum256([]byte("lease_nonretryable_result"))
+	claimNow := time.Now().UTC()
+	claimed, err := store.ClaimAssignment(
+		ctx, probeID, leaseHash, claimNow, claimNow.Add(time.Minute), claimNow.Add(-time.Minute),
+	)
+	if err != nil || claimed.ID != assignment.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	failure := integrationResultCommit(t, claimed, probeID, leaseHash)
+	failure.Result.SetRunId("run_nonretryable_failure")
+	failed := &observationpb.Failed{}
+	failed.SetReasonCode("invalid_payload")
+	failed.SetRetryable(false)
+	failure.Result.SetFailed(failed)
+	refreshCommitPayload(t, &failure)
+	receipt, err := store.CommitResult(ctx, failure)
+	if err != nil || receipt.GetAccepted() == nil {
+		t.Fatalf("non-retryable result receipt = %+v, %v", receipt, err)
+	}
+
+	var status, reason, completedBy, runID, resultHash string
+	var resultPayload []byte
+	var startedAt, finishedAt *time.Time
+	if err := store.pool.QueryRow(ctx, `
+		SELECT status, terminal_reason, completed_by_probe_id, run_id, result_hash, result_payload,
+			started_at, finished_at
+		FROM observation_assignments WHERE id = $1
+	`, assignment.ID).Scan(
+		&status, &reason, &completedBy, &runID, &resultHash, &resultPayload, &startedAt, &finishedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || reason != "invalid_payload" || completedBy != probeID ||
+		runID != failure.Result.GetRunId() || resultHash != failure.PayloadHash || len(resultPayload) == 0 ||
+		startedAt == nil || finishedAt == nil {
+		t.Fatalf("non-retryable assignment audit = status %q reason %q completedBy %q run %q hash %q payload %d started %v finished %v",
+			status, reason, completedBy, runID, resultHash, len(resultPayload), startedAt, finishedAt)
+	}
+
+	var attemptStatus string
+	if err := store.pool.QueryRow(ctx, `
+		SELECT status FROM assignment_attempts WHERE assignment_id = $1 AND probe_id = $2
+	`, assignment.ID, probeID).Scan(&attemptStatus); err != nil {
+		t.Fatal(err)
+	}
+	if attemptStatus != "failed" {
+		t.Fatalf("non-retryable attempt status = %q", attemptStatus)
 	}
 }
 

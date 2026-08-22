@@ -10,10 +10,9 @@ import (
 	"github.com/cineko-org/central/internal/support/numeric"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-const DefaultSearchHorizonDays = 28
+const DefaultSearchHorizonDays = 14
 
 // ValidateMonitor enforces Central's domain invariants on the canonical Proto monitor.
 func ValidateMonitor(monitor *clientpb.Monitor) error {
@@ -26,45 +25,36 @@ func ValidateMonitor(monitor *clientpb.Monitor) error {
 	if monitor.GetMovieId() == "" || len(monitor.GetTargetDates())+len(monitor.GetTargetWeekdays()) == 0 {
 		return errors.New("monitor movie id and at least one target date or weekday are required")
 	}
-	if !monitor.GetMode().HasOpening() && !monitor.GetMode().HasCancellation() {
-		return errors.New("monitor mode is required")
-	}
-	if monitor.GetMode().HasCancellation() && len(monitor.GetTargetWeekdays()) > 0 {
-		return errors.New("cancellation-seat monitors require exact target dates")
-	}
-	pollInterval := protoDuration(monitor.GetPollInterval())
-	if pollInterval < 2*time.Second {
-		return errors.New("poll interval must be at least 2 seconds")
-	}
-	if protoDuration(monitor.GetMaximumPollInterval()) <= pollInterval {
-		return errors.New("maximum poll interval must be greater than minimum poll interval")
+	horizon := int(monitor.GetSearchHorizonDays())
+	if horizon < 1 || horizon > DefaultSearchHorizonDays {
+		return fmt.Errorf("search horizon must be between 1 and %d days", DefaultSearchHorizonDays)
 	}
 	if err := validateTargetDates(monitor.GetTargetDates()); err != nil {
 		return err
 	}
-	if err := validateTargetWeekdays(monitor.GetTargetWeekdays(), int(monitor.GetSearchHorizonDays())); err != nil {
+	if err := validateTargetWeekdays(monitor.GetTargetWeekdays()); err != nil {
 		return err
 	}
 	return validateTimeWindow(monitor.GetEarliestTime(), monitor.GetLatestTime())
 }
 
-func protoDuration(value *durationpb.Duration) time.Duration {
-	if value == nil {
-		return 0
-	}
-	return value.AsDuration()
-}
-
 func validateTargetDates(dates []*commonpb.LocalDate) error {
+	seen := make(map[string]struct{}, len(dates))
 	for _, date := range dates {
-		if _, err := localDate(date, time.UTC); err != nil {
+		parsed, err := localDate(date, time.UTC)
+		if err != nil {
 			return err
 		}
+		key := parsed.Format(time.DateOnly)
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("duplicate target date %s", key)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }
 
-func validateTargetWeekdays(weekdays []int32, horizon int) error {
+func validateTargetWeekdays(weekdays []int32) error {
 	seen := make(map[int32]struct{}, len(weekdays))
 	for _, weekday := range weekdays {
 		if weekday < int32(time.Sunday) || weekday > int32(time.Saturday) {
@@ -74,9 +64,6 @@ func validateTargetWeekdays(weekdays []int32, horizon int) error {
 			return fmt.Errorf("duplicate target weekday %d", weekday)
 		}
 		seen[weekday] = struct{}{}
-	}
-	if len(weekdays) > 0 && (horizon < 1 || horizon > 365) {
-		return errors.New("weekday search horizon must be between 1 and 365 days")
 	}
 	return nil
 }
@@ -96,12 +83,29 @@ func validateTimeWindow(earliest, latest *commonpb.LocalTime) error {
 // MonitorMatchesSchedule applies exact dates, weekdays, and overnight time windows.
 func MonitorMatchesSchedule(
 	monitor *clientpb.Monitor,
+	start time.Time,
+	now time.Time,
+	location *time.Location,
+) bool {
+	if monitor == nil || location == nil || start.IsZero() {
+		return false
+	}
+	civilDate := start.In(location).Format(time.DateOnly)
+	return MonitorMatchesScheduleDate(monitor, civilDate, start, now, location)
+}
+
+// MonitorMatchesScheduleDate applies a provider-owned schedule date when it is
+// available. Providers can publish a showtime after midnight while retaining
+// the prior schedule date; using the civil start date in that case would miss a
+// valid Client target.
+func MonitorMatchesScheduleDate(
+	monitor *clientpb.Monitor,
 	targetDate string,
 	start time.Time,
 	now time.Time,
 	location *time.Location,
 ) bool {
-	if monitor == nil || location == nil || start.IsZero() || start.In(location).Format(time.DateOnly) != targetDate {
+	if monitor == nil || location == nil || start.IsZero() || targetDate == "" {
 		return false
 	}
 	return slices.Contains(MonitorTargetDates(monitor, now.In(location)), targetDate) &&

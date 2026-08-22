@@ -11,6 +11,7 @@ import (
 
 	"github.com/cineko-org/central/internal/central"
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
+	"github.com/cineko-org/central/internal/observation/planning"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
@@ -19,8 +20,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-const adminObservationExecutionWindow = 10 * time.Minute
 
 func (store *Store) ListAdminProbes(ctx context.Context) ([]*adminpb.Probe, error) {
 	rows, err := store.pool.Query(ctx, `
@@ -172,6 +171,7 @@ func (store *Store) CreateAdminObservationPolicy(
 	input *adminpb.ObservationPolicyInput,
 ) (*adminpb.ObservationPolicy, error) {
 	now := time.Now().UTC()
+	policy := planning.DefaultProductPolicy
 	theater, err := store.adminCatalogTheater(ctx, input.GetTheaterId())
 	if err != nil {
 		return nil, err
@@ -214,11 +214,11 @@ func (store *Store) CreateAdminObservationPolicy(
 		RETURNING id
 	`, id, theater.GetName(), input.GetEnabled(), probedomain.CapabilityCGVScheduleCapture,
 		theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName(), input.GetHorizonDays(),
-		input.GetLocale(), input.GetTimeZone(), input.GetEgressPolicyId(), input.GetPriority(),
-		input.GetBaselineMinSeconds(), input.GetBaselineMaxSeconds(),
-		input.GetDemandMinSeconds(), input.GetDemandMaxSeconds(),
-		input.GetBurstMinSeconds(), input.GetBurstMaxSeconds(), input.GetBurstDurationSeconds(),
-		int(adminObservationExecutionWindow/time.Second), now,
+		"ko-KR", "Asia/Seoul", string(central.EgressPolicyScanDefault), policy.Priority,
+		seconds32(policy.BaselineMinimum), seconds32(policy.BaselineMaximum),
+		seconds32(policy.DemandMinimum), seconds32(policy.DemandMaximum),
+		seconds32(policy.RecentMinimum), seconds32(policy.RecentMaximum), seconds32(policy.RecentDuration),
+		seconds32(policy.ExecutionWindow), now,
 	).Scan(&insertedID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, central.ErrConflict
@@ -239,6 +239,7 @@ func (store *Store) UpdateAdminObservationPolicy(
 	input *adminpb.ObservationPolicyInput,
 ) (*adminpb.ObservationPolicy, error) {
 	now := time.Now().UTC()
+	policy := planning.DefaultProductPolicy
 	theater, err := store.adminCatalogTheater(ctx, input.GetTheaterId())
 	if err != nil {
 		return nil, err
@@ -272,10 +273,11 @@ func (store *Store) UpdateAdminObservationPolicy(
 			AND policy.deleted_at IS NULL
 	`, strings.TrimSpace(id), revision, theater.GetName(), input.GetEnabled(),
 		theater.GetId(), theater.GetProviderId(), theater.GetSourceKey(), theater.GetRegion(), theater.GetName(),
-		input.GetHorizonDays(), input.GetPriority(),
-		input.GetBaselineMinSeconds(), input.GetBaselineMaxSeconds(), input.GetDemandMinSeconds(),
-		input.GetDemandMaxSeconds(), input.GetBurstMinSeconds(), input.GetBurstMaxSeconds(),
-		input.GetBurstDurationSeconds(), input.GetLocale(), input.GetTimeZone(), input.GetEgressPolicyId(), now)
+		input.GetHorizonDays(), policy.Priority,
+		seconds32(policy.BaselineMinimum), seconds32(policy.BaselineMaximum),
+		seconds32(policy.DemandMinimum), seconds32(policy.DemandMaximum),
+		seconds32(policy.RecentMinimum), seconds32(policy.RecentMaximum),
+		seconds32(policy.RecentDuration), "ko-KR", "Asia/Seoul", string(central.EgressPolicyScanDefault), now)
 	if err != nil {
 		return nil, fmt.Errorf("update observation policy: %w", err)
 	}
@@ -367,35 +369,41 @@ func (store *Store) adminObservationPolicy(
 
 const adminObservationPolicySelect = `
 	WITH demand_theaters AS (
-		SELECT preset.payload->>'theaterId' AS theater_id,
-			BOOL_OR(COALESCE(monitor.payload->>'mode', 'opening') IN ('', 'opening')) AS opening_active,
-			BOOL_OR(monitor.payload->>'mode' = 'cancellation') AS cancellation_active
-		FROM client_resources AS monitor
-		JOIN client_resources AS preset
+		SELECT preset.theater_id, true AS demand_active
+		FROM client_monitors AS monitor
+		JOIN client_resources AS monitor_resource
+			ON monitor_resource.user_id = monitor.user_id
+			AND monitor_resource.kind = 'monitors'
+			AND monitor_resource.id = monitor.id
+			AND monitor_resource.deleted_at IS NULL
+		JOIN client_presets AS preset
 			ON preset.user_id = monitor.user_id
-			AND preset.kind = 'presets'
-			AND preset.id = monitor.payload->>'presetId'
-			AND preset.deleted_at IS NULL
-		WHERE monitor.kind = 'monitors' AND monitor.deleted_at IS NULL
-			AND monitor.payload->>'status' IN ('pending', 'running')
-		GROUP BY preset.payload->>'theaterId'
+			AND preset.resource_kind = 'presets'
+			AND preset.id = monitor.preset_id
+		JOIN client_resources AS preset_resource
+			ON preset_resource.user_id = preset.user_id
+			AND preset_resource.kind = 'presets'
+			AND preset_resource.id = preset.id
+			AND preset_resource.deleted_at IS NULL
+		WHERE monitor.resource_kind = 'monitors'
+			AND monitor.state IN ('pending', 'running')
+		GROUP BY preset.theater_id
 	), effective_policies AS (
-		SELECT policy.*, COALESCE(demand.opening_active OR demand.cancellation_active, false) AS demand_active,
+		SELECT policy.*, COALESCE(demand.demand_active, false) AS demand_active,
 			CASE
-				WHEN COALESCE(demand.opening_active, false) THEN 'demand'
+				WHEN COALESCE(demand.demand_active, false) THEN 'demand'
 				WHEN policy.burst_until > $1 THEN 'burst'
-				WHEN COALESCE(demand.cancellation_active, false) THEN 'cancellation'
 				ELSE 'baseline'
 			END AS effective_mode,
 			policy.priority AS effective_priority,
 			CASE
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+				WHEN COALESCE(demand.demand_active, false)
 					THEN policy.demand_min_interval_seconds
 				WHEN policy.burst_until > $1 THEN policy.burst_min_interval_seconds
 				ELSE policy.min_interval_seconds
 			END AS effective_min_seconds,
 			CASE
-				WHEN COALESCE(demand.opening_active OR demand.cancellation_active, false)
+				WHEN COALESCE(demand.demand_active, false)
 					THEN policy.demand_max_interval_seconds
 				WHEN policy.burst_until > $1 THEN policy.burst_max_interval_seconds
 				ELSE policy.max_interval_seconds
@@ -459,17 +467,6 @@ func scanAdminObservationPolicy(row rowScanner) (*adminpb.ObservationPolicy, err
 	input.SetTheaterId(theaterID)
 	input.SetEnabled(enabled)
 	input.SetHorizonDays(horizonDays)
-	input.SetPriority(priority)
-	input.SetBaselineMinSeconds(baselineMinSeconds)
-	input.SetBaselineMaxSeconds(baselineMaxSeconds)
-	input.SetDemandMinSeconds(demandMinSeconds)
-	input.SetDemandMaxSeconds(demandMaxSeconds)
-	input.SetBurstMinSeconds(burstMinSeconds)
-	input.SetBurstMaxSeconds(burstMaxSeconds)
-	input.SetBurstDurationSeconds(burstDurationSeconds)
-	input.SetLocale(locale)
-	input.SetTimeZone(timeZone)
-	input.SetEgressPolicyId(egressPolicyID)
 	mode, err := adminObservationMode(effectiveMode)
 	if err != nil {
 		return nil, err
@@ -609,12 +606,16 @@ func adminObservationMode(value string) (*adminpb.ObservationMode, error) {
 		mode.SetDemand(&adminpb.DemandMode{})
 	case "burst":
 		mode.SetBurst(&adminpb.BurstMode{})
-	case "cancellation":
-		mode.SetCancellation(&adminpb.CancellationMode{})
+	case "seat-availability":
+		mode.SetSeatAvailability(&adminpb.SeatAvailabilityMode{})
 	default:
 		return nil, fmt.Errorf("unsupported observation mode %q", value)
 	}
 	return mode, nil
+}
+
+func seconds32(value time.Duration) int32 {
+	return int32(value / time.Second)
 }
 
 //nolint:dupl // Mode and outcome populate different generated Proto oneofs; keeping branches explicit preserves exhaustiveness.

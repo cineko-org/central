@@ -520,9 +520,5 @@ func (*apiClientRepository) CompleteClientExecution(context.Context, central.Exe
 	return nil
 }
 
-func (*apiClientRepository) RetryClientExecution(context.Context, string, string, time.Time) error {
-	return nil
-}
-
 var _ central.ClientRepository = (*apiClientRepository)(nil)
 var _ central.ReleaseRepository = (*apiClientRepository)(nil)

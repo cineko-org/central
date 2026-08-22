@@ -12,6 +12,7 @@ import (
 	"github.com/cineko-org/central/internal/support/numeric"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -219,6 +220,11 @@ func validCatalogSnapshot(observedAt time.Time) *catalogpb.CatalogSnapshot {
 	showtime.SetTheaterId(theater.GetId())
 	showtime.SetMovie(proto.CloneOf(movie))
 	showtime.SetAuditorium(proto.CloneOf(auditorium))
+	scheduleDate := &commonpb.LocalDate{}
+	scheduleDate.SetYear(2026)
+	scheduleDate.SetMonth(8)
+	scheduleDate.SetDay(14)
+	showtime.SetScheduleDate(scheduleDate)
 	showtime.SetStartsAt(timestamppb.New(observedAt.Add(time.Hour)))
 	showtime.SetEndsAt(timestamppb.New(observedAt.Add(3 * time.Hour)))
 	showtime.SetCapacity(624)

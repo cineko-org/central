@@ -101,9 +101,33 @@ func loadReleasePublishState(
 		return 0, nil, "", fmt.Errorf("resolve current active desktop manifest: %w", err)
 	}
 	if beforeFingerprint != storedFingerprint {
-		return 0, nil, "", errors.New("stored active desktop manifest fingerprint is inconsistent")
+		if err := synchronizeDesktopFingerprint(ctx, tx, generation, beforeFingerprint); err != nil {
+			return 0, nil, "", err
+		}
 	}
 	return generation, storedRecords, beforeFingerprint, nil
+}
+
+// synchronizeDesktopFingerprint refreshes derived registry state after the
+// generated release contract changes without treating unchanged releases as a publication.
+func synchronizeDesktopFingerprint(
+	ctx context.Context,
+	tx pgx.Tx,
+	generation int64,
+	fingerprint string,
+) error {
+	result, err := tx.Exec(ctx, `
+		UPDATE desktop_release_registry_state
+		SET active_manifest_sha256 = $2, updated_at = now()
+		WHERE singleton = true AND generation = $1
+	`, generation, fingerprint)
+	if err != nil {
+		return fmt.Errorf("synchronize active desktop manifest fingerprint: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("synchronize active desktop manifest fingerprint: expected one registry state row")
+	}
+	return nil
 }
 
 func releaseSetIsIdempotent(ctx context.Context, tx pgx.Tx, records []central.ReleaseRecord) (bool, error) {

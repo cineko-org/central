@@ -10,6 +10,7 @@ import (
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
 	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -96,7 +97,13 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	const userID = "event_mutation_wake_integration"
+	const (
+		userID       = "event_mutation_wake_integration"
+		providerID   = "provider_event_wake"
+		theaterID    = "theater"
+		auditoriumID = "auditorium"
+		movieID      = "movie_event_wake"
+	)
 	cleanup := func(ctx context.Context) {
 		for _, statement := range []string{
 			`DELETE FROM client_events WHERE user_id = $1`,
@@ -111,7 +118,12 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 		}
 	}
 	cleanup(t.Context())
+	cleanupClientResourceCatalog(t, store, providerID, []string{theaterID}, []string{auditoriumID}, []string{movieID})
+	t.Cleanup(func() {
+		cleanupClientResourceCatalog(t, store, providerID, []string{theaterID}, []string{auditoriumID}, []string{movieID})
+	})
 	t.Cleanup(func() { cleanup(context.Background()) })
+	seedClientResourceCatalog(t, store, providerID, theaterID, auditoriumID, movieID)
 	now := time.Now().UTC()
 	if _, err := store.pool.Exec(t.Context(), `
 		INSERT INTO client_users (id, display_name, created_at, updated_at) VALUES ($1, 'Event Wake', $2, $2)
@@ -145,8 +157,8 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 	preset.SetId("event_wake_preset")
 	preset.SetUserId(userID)
 	preset.SetName("Wake")
-	preset.SetTheaterId("theater")
-	preset.SetAuditoriumId("auditorium")
+	preset.SetTheaterId(theaterID)
+	preset.SetAuditoriumId(auditoriumID)
 	preset.SetSeatCount(1)
 	preset.SetSeatPreference(&clientpb.SeatPreference{})
 	assertWake("resource", func() error {
@@ -175,10 +187,10 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 	})
 
 	movie := &catalogpb.Movie{}
-	movie.SetId("movie_event_wake")
+	movie.SetId(movieID)
 	movie.SetTitle("Wake")
 	auditorium := &catalogpb.Auditorium{}
-	auditorium.SetId("auditorium")
+	auditorium.SetId(auditoriumID)
 	auditorium.SetName("Auditorium")
 	showtime := &catalogpb.Showtime{}
 	showtime.SetId("event_wake_showtime")
@@ -195,6 +207,19 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 	monitor.SetMovieId(movie.GetId())
 	monitor.SetState(&clientpb.MonitorState{})
 	monitor.GetState().SetPending(&clientpb.MonitorPending{})
+	monitorIdentity := &commonpb.ResourceIdentity{}
+	monitorIdentity.SetId(monitor.GetId())
+	monitorResource := &clientpb.Resource{}
+	monitorResource.SetIdentity(monitorIdentity)
+	monitorResource.SetMonitor(monitor)
+	assertWake("monitor created", func() error {
+		var putErr error
+		monitorResource, putErr = store.PutClientResource(t.Context(), central.ResourceMutation{
+			UserID: userID, Kind: "monitors", ID: monitor.GetId(), Resource: monitorResource,
+			CommandID: "event_wake_monitor_created", Now: now.Add(3 * time.Second),
+		})
+		return putErr
+	})
 	target := executionTarget{userID: userID, monitor: monitor, preset: preset}
 	assertWake("execution created", func() error {
 		tx, beginErr := store.pool.Begin(t.Context())
@@ -202,7 +227,7 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 			return beginErr
 		}
 		defer func() { _ = tx.Rollback(t.Context()) }()
-		if err := insertExecutionCommand(t.Context(), tx, target, showtime, now, now.Add(3*time.Second)); err != nil {
+		if err := insertExecutionCommand(t.Context(), tx, target, showtime, now, now.Add(4*time.Second), false); err != nil {
 			return err
 		}
 		return tx.Commit(t.Context())
@@ -213,10 +238,40 @@ func TestPostgresClientMutationPathsWakeEventStream(t *testing.T) {
 			reason_code = 'integration_failure', completed_at = $2, updated_at = $2
 		WHERE user_id = $1 AND monitor_id = 'event_wake_monitor'
 		RETURNING id
-	`, userID, now.Add(4*time.Second)).Scan(&commandID); err != nil {
+	`, userID, now.Add(5*time.Second)).Scan(&commandID); err != nil {
 		t.Fatal(err)
 	}
-	assertWake("execution explicit retry", func() error {
-		return store.RetryClientExecution(t.Context(), userID, commandID, now.Add(5*time.Second))
+	if _, err := store.pool.Exec(t.Context(), `
+		UPDATE client_monitors SET state = 'failed', state_reason = 'integration_failure'
+		WHERE user_id = $1 AND id = 'event_wake_monitor'
+	`, userID); err != nil {
+		t.Fatal(err)
+	}
+	revision := monitorResource.GetIdentity().GetRevision()
+	assertWake("execution monitor retry", func() error {
+		_, putErr := store.PutClientResource(t.Context(), central.ResourceMutation{
+			UserID: userID, Kind: "monitors", ID: monitor.GetId(), Resource: monitorResource,
+			ExpectedRevision: &revision, CommandID: "event_wake_monitor_retry",
+			Now: now.Add(6 * time.Second),
+		})
+		return putErr
 	})
+	var status string
+	if err := store.pool.QueryRow(t.Context(), `
+		SELECT status FROM client_execution_commands WHERE id = $1
+	`, commandID).Scan(&status); err != nil || status != "queued" {
+		t.Fatalf("monitor retry command status = %q, %v", status, err)
+	}
+	var payload []byte
+	if err := store.pool.QueryRow(t.Context(), `
+		SELECT payload FROM client_events
+		WHERE user_id = $1 AND event_type = 'execution.ready' AND resource_id = $2
+		ORDER BY sequence DESC LIMIT 1
+	`, userID, commandID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	ready := &clientpb.ExecutionReady{}
+	if err := protojson.Unmarshal(payload, ready); err != nil || ready.GetReason() != "explicit_monitor_retry" {
+		t.Fatalf("monitor retry event = %+v, %v", ready, err)
+	}
 }

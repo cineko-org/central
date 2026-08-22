@@ -13,7 +13,7 @@ import (
 	observation "github.com/cineko-org/contracts/gen/go/cineko/observation"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	durationpb "google.golang.org/protobuf/types/known/durationpb"
+	_ "google.golang.org/protobuf/types/known/durationpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	unsafe "unsafe"
@@ -1915,263 +1915,6 @@ func (b0 Preset_builder) Build() *Preset {
 	return m0
 }
 
-type OpeningMonitor struct {
-	state         protoimpl.MessageState `protogen:"opaque.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *OpeningMonitor) Reset() {
-	*x = OpeningMonitor{}
-	mi := &file_cineko_client_client_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *OpeningMonitor) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*OpeningMonitor) ProtoMessage() {}
-
-func (x *OpeningMonitor) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-type OpeningMonitor_builder struct {
-	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
-
-}
-
-func (b0 OpeningMonitor_builder) Build() *OpeningMonitor {
-	m0 := &OpeningMonitor{}
-	b, x := &b0, m0
-	_, _ = b, x
-	return m0
-}
-
-type CancellationMonitor struct {
-	state         protoimpl.MessageState `protogen:"opaque.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CancellationMonitor) Reset() {
-	*x = CancellationMonitor{}
-	mi := &file_cineko_client_client_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CancellationMonitor) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CancellationMonitor) ProtoMessage() {}
-
-func (x *CancellationMonitor) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-type CancellationMonitor_builder struct {
-	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
-
-}
-
-func (b0 CancellationMonitor_builder) Build() *CancellationMonitor {
-	m0 := &CancellationMonitor{}
-	b, x := &b0, m0
-	_, _ = b, x
-	return m0
-}
-
-type MonitorMode struct {
-	state           protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_Mode isMonitorMode_Mode     `protobuf_oneof:"mode"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *MonitorMode) Reset() {
-	*x = MonitorMode{}
-	mi := &file_cineko_client_client_proto_msgTypes[12]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MonitorMode) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MonitorMode) ProtoMessage() {}
-
-func (x *MonitorMode) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[12]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-func (x *MonitorMode) GetOpening() *OpeningMonitor {
-	if x != nil {
-		if x, ok := x.xxx_hidden_Mode.(*monitorMode_Opening); ok {
-			return x.Opening
-		}
-	}
-	return nil
-}
-
-func (x *MonitorMode) GetCancellation() *CancellationMonitor {
-	if x != nil {
-		if x, ok := x.xxx_hidden_Mode.(*monitorMode_Cancellation); ok {
-			return x.Cancellation
-		}
-	}
-	return nil
-}
-
-func (x *MonitorMode) SetOpening(v *OpeningMonitor) {
-	if v == nil {
-		x.xxx_hidden_Mode = nil
-		return
-	}
-	x.xxx_hidden_Mode = &monitorMode_Opening{v}
-}
-
-func (x *MonitorMode) SetCancellation(v *CancellationMonitor) {
-	if v == nil {
-		x.xxx_hidden_Mode = nil
-		return
-	}
-	x.xxx_hidden_Mode = &monitorMode_Cancellation{v}
-}
-
-func (x *MonitorMode) HasMode() bool {
-	if x == nil {
-		return false
-	}
-	return x.xxx_hidden_Mode != nil
-}
-
-func (x *MonitorMode) HasOpening() bool {
-	if x == nil {
-		return false
-	}
-	_, ok := x.xxx_hidden_Mode.(*monitorMode_Opening)
-	return ok
-}
-
-func (x *MonitorMode) HasCancellation() bool {
-	if x == nil {
-		return false
-	}
-	_, ok := x.xxx_hidden_Mode.(*monitorMode_Cancellation)
-	return ok
-}
-
-func (x *MonitorMode) ClearMode() {
-	x.xxx_hidden_Mode = nil
-}
-
-func (x *MonitorMode) ClearOpening() {
-	if _, ok := x.xxx_hidden_Mode.(*monitorMode_Opening); ok {
-		x.xxx_hidden_Mode = nil
-	}
-}
-
-func (x *MonitorMode) ClearCancellation() {
-	if _, ok := x.xxx_hidden_Mode.(*monitorMode_Cancellation); ok {
-		x.xxx_hidden_Mode = nil
-	}
-}
-
-const MonitorMode_Mode_not_set_case case_MonitorMode_Mode = 0
-const MonitorMode_Opening_case case_MonitorMode_Mode = 1
-const MonitorMode_Cancellation_case case_MonitorMode_Mode = 2
-
-func (x *MonitorMode) WhichMode() case_MonitorMode_Mode {
-	if x == nil {
-		return MonitorMode_Mode_not_set_case
-	}
-	switch x.xxx_hidden_Mode.(type) {
-	case *monitorMode_Opening:
-		return MonitorMode_Opening_case
-	case *monitorMode_Cancellation:
-		return MonitorMode_Cancellation_case
-	default:
-		return MonitorMode_Mode_not_set_case
-	}
-}
-
-type MonitorMode_builder struct {
-	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
-
-	// Fields of oneof xxx_hidden_Mode:
-	Opening      *OpeningMonitor
-	Cancellation *CancellationMonitor
-	// -- end of xxx_hidden_Mode
-}
-
-func (b0 MonitorMode_builder) Build() *MonitorMode {
-	m0 := &MonitorMode{}
-	b, x := &b0, m0
-	_, _ = b, x
-	if b.Opening != nil {
-		x.xxx_hidden_Mode = &monitorMode_Opening{b.Opening}
-	}
-	if b.Cancellation != nil {
-		x.xxx_hidden_Mode = &monitorMode_Cancellation{b.Cancellation}
-	}
-	return m0
-}
-
-type case_MonitorMode_Mode protoreflect.FieldNumber
-
-func (x case_MonitorMode_Mode) String() string {
-	md := file_cineko_client_client_proto_msgTypes[12].Descriptor()
-	if x == 0 {
-		return "not set"
-	}
-	return protoimpl.X.MessageFieldStringOf(md, protoreflect.FieldNumber(x))
-}
-
-type isMonitorMode_Mode interface {
-	isMonitorMode_Mode()
-}
-
-type monitorMode_Opening struct {
-	Opening *OpeningMonitor `protobuf:"bytes,1,opt,name=opening,oneof"`
-}
-
-type monitorMode_Cancellation struct {
-	Cancellation *CancellationMonitor `protobuf:"bytes,2,opt,name=cancellation,oneof"`
-}
-
-func (*monitorMode_Opening) isMonitorMode_Mode() {}
-
-func (*monitorMode_Cancellation) isMonitorMode_Mode() {}
-
 type MonitorPending struct {
 	state         protoimpl.MessageState `protogen:"opaque.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2180,7 +1923,7 @@ type MonitorPending struct {
 
 func (x *MonitorPending) Reset() {
 	*x = MonitorPending{}
-	mi := &file_cineko_client_client_proto_msgTypes[13]
+	mi := &file_cineko_client_client_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2192,7 +1935,7 @@ func (x *MonitorPending) String() string {
 func (*MonitorPending) ProtoMessage() {}
 
 func (x *MonitorPending) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[13]
+	mi := &file_cineko_client_client_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2223,7 +1966,7 @@ type MonitorRunning struct {
 
 func (x *MonitorRunning) Reset() {
 	*x = MonitorRunning{}
-	mi := &file_cineko_client_client_proto_msgTypes[14]
+	mi := &file_cineko_client_client_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2235,7 +1978,7 @@ func (x *MonitorRunning) String() string {
 func (*MonitorRunning) ProtoMessage() {}
 
 func (x *MonitorRunning) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[14]
+	mi := &file_cineko_client_client_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2266,7 +2009,7 @@ type MonitorTriggered struct {
 
 func (x *MonitorTriggered) Reset() {
 	*x = MonitorTriggered{}
-	mi := &file_cineko_client_client_proto_msgTypes[15]
+	mi := &file_cineko_client_client_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2278,7 +2021,7 @@ func (x *MonitorTriggered) String() string {
 func (*MonitorTriggered) ProtoMessage() {}
 
 func (x *MonitorTriggered) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[15]
+	mi := &file_cineko_client_client_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2309,7 +2052,7 @@ type MonitorPaymentUnknown struct {
 
 func (x *MonitorPaymentUnknown) Reset() {
 	*x = MonitorPaymentUnknown{}
-	mi := &file_cineko_client_client_proto_msgTypes[16]
+	mi := &file_cineko_client_client_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2321,7 +2064,7 @@ func (x *MonitorPaymentUnknown) String() string {
 func (*MonitorPaymentUnknown) ProtoMessage() {}
 
 func (x *MonitorPaymentUnknown) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[16]
+	mi := &file_cineko_client_client_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2352,7 +2095,7 @@ type MonitorBooked struct {
 
 func (x *MonitorBooked) Reset() {
 	*x = MonitorBooked{}
-	mi := &file_cineko_client_client_proto_msgTypes[17]
+	mi := &file_cineko_client_client_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2364,7 +2107,7 @@ func (x *MonitorBooked) String() string {
 func (*MonitorBooked) ProtoMessage() {}
 
 func (x *MonitorBooked) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[17]
+	mi := &file_cineko_client_client_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2398,7 +2141,7 @@ type MonitorFailed struct {
 
 func (x *MonitorFailed) Reset() {
 	*x = MonitorFailed{}
-	mi := &file_cineko_client_client_proto_msgTypes[18]
+	mi := &file_cineko_client_client_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2410,7 +2153,7 @@ func (x *MonitorFailed) String() string {
 func (*MonitorFailed) ProtoMessage() {}
 
 func (x *MonitorFailed) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[18]
+	mi := &file_cineko_client_client_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2473,7 +2216,7 @@ type MonitorStopped struct {
 
 func (x *MonitorStopped) Reset() {
 	*x = MonitorStopped{}
-	mi := &file_cineko_client_client_proto_msgTypes[19]
+	mi := &file_cineko_client_client_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2485,7 +2228,7 @@ func (x *MonitorStopped) String() string {
 func (*MonitorStopped) ProtoMessage() {}
 
 func (x *MonitorStopped) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[19]
+	mi := &file_cineko_client_client_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2517,7 +2260,7 @@ type MonitorState struct {
 
 func (x *MonitorState) Reset() {
 	*x = MonitorState{}
-	mi := &file_cineko_client_client_proto_msgTypes[20]
+	mi := &file_cineko_client_client_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2529,7 +2272,7 @@ func (x *MonitorState) String() string {
 func (*MonitorState) ProtoMessage() {}
 
 func (x *MonitorState) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[20]
+	mi := &file_cineko_client_client_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2846,7 +2589,7 @@ func (b0 MonitorState_builder) Build() *MonitorState {
 type case_MonitorState_State protoreflect.FieldNumber
 
 func (x case_MonitorState_State) String() string {
-	md := file_cineko_client_client_proto_msgTypes[20].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[17].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -2900,34 +2643,31 @@ func (*monitorState_Stopped) isMonitorState_State() {}
 func (*monitorState_PaymentUnknown) isMonitorState_State() {}
 
 type Monitor struct {
-	state                          protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_Id                  *string                `protobuf:"bytes,1,opt,name=id"`
-	xxx_hidden_UserId              *string                `protobuf:"bytes,2,opt,name=user_id,json=userId"`
-	xxx_hidden_PresetId            *string                `protobuf:"bytes,3,opt,name=preset_id,json=presetId"`
-	xxx_hidden_Mode                *MonitorMode           `protobuf:"bytes,4,opt,name=mode"`
-	xxx_hidden_MovieId             *string                `protobuf:"bytes,5,opt,name=movie_id,json=movieId"`
-	xxx_hidden_MovieTitle          *string                `protobuf:"bytes,6,opt,name=movie_title,json=movieTitle"`
-	xxx_hidden_TargetDates         *[]*common.LocalDate   `protobuf:"bytes,7,rep,name=target_dates,json=targetDates"`
-	xxx_hidden_TargetWeekdays      []int32                `protobuf:"varint,8,rep,packed,name=target_weekdays,json=targetWeekdays"`
-	xxx_hidden_SearchHorizonDays   int32                  `protobuf:"varint,9,opt,name=search_horizon_days,json=searchHorizonDays"`
-	xxx_hidden_EarliestTime        *common.LocalTime      `protobuf:"bytes,10,opt,name=earliest_time,json=earliestTime"`
-	xxx_hidden_LatestTime          *common.LocalTime      `protobuf:"bytes,11,opt,name=latest_time,json=latestTime"`
-	xxx_hidden_PollInterval        *durationpb.Duration   `protobuf:"bytes,12,opt,name=poll_interval,json=pollInterval"`
-	xxx_hidden_MaximumPollInterval *durationpb.Duration   `protobuf:"bytes,13,opt,name=maximum_poll_interval,json=maximumPollInterval"`
-	xxx_hidden_State               *MonitorState          `protobuf:"bytes,14,opt,name=state"`
-	xxx_hidden_LastCheckedAt       *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=last_checked_at,json=lastCheckedAt"`
-	xxx_hidden_ReservationId       *string                `protobuf:"bytes,16,opt,name=reservation_id,json=reservationId"`
-	xxx_hidden_CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt"`
-	xxx_hidden_UpdatedAt           *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt"`
-	XXX_raceDetectHookData         protoimpl.RaceDetectHookData
-	XXX_presence                   [1]uint32
-	unknownFields                  protoimpl.UnknownFields
-	sizeCache                      protoimpl.SizeCache
+	state                        protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Id                *string                `protobuf:"bytes,1,opt,name=id"`
+	xxx_hidden_UserId            *string                `protobuf:"bytes,2,opt,name=user_id,json=userId"`
+	xxx_hidden_PresetId          *string                `protobuf:"bytes,3,opt,name=preset_id,json=presetId"`
+	xxx_hidden_MovieId           *string                `protobuf:"bytes,4,opt,name=movie_id,json=movieId"`
+	xxx_hidden_MovieTitle        *string                `protobuf:"bytes,5,opt,name=movie_title,json=movieTitle"`
+	xxx_hidden_TargetDates       *[]*common.LocalDate   `protobuf:"bytes,6,rep,name=target_dates,json=targetDates"`
+	xxx_hidden_TargetWeekdays    []int32                `protobuf:"varint,7,rep,packed,name=target_weekdays,json=targetWeekdays"`
+	xxx_hidden_SearchHorizonDays int32                  `protobuf:"varint,8,opt,name=search_horizon_days,json=searchHorizonDays"`
+	xxx_hidden_EarliestTime      *common.LocalTime      `protobuf:"bytes,9,opt,name=earliest_time,json=earliestTime"`
+	xxx_hidden_LatestTime        *common.LocalTime      `protobuf:"bytes,10,opt,name=latest_time,json=latestTime"`
+	xxx_hidden_State             *MonitorState          `protobuf:"bytes,11,opt,name=state"`
+	xxx_hidden_LastCheckedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=last_checked_at,json=lastCheckedAt"`
+	xxx_hidden_ReservationId     *string                `protobuf:"bytes,13,opt,name=reservation_id,json=reservationId"`
+	xxx_hidden_CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=created_at,json=createdAt"`
+	xxx_hidden_UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt"`
+	XXX_raceDetectHookData       protoimpl.RaceDetectHookData
+	XXX_presence                 [1]uint32
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *Monitor) Reset() {
 	*x = Monitor{}
-	mi := &file_cineko_client_client_proto_msgTypes[21]
+	mi := &file_cineko_client_client_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2939,7 +2679,7 @@ func (x *Monitor) String() string {
 func (*Monitor) ProtoMessage() {}
 
 func (x *Monitor) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[21]
+	mi := &file_cineko_client_client_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2978,13 +2718,6 @@ func (x *Monitor) GetPresetId() string {
 		return ""
 	}
 	return ""
-}
-
-func (x *Monitor) GetMode() *MonitorMode {
-	if x != nil {
-		return x.xxx_hidden_Mode
-	}
-	return nil
 }
 
 func (x *Monitor) GetMovieId() string {
@@ -3044,20 +2777,6 @@ func (x *Monitor) GetLatestTime() *common.LocalTime {
 	return nil
 }
 
-func (x *Monitor) GetPollInterval() *durationpb.Duration {
-	if x != nil {
-		return x.xxx_hidden_PollInterval
-	}
-	return nil
-}
-
-func (x *Monitor) GetMaximumPollInterval() *durationpb.Duration {
-	if x != nil {
-		return x.xxx_hidden_MaximumPollInterval
-	}
-	return nil
-}
-
 func (x *Monitor) GetState() *MonitorState {
 	if x != nil {
 		return x.xxx_hidden_State
@@ -3098,31 +2817,27 @@ func (x *Monitor) GetUpdatedAt() *timestamppb.Timestamp {
 
 func (x *Monitor) SetId(v string) {
 	x.xxx_hidden_Id = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 18)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 15)
 }
 
 func (x *Monitor) SetUserId(v string) {
 	x.xxx_hidden_UserId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 18)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 1, 15)
 }
 
 func (x *Monitor) SetPresetId(v string) {
 	x.xxx_hidden_PresetId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 18)
-}
-
-func (x *Monitor) SetMode(v *MonitorMode) {
-	x.xxx_hidden_Mode = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 15)
 }
 
 func (x *Monitor) SetMovieId(v string) {
 	x.xxx_hidden_MovieId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 18)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 3, 15)
 }
 
 func (x *Monitor) SetMovieTitle(v string) {
 	x.xxx_hidden_MovieTitle = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 18)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 4, 15)
 }
 
 func (x *Monitor) SetTargetDates(v []*common.LocalDate) {
@@ -3135,7 +2850,7 @@ func (x *Monitor) SetTargetWeekdays(v []int32) {
 
 func (x *Monitor) SetSearchHorizonDays(v int32) {
 	x.xxx_hidden_SearchHorizonDays = v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 8, 18)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 7, 15)
 }
 
 func (x *Monitor) SetEarliestTime(v *common.LocalTime) {
@@ -3144,14 +2859,6 @@ func (x *Monitor) SetEarliestTime(v *common.LocalTime) {
 
 func (x *Monitor) SetLatestTime(v *common.LocalTime) {
 	x.xxx_hidden_LatestTime = v
-}
-
-func (x *Monitor) SetPollInterval(v *durationpb.Duration) {
-	x.xxx_hidden_PollInterval = v
-}
-
-func (x *Monitor) SetMaximumPollInterval(v *durationpb.Duration) {
-	x.xxx_hidden_MaximumPollInterval = v
 }
 
 func (x *Monitor) SetState(v *MonitorState) {
@@ -3164,7 +2871,7 @@ func (x *Monitor) SetLastCheckedAt(v *timestamppb.Timestamp) {
 
 func (x *Monitor) SetReservationId(v string) {
 	x.xxx_hidden_ReservationId = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 15, 18)
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 12, 15)
 }
 
 func (x *Monitor) SetCreatedAt(v *timestamppb.Timestamp) {
@@ -3196,32 +2903,25 @@ func (x *Monitor) HasPresetId() bool {
 	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
 }
 
-func (x *Monitor) HasMode() bool {
-	if x == nil {
-		return false
-	}
-	return x.xxx_hidden_Mode != nil
-}
-
 func (x *Monitor) HasMovieId() bool {
 	if x == nil {
 		return false
 	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 3)
 }
 
 func (x *Monitor) HasMovieTitle() bool {
 	if x == nil {
 		return false
 	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 4)
 }
 
 func (x *Monitor) HasSearchHorizonDays() bool {
 	if x == nil {
 		return false
 	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 8)
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 7)
 }
 
 func (x *Monitor) HasEarliestTime() bool {
@@ -3236,20 +2936,6 @@ func (x *Monitor) HasLatestTime() bool {
 		return false
 	}
 	return x.xxx_hidden_LatestTime != nil
-}
-
-func (x *Monitor) HasPollInterval() bool {
-	if x == nil {
-		return false
-	}
-	return x.xxx_hidden_PollInterval != nil
-}
-
-func (x *Monitor) HasMaximumPollInterval() bool {
-	if x == nil {
-		return false
-	}
-	return x.xxx_hidden_MaximumPollInterval != nil
 }
 
 func (x *Monitor) HasState() bool {
@@ -3270,7 +2956,7 @@ func (x *Monitor) HasReservationId() bool {
 	if x == nil {
 		return false
 	}
-	return protoimpl.X.Present(&(x.XXX_presence[0]), 15)
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 12)
 }
 
 func (x *Monitor) HasCreatedAt() bool {
@@ -3302,22 +2988,18 @@ func (x *Monitor) ClearPresetId() {
 	x.xxx_hidden_PresetId = nil
 }
 
-func (x *Monitor) ClearMode() {
-	x.xxx_hidden_Mode = nil
-}
-
 func (x *Monitor) ClearMovieId() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 3)
 	x.xxx_hidden_MovieId = nil
 }
 
 func (x *Monitor) ClearMovieTitle() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 4)
 	x.xxx_hidden_MovieTitle = nil
 }
 
 func (x *Monitor) ClearSearchHorizonDays() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 8)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 7)
 	x.xxx_hidden_SearchHorizonDays = 0
 }
 
@@ -3329,14 +3011,6 @@ func (x *Monitor) ClearLatestTime() {
 	x.xxx_hidden_LatestTime = nil
 }
 
-func (x *Monitor) ClearPollInterval() {
-	x.xxx_hidden_PollInterval = nil
-}
-
-func (x *Monitor) ClearMaximumPollInterval() {
-	x.xxx_hidden_MaximumPollInterval = nil
-}
-
 func (x *Monitor) ClearState() {
 	x.xxx_hidden_State = nil
 }
@@ -3346,7 +3020,7 @@ func (x *Monitor) ClearLastCheckedAt() {
 }
 
 func (x *Monitor) ClearReservationId() {
-	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 15)
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 12)
 	x.xxx_hidden_ReservationId = nil
 }
 
@@ -3361,24 +3035,21 @@ func (x *Monitor) ClearUpdatedAt() {
 type Monitor_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Id                  *string
-	UserId              *string
-	PresetId            *string
-	Mode                *MonitorMode
-	MovieId             *string
-	MovieTitle          *string
-	TargetDates         []*common.LocalDate
-	TargetWeekdays      []int32
-	SearchHorizonDays   *int32
-	EarliestTime        *common.LocalTime
-	LatestTime          *common.LocalTime
-	PollInterval        *durationpb.Duration
-	MaximumPollInterval *durationpb.Duration
-	State               *MonitorState
-	LastCheckedAt       *timestamppb.Timestamp
-	ReservationId       *string
-	CreatedAt           *timestamppb.Timestamp
-	UpdatedAt           *timestamppb.Timestamp
+	Id                *string
+	UserId            *string
+	PresetId          *string
+	MovieId           *string
+	MovieTitle        *string
+	TargetDates       []*common.LocalDate
+	TargetWeekdays    []int32
+	SearchHorizonDays *int32
+	EarliestTime      *common.LocalTime
+	LatestTime        *common.LocalTime
+	State             *MonitorState
+	LastCheckedAt     *timestamppb.Timestamp
+	ReservationId     *string
+	CreatedAt         *timestamppb.Timestamp
+	UpdatedAt         *timestamppb.Timestamp
 }
 
 func (b0 Monitor_builder) Build() *Monitor {
@@ -3386,40 +3057,37 @@ func (b0 Monitor_builder) Build() *Monitor {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Id != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 15)
 		x.xxx_hidden_Id = b.Id
 	}
 	if b.UserId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 1, 15)
 		x.xxx_hidden_UserId = b.UserId
 	}
 	if b.PresetId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 15)
 		x.xxx_hidden_PresetId = b.PresetId
 	}
-	x.xxx_hidden_Mode = b.Mode
 	if b.MovieId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 3, 15)
 		x.xxx_hidden_MovieId = b.MovieId
 	}
 	if b.MovieTitle != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 4, 15)
 		x.xxx_hidden_MovieTitle = b.MovieTitle
 	}
 	x.xxx_hidden_TargetDates = &b.TargetDates
 	x.xxx_hidden_TargetWeekdays = b.TargetWeekdays
 	if b.SearchHorizonDays != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 8, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 7, 15)
 		x.xxx_hidden_SearchHorizonDays = *b.SearchHorizonDays
 	}
 	x.xxx_hidden_EarliestTime = b.EarliestTime
 	x.xxx_hidden_LatestTime = b.LatestTime
-	x.xxx_hidden_PollInterval = b.PollInterval
-	x.xxx_hidden_MaximumPollInterval = b.MaximumPollInterval
 	x.xxx_hidden_State = b.State
 	x.xxx_hidden_LastCheckedAt = b.LastCheckedAt
 	if b.ReservationId != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 15, 18)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 12, 15)
 		x.xxx_hidden_ReservationId = b.ReservationId
 	}
 	x.xxx_hidden_CreatedAt = b.CreatedAt
@@ -3448,7 +3116,7 @@ type Reservation struct {
 
 func (x *Reservation) Reset() {
 	*x = Reservation{}
-	mi := &file_cineko_client_client_proto_msgTypes[22]
+	mi := &file_cineko_client_client_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3460,7 +3128,7 @@ func (x *Reservation) String() string {
 func (*Reservation) ProtoMessage() {}
 
 func (x *Reservation) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[22]
+	mi := &file_cineko_client_client_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3978,7 +3646,7 @@ func (b0 Reservation_builder) Build() *Reservation {
 type case_Reservation_State protoreflect.FieldNumber
 
 func (x case_Reservation_State) String() string {
-	md := file_cineko_client_client_proto_msgTypes[22].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[19].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -4027,7 +3695,7 @@ type ReservationPrepared struct {
 
 func (x *ReservationPrepared) Reset() {
 	*x = ReservationPrepared{}
-	mi := &file_cineko_client_client_proto_msgTypes[23]
+	mi := &file_cineko_client_client_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4039,7 +3707,7 @@ func (x *ReservationPrepared) String() string {
 func (*ReservationPrepared) ProtoMessage() {}
 
 func (x *ReservationPrepared) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[23]
+	mi := &file_cineko_client_client_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4070,7 +3738,7 @@ type ReservationBooked struct {
 
 func (x *ReservationBooked) Reset() {
 	*x = ReservationBooked{}
-	mi := &file_cineko_client_client_proto_msgTypes[24]
+	mi := &file_cineko_client_client_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4082,7 +3750,7 @@ func (x *ReservationBooked) String() string {
 func (*ReservationBooked) ProtoMessage() {}
 
 func (x *ReservationBooked) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[24]
+	mi := &file_cineko_client_client_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4113,7 +3781,7 @@ type ReservationCancellationCommitting struct {
 
 func (x *ReservationCancellationCommitting) Reset() {
 	*x = ReservationCancellationCommitting{}
-	mi := &file_cineko_client_client_proto_msgTypes[25]
+	mi := &file_cineko_client_client_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4125,7 +3793,7 @@ func (x *ReservationCancellationCommitting) String() string {
 func (*ReservationCancellationCommitting) ProtoMessage() {}
 
 func (x *ReservationCancellationCommitting) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[25]
+	mi := &file_cineko_client_client_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4156,7 +3824,7 @@ type ReservationCancellationUnknown struct {
 
 func (x *ReservationCancellationUnknown) Reset() {
 	*x = ReservationCancellationUnknown{}
-	mi := &file_cineko_client_client_proto_msgTypes[26]
+	mi := &file_cineko_client_client_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4168,7 +3836,7 @@ func (x *ReservationCancellationUnknown) String() string {
 func (*ReservationCancellationUnknown) ProtoMessage() {}
 
 func (x *ReservationCancellationUnknown) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[26]
+	mi := &file_cineko_client_client_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4199,7 +3867,7 @@ type ReservationCancelled struct {
 
 func (x *ReservationCancelled) Reset() {
 	*x = ReservationCancelled{}
-	mi := &file_cineko_client_client_proto_msgTypes[27]
+	mi := &file_cineko_client_client_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4211,7 +3879,7 @@ func (x *ReservationCancelled) String() string {
 func (*ReservationCancelled) ProtoMessage() {}
 
 func (x *ReservationCancelled) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[27]
+	mi := &file_cineko_client_client_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4254,7 +3922,7 @@ type ExternalOperation struct {
 
 func (x *ExternalOperation) Reset() {
 	*x = ExternalOperation{}
-	mi := &file_cineko_client_client_proto_msgTypes[28]
+	mi := &file_cineko_client_client_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4266,7 +3934,7 @@ func (x *ExternalOperation) String() string {
 func (*ExternalOperation) ProtoMessage() {}
 
 func (x *ExternalOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[28]
+	mi := &file_cineko_client_client_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4810,7 +4478,7 @@ func (b0 ExternalOperation_builder) Build() *ExternalOperation {
 type case_ExternalOperation_Kind protoreflect.FieldNumber
 
 func (x case_ExternalOperation_Kind) String() string {
-	md := file_cineko_client_client_proto_msgTypes[28].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[25].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -4820,7 +4488,7 @@ func (x case_ExternalOperation_Kind) String() string {
 type case_ExternalOperation_State protoreflect.FieldNumber
 
 func (x case_ExternalOperation_State) String() string {
-	md := file_cineko_client_client_proto_msgTypes[28].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[25].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -4879,7 +4547,7 @@ type CancellationOperation struct {
 
 func (x *CancellationOperation) Reset() {
 	*x = CancellationOperation{}
-	mi := &file_cineko_client_client_proto_msgTypes[29]
+	mi := &file_cineko_client_client_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4891,7 +4559,7 @@ func (x *CancellationOperation) String() string {
 func (*CancellationOperation) ProtoMessage() {}
 
 func (x *CancellationOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[29]
+	mi := &file_cineko_client_client_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4922,7 +4590,7 @@ type OperationPrepared struct {
 
 func (x *OperationPrepared) Reset() {
 	*x = OperationPrepared{}
-	mi := &file_cineko_client_client_proto_msgTypes[30]
+	mi := &file_cineko_client_client_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4934,7 +4602,7 @@ func (x *OperationPrepared) String() string {
 func (*OperationPrepared) ProtoMessage() {}
 
 func (x *OperationPrepared) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[30]
+	mi := &file_cineko_client_client_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4965,7 +4633,7 @@ type OperationUnknown struct {
 
 func (x *OperationUnknown) Reset() {
 	*x = OperationUnknown{}
-	mi := &file_cineko_client_client_proto_msgTypes[31]
+	mi := &file_cineko_client_client_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4977,7 +4645,7 @@ func (x *OperationUnknown) String() string {
 func (*OperationUnknown) ProtoMessage() {}
 
 func (x *OperationUnknown) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[31]
+	mi := &file_cineko_client_client_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5008,7 +4676,7 @@ type OperationAttentionRequired struct {
 
 func (x *OperationAttentionRequired) Reset() {
 	*x = OperationAttentionRequired{}
-	mi := &file_cineko_client_client_proto_msgTypes[32]
+	mi := &file_cineko_client_client_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5020,7 +4688,7 @@ func (x *OperationAttentionRequired) String() string {
 func (*OperationAttentionRequired) ProtoMessage() {}
 
 func (x *OperationAttentionRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[32]
+	mi := &file_cineko_client_client_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5051,7 +4719,7 @@ type OperationConfirmed struct {
 
 func (x *OperationConfirmed) Reset() {
 	*x = OperationConfirmed{}
-	mi := &file_cineko_client_client_proto_msgTypes[33]
+	mi := &file_cineko_client_client_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5063,7 +4731,7 @@ func (x *OperationConfirmed) String() string {
 func (*OperationConfirmed) ProtoMessage() {}
 
 func (x *OperationConfirmed) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[33]
+	mi := &file_cineko_client_client_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5094,7 +4762,7 @@ type OperationReconciled struct {
 
 func (x *OperationReconciled) Reset() {
 	*x = OperationReconciled{}
-	mi := &file_cineko_client_client_proto_msgTypes[34]
+	mi := &file_cineko_client_client_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5106,7 +4774,7 @@ func (x *OperationReconciled) String() string {
 func (*OperationReconciled) ProtoMessage() {}
 
 func (x *OperationReconciled) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[34]
+	mi := &file_cineko_client_client_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5146,7 +4814,7 @@ type AppEvent struct {
 
 func (x *AppEvent) Reset() {
 	*x = AppEvent{}
-	mi := &file_cineko_client_client_proto_msgTypes[35]
+	mi := &file_cineko_client_client_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5158,7 +4826,7 @@ func (x *AppEvent) String() string {
 func (*AppEvent) ProtoMessage() {}
 
 func (x *AppEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[35]
+	mi := &file_cineko_client_client_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5537,7 +5205,7 @@ func (b0 AppEvent_builder) Build() *AppEvent {
 type case_AppEvent_Tone protoreflect.FieldNumber
 
 func (x case_AppEvent_Tone) String() string {
-	md := file_cineko_client_client_proto_msgTypes[35].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[32].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -5580,7 +5248,7 @@ type EventInfo struct {
 
 func (x *EventInfo) Reset() {
 	*x = EventInfo{}
-	mi := &file_cineko_client_client_proto_msgTypes[36]
+	mi := &file_cineko_client_client_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5592,7 +5260,7 @@ func (x *EventInfo) String() string {
 func (*EventInfo) ProtoMessage() {}
 
 func (x *EventInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[36]
+	mi := &file_cineko_client_client_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5623,7 +5291,7 @@ type EventSuccess struct {
 
 func (x *EventSuccess) Reset() {
 	*x = EventSuccess{}
-	mi := &file_cineko_client_client_proto_msgTypes[37]
+	mi := &file_cineko_client_client_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5635,7 +5303,7 @@ func (x *EventSuccess) String() string {
 func (*EventSuccess) ProtoMessage() {}
 
 func (x *EventSuccess) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[37]
+	mi := &file_cineko_client_client_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5666,7 +5334,7 @@ type EventWarning struct {
 
 func (x *EventWarning) Reset() {
 	*x = EventWarning{}
-	mi := &file_cineko_client_client_proto_msgTypes[38]
+	mi := &file_cineko_client_client_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5678,7 +5346,7 @@ func (x *EventWarning) String() string {
 func (*EventWarning) ProtoMessage() {}
 
 func (x *EventWarning) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[38]
+	mi := &file_cineko_client_client_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5709,7 +5377,7 @@ type EventError struct {
 
 func (x *EventError) Reset() {
 	*x = EventError{}
-	mi := &file_cineko_client_client_proto_msgTypes[39]
+	mi := &file_cineko_client_client_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5721,7 +5389,7 @@ func (x *EventError) String() string {
 func (*EventError) ProtoMessage() {}
 
 func (x *EventError) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[39]
+	mi := &file_cineko_client_client_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5754,7 +5422,7 @@ type Resource struct {
 
 func (x *Resource) Reset() {
 	*x = Resource{}
-	mi := &file_cineko_client_client_proto_msgTypes[40]
+	mi := &file_cineko_client_client_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5766,7 +5434,7 @@ func (x *Resource) String() string {
 func (*Resource) ProtoMessage() {}
 
 func (x *Resource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[40]
+	mi := &file_cineko_client_client_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6069,7 +5737,7 @@ func (b0 Resource_builder) Build() *Resource {
 type case_Resource_Resource protoreflect.FieldNumber
 
 func (x case_Resource_Resource) String() string {
-	md := file_cineko_client_client_proto_msgTypes[40].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[37].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -6124,7 +5792,7 @@ type SettingsResource struct {
 
 func (x *SettingsResource) Reset() {
 	*x = SettingsResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[41]
+	mi := &file_cineko_client_client_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6136,7 +5804,7 @@ func (x *SettingsResource) String() string {
 func (*SettingsResource) ProtoMessage() {}
 
 func (x *SettingsResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[41]
+	mi := &file_cineko_client_client_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6167,7 +5835,7 @@ type PresetResource struct {
 
 func (x *PresetResource) Reset() {
 	*x = PresetResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[42]
+	mi := &file_cineko_client_client_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6179,7 +5847,7 @@ func (x *PresetResource) String() string {
 func (*PresetResource) ProtoMessage() {}
 
 func (x *PresetResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[42]
+	mi := &file_cineko_client_client_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6210,7 +5878,7 @@ type MonitorResource struct {
 
 func (x *MonitorResource) Reset() {
 	*x = MonitorResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[43]
+	mi := &file_cineko_client_client_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6222,7 +5890,7 @@ func (x *MonitorResource) String() string {
 func (*MonitorResource) ProtoMessage() {}
 
 func (x *MonitorResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[43]
+	mi := &file_cineko_client_client_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6253,7 +5921,7 @@ type ReservationResource struct {
 
 func (x *ReservationResource) Reset() {
 	*x = ReservationResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[44]
+	mi := &file_cineko_client_client_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6265,7 +5933,7 @@ func (x *ReservationResource) String() string {
 func (*ReservationResource) ProtoMessage() {}
 
 func (x *ReservationResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[44]
+	mi := &file_cineko_client_client_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6296,7 +5964,7 @@ type ExternalOperationResource struct {
 
 func (x *ExternalOperationResource) Reset() {
 	*x = ExternalOperationResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[45]
+	mi := &file_cineko_client_client_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6308,7 +5976,7 @@ func (x *ExternalOperationResource) String() string {
 func (*ExternalOperationResource) ProtoMessage() {}
 
 func (x *ExternalOperationResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[45]
+	mi := &file_cineko_client_client_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6339,7 +6007,7 @@ type AppEventResource struct {
 
 func (x *AppEventResource) Reset() {
 	*x = AppEventResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[46]
+	mi := &file_cineko_client_client_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6351,7 +6019,7 @@ func (x *AppEventResource) String() string {
 func (*AppEventResource) ProtoMessage() {}
 
 func (x *AppEventResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[46]
+	mi := &file_cineko_client_client_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6383,7 +6051,7 @@ type ResourceKind struct {
 
 func (x *ResourceKind) Reset() {
 	*x = ResourceKind{}
-	mi := &file_cineko_client_client_proto_msgTypes[47]
+	mi := &file_cineko_client_client_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6395,7 +6063,7 @@ func (x *ResourceKind) String() string {
 func (*ResourceKind) ProtoMessage() {}
 
 func (x *ResourceKind) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[47]
+	mi := &file_cineko_client_client_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6674,7 +6342,7 @@ func (b0 ResourceKind_builder) Build() *ResourceKind {
 type case_ResourceKind_Kind protoreflect.FieldNumber
 
 func (x case_ResourceKind_Kind) String() string {
-	md := file_cineko_client_client_proto_msgTypes[47].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[44].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -6736,7 +6404,7 @@ type Bootstrap struct {
 
 func (x *Bootstrap) Reset() {
 	*x = Bootstrap{}
-	mi := &file_cineko_client_client_proto_msgTypes[48]
+	mi := &file_cineko_client_client_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6748,7 +6416,7 @@ func (x *Bootstrap) String() string {
 func (*Bootstrap) ProtoMessage() {}
 
 func (x *Bootstrap) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[48]
+	mi := &file_cineko_client_client_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6887,7 +6555,7 @@ type EventResource struct {
 
 func (x *EventResource) Reset() {
 	*x = EventResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[49]
+	mi := &file_cineko_client_client_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6899,7 +6567,7 @@ func (x *EventResource) String() string {
 func (*EventResource) ProtoMessage() {}
 
 func (x *EventResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[49]
+	mi := &file_cineko_client_client_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7239,7 +6907,7 @@ func (b0 EventResource_builder) Build() *EventResource {
 type case_EventResource_Kind protoreflect.FieldNumber
 
 func (x case_EventResource_Kind) String() string {
-	md := file_cineko_client_client_proto_msgTypes[49].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[46].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -7300,7 +6968,7 @@ type ClientEvent struct {
 
 func (x *ClientEvent) Reset() {
 	*x = ClientEvent{}
-	mi := &file_cineko_client_client_proto_msgTypes[50]
+	mi := &file_cineko_client_client_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7312,7 +6980,7 @@ func (x *ClientEvent) String() string {
 func (*ClientEvent) ProtoMessage() {}
 
 func (x *ClientEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[50]
+	mi := &file_cineko_client_client_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7562,7 +7230,7 @@ func (b0 ClientEvent_builder) Build() *ClientEvent {
 type case_ClientEvent_Event protoreflect.FieldNumber
 
 func (x case_ClientEvent_Event) String() string {
-	md := file_cineko_client_client_proto_msgTypes[50].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[47].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -7604,7 +7272,7 @@ type ExecutionReady struct {
 
 func (x *ExecutionReady) Reset() {
 	*x = ExecutionReady{}
-	mi := &file_cineko_client_client_proto_msgTypes[51]
+	mi := &file_cineko_client_client_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7616,7 +7284,7 @@ func (x *ExecutionReady) String() string {
 func (*ExecutionReady) ProtoMessage() {}
 
 func (x *ExecutionReady) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[51]
+	mi := &file_cineko_client_client_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7748,7 +7416,7 @@ type DeletedResource struct {
 
 func (x *DeletedResource) Reset() {
 	*x = DeletedResource{}
-	mi := &file_cineko_client_client_proto_msgTypes[52]
+	mi := &file_cineko_client_client_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7760,7 +7428,7 @@ func (x *DeletedResource) String() string {
 func (*DeletedResource) ProtoMessage() {}
 
 func (x *DeletedResource) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[52]
+	mi := &file_cineko_client_client_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7879,7 +7547,7 @@ type StreamReady struct {
 
 func (x *StreamReady) Reset() {
 	*x = StreamReady{}
-	mi := &file_cineko_client_client_proto_msgTypes[53]
+	mi := &file_cineko_client_client_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7891,7 +7559,7 @@ func (x *StreamReady) String() string {
 func (*StreamReady) ProtoMessage() {}
 
 func (x *StreamReady) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[53]
+	mi := &file_cineko_client_client_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7954,7 +7622,7 @@ type StreamHeartbeat struct {
 
 func (x *StreamHeartbeat) Reset() {
 	*x = StreamHeartbeat{}
-	mi := &file_cineko_client_client_proto_msgTypes[54]
+	mi := &file_cineko_client_client_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7966,7 +7634,7 @@ func (x *StreamHeartbeat) String() string {
 func (*StreamHeartbeat) ProtoMessage() {}
 
 func (x *StreamHeartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[54]
+	mi := &file_cineko_client_client_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8029,7 +7697,7 @@ type RetentionGap struct {
 
 func (x *RetentionGap) Reset() {
 	*x = RetentionGap{}
-	mi := &file_cineko_client_client_proto_msgTypes[55]
+	mi := &file_cineko_client_client_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8041,7 +7709,7 @@ func (x *RetentionGap) String() string {
 func (*RetentionGap) ProtoMessage() {}
 
 func (x *RetentionGap) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[55]
+	mi := &file_cineko_client_client_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8104,7 +7772,7 @@ type InvalidCursor struct {
 
 func (x *InvalidCursor) Reset() {
 	*x = InvalidCursor{}
-	mi := &file_cineko_client_client_proto_msgTypes[56]
+	mi := &file_cineko_client_client_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8116,7 +7784,7 @@ func (x *InvalidCursor) String() string {
 func (*InvalidCursor) ProtoMessage() {}
 
 func (x *InvalidCursor) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[56]
+	mi := &file_cineko_client_client_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8180,7 +7848,7 @@ type StreamControl struct {
 
 func (x *StreamControl) Reset() {
 	*x = StreamControl{}
-	mi := &file_cineko_client_client_proto_msgTypes[57]
+	mi := &file_cineko_client_client_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8192,7 +7860,7 @@ func (x *StreamControl) String() string {
 func (*StreamControl) ProtoMessage() {}
 
 func (x *StreamControl) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[57]
+	mi := &file_cineko_client_client_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8424,7 +8092,7 @@ func (b0 StreamControl_builder) Build() *StreamControl {
 type case_StreamControl_Control protoreflect.FieldNumber
 
 func (x case_StreamControl_Control) String() string {
-	md := file_cineko_client_client_proto_msgTypes[57].Descriptor()
+	md := file_cineko_client_client_proto_msgTypes[54].Descriptor()
 	if x == 0 {
 		return "not set"
 	}
@@ -8478,7 +8146,7 @@ type LaunchContext struct {
 
 func (x *LaunchContext) Reset() {
 	*x = LaunchContext{}
-	mi := &file_cineko_client_client_proto_msgTypes[58]
+	mi := &file_cineko_client_client_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8490,7 +8158,7 @@ func (x *LaunchContext) String() string {
 func (*LaunchContext) ProtoMessage() {}
 
 func (x *LaunchContext) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[58]
+	mi := &file_cineko_client_client_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8810,7 +8478,7 @@ type LaunchEnvelope struct {
 
 func (x *LaunchEnvelope) Reset() {
 	*x = LaunchEnvelope{}
-	mi := &file_cineko_client_client_proto_msgTypes[59]
+	mi := &file_cineko_client_client_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8822,7 +8490,7 @@ func (x *LaunchEnvelope) String() string {
 func (*LaunchEnvelope) ProtoMessage() {}
 
 func (x *LaunchEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[59]
+	mi := &file_cineko_client_client_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8914,7 +8582,7 @@ type PinExchangeRequest struct {
 
 func (x *PinExchangeRequest) Reset() {
 	*x = PinExchangeRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[60]
+	mi := &file_cineko_client_client_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8926,7 +8594,7 @@ func (x *PinExchangeRequest) String() string {
 func (*PinExchangeRequest) ProtoMessage() {}
 
 func (x *PinExchangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[60]
+	mi := &file_cineko_client_client_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9057,7 +8725,7 @@ type TokenExchangeRequest struct {
 
 func (x *TokenExchangeRequest) Reset() {
 	*x = TokenExchangeRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[61]
+	mi := &file_cineko_client_client_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9069,7 +8737,7 @@ func (x *TokenExchangeRequest) String() string {
 func (*TokenExchangeRequest) ProtoMessage() {}
 
 func (x *TokenExchangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[61]
+	mi := &file_cineko_client_client_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9167,7 +8835,7 @@ type TokenRefreshRequest struct {
 
 func (x *TokenRefreshRequest) Reset() {
 	*x = TokenRefreshRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[62]
+	mi := &file_cineko_client_client_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9179,7 +8847,7 @@ func (x *TokenRefreshRequest) String() string {
 func (*TokenRefreshRequest) ProtoMessage() {}
 
 func (x *TokenRefreshRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[62]
+	mi := &file_cineko_client_client_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9250,7 +8918,7 @@ type AuthenticationResponse struct {
 
 func (x *AuthenticationResponse) Reset() {
 	*x = AuthenticationResponse{}
-	mi := &file_cineko_client_client_proto_msgTypes[63]
+	mi := &file_cineko_client_client_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9262,7 +8930,7 @@ func (x *AuthenticationResponse) String() string {
 func (*AuthenticationResponse) ProtoMessage() {}
 
 func (x *AuthenticationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[63]
+	mi := &file_cineko_client_client_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9457,7 +9125,7 @@ type LaunchTicketRequest struct {
 
 func (x *LaunchTicketRequest) Reset() {
 	*x = LaunchTicketRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[64]
+	mi := &file_cineko_client_client_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9469,7 +9137,7 @@ func (x *LaunchTicketRequest) String() string {
 func (*LaunchTicketRequest) ProtoMessage() {}
 
 func (x *LaunchTicketRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[64]
+	mi := &file_cineko_client_client_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9560,7 +9228,7 @@ type LaunchTicketResponse struct {
 
 func (x *LaunchTicketResponse) Reset() {
 	*x = LaunchTicketResponse{}
-	mi := &file_cineko_client_client_proto_msgTypes[65]
+	mi := &file_cineko_client_client_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9572,7 +9240,7 @@ func (x *LaunchTicketResponse) String() string {
 func (*LaunchTicketResponse) ProtoMessage() {}
 
 func (x *LaunchTicketResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[65]
+	mi := &file_cineko_client_client_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9666,7 +9334,7 @@ type ProbeBootstrapTicketRequest struct {
 
 func (x *ProbeBootstrapTicketRequest) Reset() {
 	*x = ProbeBootstrapTicketRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[66]
+	mi := &file_cineko_client_client_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9678,7 +9346,7 @@ func (x *ProbeBootstrapTicketRequest) String() string {
 func (*ProbeBootstrapTicketRequest) ProtoMessage() {}
 
 func (x *ProbeBootstrapTicketRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[66]
+	mi := &file_cineko_client_client_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9845,7 +9513,7 @@ type ProbeBootstrapTicketResponse struct {
 
 func (x *ProbeBootstrapTicketResponse) Reset() {
 	*x = ProbeBootstrapTicketResponse{}
-	mi := &file_cineko_client_client_proto_msgTypes[67]
+	mi := &file_cineko_client_client_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9857,7 +9525,7 @@ func (x *ProbeBootstrapTicketResponse) String() string {
 func (*ProbeBootstrapTicketResponse) ProtoMessage() {}
 
 func (x *ProbeBootstrapTicketResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[67]
+	mi := &file_cineko_client_client_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9948,7 +9616,7 @@ type SessionExchangeRequest struct {
 
 func (x *SessionExchangeRequest) Reset() {
 	*x = SessionExchangeRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[68]
+	mi := &file_cineko_client_client_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9960,7 +9628,7 @@ func (x *SessionExchangeRequest) String() string {
 func (*SessionExchangeRequest) ProtoMessage() {}
 
 func (x *SessionExchangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[68]
+	mi := &file_cineko_client_client_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10055,7 +9723,7 @@ type CatalogRequest struct {
 
 func (x *CatalogRequest) Reset() {
 	*x = CatalogRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[69]
+	mi := &file_cineko_client_client_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10067,7 +9735,7 @@ func (x *CatalogRequest) String() string {
 func (*CatalogRequest) ProtoMessage() {}
 
 func (x *CatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[69]
+	mi := &file_cineko_client_client_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10101,7 +9769,7 @@ type SeatMapRequest struct {
 
 func (x *SeatMapRequest) Reset() {
 	*x = SeatMapRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[70]
+	mi := &file_cineko_client_client_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10113,7 +9781,7 @@ func (x *SeatMapRequest) String() string {
 func (*SeatMapRequest) ProtoMessage() {}
 
 func (x *SeatMapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[70]
+	mi := &file_cineko_client_client_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10179,7 +9847,7 @@ type AuditoriumRequest struct {
 
 func (x *AuditoriumRequest) Reset() {
 	*x = AuditoriumRequest{}
-	mi := &file_cineko_client_client_proto_msgTypes[71]
+	mi := &file_cineko_client_client_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10191,7 +9859,7 @@ func (x *AuditoriumRequest) String() string {
 func (*AuditoriumRequest) ProtoMessage() {}
 
 func (x *AuditoriumRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[71]
+	mi := &file_cineko_client_client_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10255,7 +9923,7 @@ type AuditoriumResponse struct {
 
 func (x *AuditoriumResponse) Reset() {
 	*x = AuditoriumResponse{}
-	mi := &file_cineko_client_client_proto_msgTypes[72]
+	mi := &file_cineko_client_client_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10267,7 +9935,7 @@ func (x *AuditoriumResponse) String() string {
 func (*AuditoriumResponse) ProtoMessage() {}
 
 func (x *AuditoriumResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cineko_client_client_proto_msgTypes[72]
+	mi := &file_cineko_client_client_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10383,12 +10051,6 @@ const file_cineko_client_client_proto_rawDesc = "" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x10\n" +
-	"\x0eOpeningMonitor\"\x15\n" +
-	"\x13CancellationMonitor\"\xa1\x01\n" +
-	"\vMonitorMode\x129\n" +
-	"\aopening\x18\x01 \x01(\v2\x1d.cineko.client.OpeningMonitorH\x00R\aopening\x12H\n" +
-	"\fcancellation\x18\x02 \x01(\v2\".cineko.client.CancellationMonitorH\x00R\fcancellationB\r\n" +
-	"\x04mode\x12\x05\xbaH\x02\b\x01\"\x10\n" +
 	"\x0eMonitorPending\"\x10\n" +
 	"\x0eMonitorRunning\"\x12\n" +
 	"\x10MonitorTriggered\"\x17\n" +
@@ -10405,31 +10067,29 @@ const file_cineko_client_client_proto_rawDesc = "" +
 	"\x06failed\x18\x05 \x01(\v2\x1c.cineko.client.MonitorFailedH\x00R\x06failed\x129\n" +
 	"\astopped\x18\x06 \x01(\v2\x1d.cineko.client.MonitorStoppedH\x00R\astopped\x12O\n" +
 	"\x0fpayment_unknown\x18\a \x01(\v2$.cineko.client.MonitorPaymentUnknownH\x00R\x0epaymentUnknownB\x0e\n" +
-	"\x05state\x12\x05\xbaH\x02\b\x01\"\xee\x06\n" +
+	"\x05state\x12\x05\xbaH\x02\b\x01\"\xd0\x05\n" +
 	"\aMonitor\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
-	"\tpreset_id\x18\x03 \x01(\tR\bpresetId\x12.\n" +
-	"\x04mode\x18\x04 \x01(\v2\x1a.cineko.client.MonitorModeR\x04mode\x12\x19\n" +
-	"\bmovie_id\x18\x05 \x01(\tR\amovieId\x12\x1f\n" +
-	"\vmovie_title\x18\x06 \x01(\tR\n" +
-	"movieTitle\x12;\n" +
-	"\ftarget_dates\x18\a \x03(\v2\x18.cineko.common.LocalDateR\vtargetDates\x12'\n" +
-	"\x0ftarget_weekdays\x18\b \x03(\x05R\x0etargetWeekdays\x12.\n" +
-	"\x13search_horizon_days\x18\t \x01(\x05R\x11searchHorizonDays\x12=\n" +
-	"\rearliest_time\x18\n" +
-	" \x01(\v2\x18.cineko.common.LocalTimeR\fearliestTime\x129\n" +
-	"\vlatest_time\x18\v \x01(\v2\x18.cineko.common.LocalTimeR\n" +
-	"latestTime\x12>\n" +
-	"\rpoll_interval\x18\f \x01(\v2\x19.google.protobuf.DurationR\fpollInterval\x12M\n" +
-	"\x15maximum_poll_interval\x18\r \x01(\v2\x19.google.protobuf.DurationR\x13maximumPollInterval\x121\n" +
-	"\x05state\x18\x0e \x01(\v2\x1b.cineko.client.MonitorStateR\x05state\x12B\n" +
-	"\x0flast_checked_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\rlastCheckedAt\x12%\n" +
-	"\x0ereservation_id\x18\x10 \x01(\tR\rreservationId\x129\n" +
+	"\tpreset_id\x18\x03 \x01(\tR\bpresetId\x12\x19\n" +
+	"\bmovie_id\x18\x04 \x01(\tR\amovieId\x12\x1f\n" +
+	"\vmovie_title\x18\x05 \x01(\tR\n" +
+	"movieTitle\x12E\n" +
+	"\ftarget_dates\x18\x06 \x03(\v2\x18.cineko.common.LocalDateB\b\xbaH\x05\x92\x01\x02\x10\x0eR\vtargetDates\x123\n" +
+	"\x0ftarget_weekdays\x18\a \x03(\x05B\n" +
+	"\xbaH\a\x92\x01\x04\x10\a\x18\x01R\x0etargetWeekdays\x129\n" +
+	"\x13search_horizon_days\x18\b \x01(\x05B\t\xbaH\x06\x1a\x04\x18\x0e(\x01R\x11searchHorizonDays\x12=\n" +
+	"\rearliest_time\x18\t \x01(\v2\x18.cineko.common.LocalTimeR\fearliestTime\x129\n" +
+	"\vlatest_time\x18\n" +
+	" \x01(\v2\x18.cineko.common.LocalTimeR\n" +
+	"latestTime\x121\n" +
+	"\x05state\x18\v \x01(\v2\x1b.cineko.client.MonitorStateR\x05state\x12B\n" +
+	"\x0flast_checked_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\rlastCheckedAt\x12%\n" +
+	"\x0ereservation_id\x18\r \x01(\tR\rreservationId\x129\n" +
 	"\n" +
-	"created_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xb5\x06\n" +
+	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xb5\x06\n" +
 	"\vReservation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
@@ -10659,7 +10319,7 @@ const file_cineko_client_client_proto_rawDesc = "" +
 	"\x12AuditoriumResponse\x12<\n" +
 	"\vauditoriums\x18\x01 \x03(\v2\x1a.cineko.catalog.AuditoriumR\vauditoriumsB=Z;github.com/cineko-org/contracts/gen/go/cineko/client;clientb\beditionsp\xe9\a"
 
-var file_cineko_client_client_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
+var file_cineko_client_client_proto_msgTypes = make([]protoimpl.MessageInfo, 72)
 var file_cineko_client_client_proto_goTypes = []any{
 	(*User)(nil),                              // 0: cineko.client.User
 	(*Device)(nil),                            // 1: cineko.client.Device
@@ -10671,184 +10331,175 @@ var file_cineko_client_client_proto_goTypes = []any{
 	(*SeatZone)(nil),                          // 7: cineko.client.SeatZone
 	(*SeatPreference)(nil),                    // 8: cineko.client.SeatPreference
 	(*Preset)(nil),                            // 9: cineko.client.Preset
-	(*OpeningMonitor)(nil),                    // 10: cineko.client.OpeningMonitor
-	(*CancellationMonitor)(nil),               // 11: cineko.client.CancellationMonitor
-	(*MonitorMode)(nil),                       // 12: cineko.client.MonitorMode
-	(*MonitorPending)(nil),                    // 13: cineko.client.MonitorPending
-	(*MonitorRunning)(nil),                    // 14: cineko.client.MonitorRunning
-	(*MonitorTriggered)(nil),                  // 15: cineko.client.MonitorTriggered
-	(*MonitorPaymentUnknown)(nil),             // 16: cineko.client.MonitorPaymentUnknown
-	(*MonitorBooked)(nil),                     // 17: cineko.client.MonitorBooked
-	(*MonitorFailed)(nil),                     // 18: cineko.client.MonitorFailed
-	(*MonitorStopped)(nil),                    // 19: cineko.client.MonitorStopped
-	(*MonitorState)(nil),                      // 20: cineko.client.MonitorState
-	(*Monitor)(nil),                           // 21: cineko.client.Monitor
-	(*Reservation)(nil),                       // 22: cineko.client.Reservation
-	(*ReservationPrepared)(nil),               // 23: cineko.client.ReservationPrepared
-	(*ReservationBooked)(nil),                 // 24: cineko.client.ReservationBooked
-	(*ReservationCancellationCommitting)(nil), // 25: cineko.client.ReservationCancellationCommitting
-	(*ReservationCancellationUnknown)(nil),    // 26: cineko.client.ReservationCancellationUnknown
-	(*ReservationCancelled)(nil),              // 27: cineko.client.ReservationCancelled
-	(*ExternalOperation)(nil),                 // 28: cineko.client.ExternalOperation
-	(*CancellationOperation)(nil),             // 29: cineko.client.CancellationOperation
-	(*OperationPrepared)(nil),                 // 30: cineko.client.OperationPrepared
-	(*OperationUnknown)(nil),                  // 31: cineko.client.OperationUnknown
-	(*OperationAttentionRequired)(nil),        // 32: cineko.client.OperationAttentionRequired
-	(*OperationConfirmed)(nil),                // 33: cineko.client.OperationConfirmed
-	(*OperationReconciled)(nil),               // 34: cineko.client.OperationReconciled
-	(*AppEvent)(nil),                          // 35: cineko.client.AppEvent
-	(*EventInfo)(nil),                         // 36: cineko.client.EventInfo
-	(*EventSuccess)(nil),                      // 37: cineko.client.EventSuccess
-	(*EventWarning)(nil),                      // 38: cineko.client.EventWarning
-	(*EventError)(nil),                        // 39: cineko.client.EventError
-	(*Resource)(nil),                          // 40: cineko.client.Resource
-	(*SettingsResource)(nil),                  // 41: cineko.client.SettingsResource
-	(*PresetResource)(nil),                    // 42: cineko.client.PresetResource
-	(*MonitorResource)(nil),                   // 43: cineko.client.MonitorResource
-	(*ReservationResource)(nil),               // 44: cineko.client.ReservationResource
-	(*ExternalOperationResource)(nil),         // 45: cineko.client.ExternalOperationResource
-	(*AppEventResource)(nil),                  // 46: cineko.client.AppEventResource
-	(*ResourceKind)(nil),                      // 47: cineko.client.ResourceKind
-	(*Bootstrap)(nil),                         // 48: cineko.client.Bootstrap
-	(*EventResource)(nil),                     // 49: cineko.client.EventResource
-	(*ClientEvent)(nil),                       // 50: cineko.client.ClientEvent
-	(*ExecutionReady)(nil),                    // 51: cineko.client.ExecutionReady
-	(*DeletedResource)(nil),                   // 52: cineko.client.DeletedResource
-	(*StreamReady)(nil),                       // 53: cineko.client.StreamReady
-	(*StreamHeartbeat)(nil),                   // 54: cineko.client.StreamHeartbeat
-	(*RetentionGap)(nil),                      // 55: cineko.client.RetentionGap
-	(*InvalidCursor)(nil),                     // 56: cineko.client.InvalidCursor
-	(*StreamControl)(nil),                     // 57: cineko.client.StreamControl
-	(*LaunchContext)(nil),                     // 58: cineko.client.LaunchContext
-	(*LaunchEnvelope)(nil),                    // 59: cineko.client.LaunchEnvelope
-	(*PinExchangeRequest)(nil),                // 60: cineko.client.PinExchangeRequest
-	(*TokenExchangeRequest)(nil),              // 61: cineko.client.TokenExchangeRequest
-	(*TokenRefreshRequest)(nil),               // 62: cineko.client.TokenRefreshRequest
-	(*AuthenticationResponse)(nil),            // 63: cineko.client.AuthenticationResponse
-	(*LaunchTicketRequest)(nil),               // 64: cineko.client.LaunchTicketRequest
-	(*LaunchTicketResponse)(nil),              // 65: cineko.client.LaunchTicketResponse
-	(*ProbeBootstrapTicketRequest)(nil),       // 66: cineko.client.ProbeBootstrapTicketRequest
-	(*ProbeBootstrapTicketResponse)(nil),      // 67: cineko.client.ProbeBootstrapTicketResponse
-	(*SessionExchangeRequest)(nil),            // 68: cineko.client.SessionExchangeRequest
-	(*CatalogRequest)(nil),                    // 69: cineko.client.CatalogRequest
-	(*SeatMapRequest)(nil),                    // 70: cineko.client.SeatMapRequest
-	(*AuditoriumRequest)(nil),                 // 71: cineko.client.AuditoriumRequest
-	(*AuditoriumResponse)(nil),                // 72: cineko.client.AuditoriumResponse
-	nil,                                       // 73: cineko.client.Bootstrap.RevisionsEntry
-	nil,                                       // 74: cineko.client.Bootstrap.FeaturesEntry
-	(*timestamppb.Timestamp)(nil),             // 75: google.protobuf.Timestamp
-	(*common.LocalDate)(nil),                  // 76: cineko.common.LocalDate
-	(*common.LocalTime)(nil),                  // 77: cineko.common.LocalTime
-	(*durationpb.Duration)(nil),               // 78: google.protobuf.Duration
-	(*catalog.Showtime)(nil),                  // 79: cineko.catalog.Showtime
-	(*common.ResourceIdentity)(nil),           // 80: cineko.common.ResourceIdentity
-	(*observation.Capability)(nil),            // 81: cineko.observation.Capability
-	(*common.Runtime)(nil),                    // 82: cineko.common.Runtime
-	(*catalog.Auditorium)(nil),                // 83: cineko.catalog.Auditorium
+	(*MonitorPending)(nil),                    // 10: cineko.client.MonitorPending
+	(*MonitorRunning)(nil),                    // 11: cineko.client.MonitorRunning
+	(*MonitorTriggered)(nil),                  // 12: cineko.client.MonitorTriggered
+	(*MonitorPaymentUnknown)(nil),             // 13: cineko.client.MonitorPaymentUnknown
+	(*MonitorBooked)(nil),                     // 14: cineko.client.MonitorBooked
+	(*MonitorFailed)(nil),                     // 15: cineko.client.MonitorFailed
+	(*MonitorStopped)(nil),                    // 16: cineko.client.MonitorStopped
+	(*MonitorState)(nil),                      // 17: cineko.client.MonitorState
+	(*Monitor)(nil),                           // 18: cineko.client.Monitor
+	(*Reservation)(nil),                       // 19: cineko.client.Reservation
+	(*ReservationPrepared)(nil),               // 20: cineko.client.ReservationPrepared
+	(*ReservationBooked)(nil),                 // 21: cineko.client.ReservationBooked
+	(*ReservationCancellationCommitting)(nil), // 22: cineko.client.ReservationCancellationCommitting
+	(*ReservationCancellationUnknown)(nil),    // 23: cineko.client.ReservationCancellationUnknown
+	(*ReservationCancelled)(nil),              // 24: cineko.client.ReservationCancelled
+	(*ExternalOperation)(nil),                 // 25: cineko.client.ExternalOperation
+	(*CancellationOperation)(nil),             // 26: cineko.client.CancellationOperation
+	(*OperationPrepared)(nil),                 // 27: cineko.client.OperationPrepared
+	(*OperationUnknown)(nil),                  // 28: cineko.client.OperationUnknown
+	(*OperationAttentionRequired)(nil),        // 29: cineko.client.OperationAttentionRequired
+	(*OperationConfirmed)(nil),                // 30: cineko.client.OperationConfirmed
+	(*OperationReconciled)(nil),               // 31: cineko.client.OperationReconciled
+	(*AppEvent)(nil),                          // 32: cineko.client.AppEvent
+	(*EventInfo)(nil),                         // 33: cineko.client.EventInfo
+	(*EventSuccess)(nil),                      // 34: cineko.client.EventSuccess
+	(*EventWarning)(nil),                      // 35: cineko.client.EventWarning
+	(*EventError)(nil),                        // 36: cineko.client.EventError
+	(*Resource)(nil),                          // 37: cineko.client.Resource
+	(*SettingsResource)(nil),                  // 38: cineko.client.SettingsResource
+	(*PresetResource)(nil),                    // 39: cineko.client.PresetResource
+	(*MonitorResource)(nil),                   // 40: cineko.client.MonitorResource
+	(*ReservationResource)(nil),               // 41: cineko.client.ReservationResource
+	(*ExternalOperationResource)(nil),         // 42: cineko.client.ExternalOperationResource
+	(*AppEventResource)(nil),                  // 43: cineko.client.AppEventResource
+	(*ResourceKind)(nil),                      // 44: cineko.client.ResourceKind
+	(*Bootstrap)(nil),                         // 45: cineko.client.Bootstrap
+	(*EventResource)(nil),                     // 46: cineko.client.EventResource
+	(*ClientEvent)(nil),                       // 47: cineko.client.ClientEvent
+	(*ExecutionReady)(nil),                    // 48: cineko.client.ExecutionReady
+	(*DeletedResource)(nil),                   // 49: cineko.client.DeletedResource
+	(*StreamReady)(nil),                       // 50: cineko.client.StreamReady
+	(*StreamHeartbeat)(nil),                   // 51: cineko.client.StreamHeartbeat
+	(*RetentionGap)(nil),                      // 52: cineko.client.RetentionGap
+	(*InvalidCursor)(nil),                     // 53: cineko.client.InvalidCursor
+	(*StreamControl)(nil),                     // 54: cineko.client.StreamControl
+	(*LaunchContext)(nil),                     // 55: cineko.client.LaunchContext
+	(*LaunchEnvelope)(nil),                    // 56: cineko.client.LaunchEnvelope
+	(*PinExchangeRequest)(nil),                // 57: cineko.client.PinExchangeRequest
+	(*TokenExchangeRequest)(nil),              // 58: cineko.client.TokenExchangeRequest
+	(*TokenRefreshRequest)(nil),               // 59: cineko.client.TokenRefreshRequest
+	(*AuthenticationResponse)(nil),            // 60: cineko.client.AuthenticationResponse
+	(*LaunchTicketRequest)(nil),               // 61: cineko.client.LaunchTicketRequest
+	(*LaunchTicketResponse)(nil),              // 62: cineko.client.LaunchTicketResponse
+	(*ProbeBootstrapTicketRequest)(nil),       // 63: cineko.client.ProbeBootstrapTicketRequest
+	(*ProbeBootstrapTicketResponse)(nil),      // 64: cineko.client.ProbeBootstrapTicketResponse
+	(*SessionExchangeRequest)(nil),            // 65: cineko.client.SessionExchangeRequest
+	(*CatalogRequest)(nil),                    // 66: cineko.client.CatalogRequest
+	(*SeatMapRequest)(nil),                    // 67: cineko.client.SeatMapRequest
+	(*AuditoriumRequest)(nil),                 // 68: cineko.client.AuditoriumRequest
+	(*AuditoriumResponse)(nil),                // 69: cineko.client.AuditoriumResponse
+	nil,                                       // 70: cineko.client.Bootstrap.RevisionsEntry
+	nil,                                       // 71: cineko.client.Bootstrap.FeaturesEntry
+	(*timestamppb.Timestamp)(nil),             // 72: google.protobuf.Timestamp
+	(*common.LocalDate)(nil),                  // 73: cineko.common.LocalDate
+	(*common.LocalTime)(nil),                  // 74: cineko.common.LocalTime
+	(*catalog.Showtime)(nil),                  // 75: cineko.catalog.Showtime
+	(*common.ResourceIdentity)(nil),           // 76: cineko.common.ResourceIdentity
+	(*observation.Capability)(nil),            // 77: cineko.observation.Capability
+	(*common.Runtime)(nil),                    // 78: cineko.common.Runtime
+	(*catalog.Auditorium)(nil),                // 79: cineko.catalog.Auditorium
 }
 var file_cineko_client_client_proto_depIdxs = []int32{
-	75, // 0: cineko.client.User.created_at:type_name -> google.protobuf.Timestamp
-	75, // 1: cineko.client.User.updated_at:type_name -> google.protobuf.Timestamp
-	75, // 2: cineko.client.Device.last_seen_at:type_name -> google.protobuf.Timestamp
-	75, // 3: cineko.client.Device.created_at:type_name -> google.protobuf.Timestamp
-	75, // 4: cineko.client.Device.updated_at:type_name -> google.protobuf.Timestamp
+	72, // 0: cineko.client.User.created_at:type_name -> google.protobuf.Timestamp
+	72, // 1: cineko.client.User.updated_at:type_name -> google.protobuf.Timestamp
+	72, // 2: cineko.client.Device.last_seen_at:type_name -> google.protobuf.Timestamp
+	72, // 3: cineko.client.Device.created_at:type_name -> google.protobuf.Timestamp
+	72, // 4: cineko.client.Device.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 5: cineko.client.NetworkSettings.direct:type_name -> cineko.client.DirectNetwork
 	3,  // 6: cineko.client.NetworkSettings.proxy:type_name -> cineko.client.ProxyNetwork
 	4,  // 7: cineko.client.Settings.network:type_name -> cineko.client.NetworkSettings
 	5,  // 8: cineko.client.Settings.webhooks:type_name -> cineko.client.WebhookTarget
 	7,  // 9: cineko.client.SeatPreference.preferred_zones:type_name -> cineko.client.SeatZone
 	8,  // 10: cineko.client.Preset.seat_preference:type_name -> cineko.client.SeatPreference
-	75, // 11: cineko.client.Preset.created_at:type_name -> google.protobuf.Timestamp
-	75, // 12: cineko.client.Preset.updated_at:type_name -> google.protobuf.Timestamp
-	10, // 13: cineko.client.MonitorMode.opening:type_name -> cineko.client.OpeningMonitor
-	11, // 14: cineko.client.MonitorMode.cancellation:type_name -> cineko.client.CancellationMonitor
-	13, // 15: cineko.client.MonitorState.pending:type_name -> cineko.client.MonitorPending
-	14, // 16: cineko.client.MonitorState.running:type_name -> cineko.client.MonitorRunning
-	15, // 17: cineko.client.MonitorState.triggered:type_name -> cineko.client.MonitorTriggered
-	17, // 18: cineko.client.MonitorState.booked:type_name -> cineko.client.MonitorBooked
-	18, // 19: cineko.client.MonitorState.failed:type_name -> cineko.client.MonitorFailed
-	19, // 20: cineko.client.MonitorState.stopped:type_name -> cineko.client.MonitorStopped
-	16, // 21: cineko.client.MonitorState.payment_unknown:type_name -> cineko.client.MonitorPaymentUnknown
-	12, // 22: cineko.client.Monitor.mode:type_name -> cineko.client.MonitorMode
-	76, // 23: cineko.client.Monitor.target_dates:type_name -> cineko.common.LocalDate
-	77, // 24: cineko.client.Monitor.earliest_time:type_name -> cineko.common.LocalTime
-	77, // 25: cineko.client.Monitor.latest_time:type_name -> cineko.common.LocalTime
-	78, // 26: cineko.client.Monitor.poll_interval:type_name -> google.protobuf.Duration
-	78, // 27: cineko.client.Monitor.maximum_poll_interval:type_name -> google.protobuf.Duration
-	20, // 28: cineko.client.Monitor.state:type_name -> cineko.client.MonitorState
-	75, // 29: cineko.client.Monitor.last_checked_at:type_name -> google.protobuf.Timestamp
-	75, // 30: cineko.client.Monitor.created_at:type_name -> google.protobuf.Timestamp
-	75, // 31: cineko.client.Monitor.updated_at:type_name -> google.protobuf.Timestamp
-	75, // 32: cineko.client.Reservation.booked_at:type_name -> google.protobuf.Timestamp
-	75, // 33: cineko.client.Reservation.cancelled_at:type_name -> google.protobuf.Timestamp
-	23, // 34: cineko.client.Reservation.prepared:type_name -> cineko.client.ReservationPrepared
-	24, // 35: cineko.client.Reservation.booked:type_name -> cineko.client.ReservationBooked
-	25, // 36: cineko.client.Reservation.cancellation_committing:type_name -> cineko.client.ReservationCancellationCommitting
-	26, // 37: cineko.client.Reservation.cancellation_unknown:type_name -> cineko.client.ReservationCancellationUnknown
-	27, // 38: cineko.client.Reservation.cancelled:type_name -> cineko.client.ReservationCancelled
-	79, // 39: cineko.client.Reservation.showtime:type_name -> cineko.catalog.Showtime
-	75, // 40: cineko.client.ExternalOperation.created_at:type_name -> google.protobuf.Timestamp
-	75, // 41: cineko.client.ExternalOperation.updated_at:type_name -> google.protobuf.Timestamp
-	29, // 42: cineko.client.ExternalOperation.cancellation:type_name -> cineko.client.CancellationOperation
-	30, // 43: cineko.client.ExternalOperation.prepared:type_name -> cineko.client.OperationPrepared
-	31, // 44: cineko.client.ExternalOperation.unknown:type_name -> cineko.client.OperationUnknown
-	32, // 45: cineko.client.ExternalOperation.attention_required:type_name -> cineko.client.OperationAttentionRequired
-	33, // 46: cineko.client.ExternalOperation.confirmed:type_name -> cineko.client.OperationConfirmed
-	34, // 47: cineko.client.ExternalOperation.reconciled:type_name -> cineko.client.OperationReconciled
-	75, // 48: cineko.client.AppEvent.created_at:type_name -> google.protobuf.Timestamp
-	75, // 49: cineko.client.AppEvent.read_at:type_name -> google.protobuf.Timestamp
-	36, // 50: cineko.client.AppEvent.info:type_name -> cineko.client.EventInfo
-	37, // 51: cineko.client.AppEvent.success:type_name -> cineko.client.EventSuccess
-	38, // 52: cineko.client.AppEvent.warning:type_name -> cineko.client.EventWarning
-	39, // 53: cineko.client.AppEvent.error:type_name -> cineko.client.EventError
-	80, // 54: cineko.client.Resource.identity:type_name -> cineko.common.ResourceIdentity
-	6,  // 55: cineko.client.Resource.settings:type_name -> cineko.client.Settings
-	9,  // 56: cineko.client.Resource.preset:type_name -> cineko.client.Preset
-	21, // 57: cineko.client.Resource.monitor:type_name -> cineko.client.Monitor
-	22, // 58: cineko.client.Resource.reservation:type_name -> cineko.client.Reservation
-	28, // 59: cineko.client.Resource.external_operation:type_name -> cineko.client.ExternalOperation
-	35, // 60: cineko.client.Resource.app_event:type_name -> cineko.client.AppEvent
-	41, // 61: cineko.client.ResourceKind.settings:type_name -> cineko.client.SettingsResource
-	42, // 62: cineko.client.ResourceKind.preset:type_name -> cineko.client.PresetResource
-	43, // 63: cineko.client.ResourceKind.monitor:type_name -> cineko.client.MonitorResource
-	44, // 64: cineko.client.ResourceKind.reservation:type_name -> cineko.client.ReservationResource
-	45, // 65: cineko.client.ResourceKind.external_operation:type_name -> cineko.client.ExternalOperationResource
-	46, // 66: cineko.client.ResourceKind.app_event:type_name -> cineko.client.AppEventResource
-	0,  // 67: cineko.client.Bootstrap.user:type_name -> cineko.client.User
-	73, // 68: cineko.client.Bootstrap.revisions:type_name -> cineko.client.Bootstrap.RevisionsEntry
-	74, // 69: cineko.client.Bootstrap.features:type_name -> cineko.client.Bootstrap.FeaturesEntry
-	1,  // 70: cineko.client.Bootstrap.device:type_name -> cineko.client.Device
-	6,  // 71: cineko.client.EventResource.settings:type_name -> cineko.client.Settings
-	9,  // 72: cineko.client.EventResource.preset:type_name -> cineko.client.Preset
-	21, // 73: cineko.client.EventResource.monitor:type_name -> cineko.client.Monitor
-	22, // 74: cineko.client.EventResource.reservation:type_name -> cineko.client.Reservation
-	28, // 75: cineko.client.EventResource.external_operation:type_name -> cineko.client.ExternalOperation
-	35, // 76: cineko.client.EventResource.app_event:type_name -> cineko.client.AppEvent
-	75, // 77: cineko.client.ClientEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	49, // 78: cineko.client.ClientEvent.upserted:type_name -> cineko.client.EventResource
-	52, // 79: cineko.client.ClientEvent.deleted:type_name -> cineko.client.DeletedResource
-	51, // 80: cineko.client.ClientEvent.execution_ready:type_name -> cineko.client.ExecutionReady
-	47, // 81: cineko.client.DeletedResource.kind:type_name -> cineko.client.ResourceKind
-	53, // 82: cineko.client.StreamControl.ready:type_name -> cineko.client.StreamReady
-	54, // 83: cineko.client.StreamControl.heartbeat:type_name -> cineko.client.StreamHeartbeat
-	55, // 84: cineko.client.StreamControl.retention_gap:type_name -> cineko.client.RetentionGap
-	56, // 85: cineko.client.StreamControl.invalid_cursor:type_name -> cineko.client.InvalidCursor
-	58, // 86: cineko.client.LaunchEnvelope.context:type_name -> cineko.client.LaunchContext
-	75, // 87: cineko.client.AuthenticationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	75, // 88: cineko.client.AuthenticationResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
-	0,  // 89: cineko.client.AuthenticationResponse.user:type_name -> cineko.client.User
-	58, // 90: cineko.client.AuthenticationResponse.launch:type_name -> cineko.client.LaunchContext
-	58, // 91: cineko.client.LaunchTicketRequest.context:type_name -> cineko.client.LaunchContext
-	75, // 92: cineko.client.LaunchTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
-	81, // 93: cineko.client.ProbeBootstrapTicketRequest.capabilities:type_name -> cineko.observation.Capability
-	82, // 94: cineko.client.ProbeBootstrapTicketRequest.runtime:type_name -> cineko.common.Runtime
-	75, // 95: cineko.client.ProbeBootstrapTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
-	83, // 96: cineko.client.AuditoriumResponse.auditoriums:type_name -> cineko.catalog.Auditorium
-	97, // [97:97] is the sub-list for method output_type
-	97, // [97:97] is the sub-list for method input_type
-	97, // [97:97] is the sub-list for extension type_name
-	97, // [97:97] is the sub-list for extension extendee
-	0,  // [0:97] is the sub-list for field type_name
+	72, // 11: cineko.client.Preset.created_at:type_name -> google.protobuf.Timestamp
+	72, // 12: cineko.client.Preset.updated_at:type_name -> google.protobuf.Timestamp
+	10, // 13: cineko.client.MonitorState.pending:type_name -> cineko.client.MonitorPending
+	11, // 14: cineko.client.MonitorState.running:type_name -> cineko.client.MonitorRunning
+	12, // 15: cineko.client.MonitorState.triggered:type_name -> cineko.client.MonitorTriggered
+	14, // 16: cineko.client.MonitorState.booked:type_name -> cineko.client.MonitorBooked
+	15, // 17: cineko.client.MonitorState.failed:type_name -> cineko.client.MonitorFailed
+	16, // 18: cineko.client.MonitorState.stopped:type_name -> cineko.client.MonitorStopped
+	13, // 19: cineko.client.MonitorState.payment_unknown:type_name -> cineko.client.MonitorPaymentUnknown
+	73, // 20: cineko.client.Monitor.target_dates:type_name -> cineko.common.LocalDate
+	74, // 21: cineko.client.Monitor.earliest_time:type_name -> cineko.common.LocalTime
+	74, // 22: cineko.client.Monitor.latest_time:type_name -> cineko.common.LocalTime
+	17, // 23: cineko.client.Monitor.state:type_name -> cineko.client.MonitorState
+	72, // 24: cineko.client.Monitor.last_checked_at:type_name -> google.protobuf.Timestamp
+	72, // 25: cineko.client.Monitor.created_at:type_name -> google.protobuf.Timestamp
+	72, // 26: cineko.client.Monitor.updated_at:type_name -> google.protobuf.Timestamp
+	72, // 27: cineko.client.Reservation.booked_at:type_name -> google.protobuf.Timestamp
+	72, // 28: cineko.client.Reservation.cancelled_at:type_name -> google.protobuf.Timestamp
+	20, // 29: cineko.client.Reservation.prepared:type_name -> cineko.client.ReservationPrepared
+	21, // 30: cineko.client.Reservation.booked:type_name -> cineko.client.ReservationBooked
+	22, // 31: cineko.client.Reservation.cancellation_committing:type_name -> cineko.client.ReservationCancellationCommitting
+	23, // 32: cineko.client.Reservation.cancellation_unknown:type_name -> cineko.client.ReservationCancellationUnknown
+	24, // 33: cineko.client.Reservation.cancelled:type_name -> cineko.client.ReservationCancelled
+	75, // 34: cineko.client.Reservation.showtime:type_name -> cineko.catalog.Showtime
+	72, // 35: cineko.client.ExternalOperation.created_at:type_name -> google.protobuf.Timestamp
+	72, // 36: cineko.client.ExternalOperation.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 37: cineko.client.ExternalOperation.cancellation:type_name -> cineko.client.CancellationOperation
+	27, // 38: cineko.client.ExternalOperation.prepared:type_name -> cineko.client.OperationPrepared
+	28, // 39: cineko.client.ExternalOperation.unknown:type_name -> cineko.client.OperationUnknown
+	29, // 40: cineko.client.ExternalOperation.attention_required:type_name -> cineko.client.OperationAttentionRequired
+	30, // 41: cineko.client.ExternalOperation.confirmed:type_name -> cineko.client.OperationConfirmed
+	31, // 42: cineko.client.ExternalOperation.reconciled:type_name -> cineko.client.OperationReconciled
+	72, // 43: cineko.client.AppEvent.created_at:type_name -> google.protobuf.Timestamp
+	72, // 44: cineko.client.AppEvent.read_at:type_name -> google.protobuf.Timestamp
+	33, // 45: cineko.client.AppEvent.info:type_name -> cineko.client.EventInfo
+	34, // 46: cineko.client.AppEvent.success:type_name -> cineko.client.EventSuccess
+	35, // 47: cineko.client.AppEvent.warning:type_name -> cineko.client.EventWarning
+	36, // 48: cineko.client.AppEvent.error:type_name -> cineko.client.EventError
+	76, // 49: cineko.client.Resource.identity:type_name -> cineko.common.ResourceIdentity
+	6,  // 50: cineko.client.Resource.settings:type_name -> cineko.client.Settings
+	9,  // 51: cineko.client.Resource.preset:type_name -> cineko.client.Preset
+	18, // 52: cineko.client.Resource.monitor:type_name -> cineko.client.Monitor
+	19, // 53: cineko.client.Resource.reservation:type_name -> cineko.client.Reservation
+	25, // 54: cineko.client.Resource.external_operation:type_name -> cineko.client.ExternalOperation
+	32, // 55: cineko.client.Resource.app_event:type_name -> cineko.client.AppEvent
+	38, // 56: cineko.client.ResourceKind.settings:type_name -> cineko.client.SettingsResource
+	39, // 57: cineko.client.ResourceKind.preset:type_name -> cineko.client.PresetResource
+	40, // 58: cineko.client.ResourceKind.monitor:type_name -> cineko.client.MonitorResource
+	41, // 59: cineko.client.ResourceKind.reservation:type_name -> cineko.client.ReservationResource
+	42, // 60: cineko.client.ResourceKind.external_operation:type_name -> cineko.client.ExternalOperationResource
+	43, // 61: cineko.client.ResourceKind.app_event:type_name -> cineko.client.AppEventResource
+	0,  // 62: cineko.client.Bootstrap.user:type_name -> cineko.client.User
+	70, // 63: cineko.client.Bootstrap.revisions:type_name -> cineko.client.Bootstrap.RevisionsEntry
+	71, // 64: cineko.client.Bootstrap.features:type_name -> cineko.client.Bootstrap.FeaturesEntry
+	1,  // 65: cineko.client.Bootstrap.device:type_name -> cineko.client.Device
+	6,  // 66: cineko.client.EventResource.settings:type_name -> cineko.client.Settings
+	9,  // 67: cineko.client.EventResource.preset:type_name -> cineko.client.Preset
+	18, // 68: cineko.client.EventResource.monitor:type_name -> cineko.client.Monitor
+	19, // 69: cineko.client.EventResource.reservation:type_name -> cineko.client.Reservation
+	25, // 70: cineko.client.EventResource.external_operation:type_name -> cineko.client.ExternalOperation
+	32, // 71: cineko.client.EventResource.app_event:type_name -> cineko.client.AppEvent
+	72, // 72: cineko.client.ClientEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	46, // 73: cineko.client.ClientEvent.upserted:type_name -> cineko.client.EventResource
+	49, // 74: cineko.client.ClientEvent.deleted:type_name -> cineko.client.DeletedResource
+	48, // 75: cineko.client.ClientEvent.execution_ready:type_name -> cineko.client.ExecutionReady
+	44, // 76: cineko.client.DeletedResource.kind:type_name -> cineko.client.ResourceKind
+	50, // 77: cineko.client.StreamControl.ready:type_name -> cineko.client.StreamReady
+	51, // 78: cineko.client.StreamControl.heartbeat:type_name -> cineko.client.StreamHeartbeat
+	52, // 79: cineko.client.StreamControl.retention_gap:type_name -> cineko.client.RetentionGap
+	53, // 80: cineko.client.StreamControl.invalid_cursor:type_name -> cineko.client.InvalidCursor
+	55, // 81: cineko.client.LaunchEnvelope.context:type_name -> cineko.client.LaunchContext
+	72, // 82: cineko.client.AuthenticationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	72, // 83: cineko.client.AuthenticationResponse.refresh_expires_at:type_name -> google.protobuf.Timestamp
+	0,  // 84: cineko.client.AuthenticationResponse.user:type_name -> cineko.client.User
+	55, // 85: cineko.client.AuthenticationResponse.launch:type_name -> cineko.client.LaunchContext
+	55, // 86: cineko.client.LaunchTicketRequest.context:type_name -> cineko.client.LaunchContext
+	72, // 87: cineko.client.LaunchTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
+	77, // 88: cineko.client.ProbeBootstrapTicketRequest.capabilities:type_name -> cineko.observation.Capability
+	78, // 89: cineko.client.ProbeBootstrapTicketRequest.runtime:type_name -> cineko.common.Runtime
+	72, // 90: cineko.client.ProbeBootstrapTicketResponse.expires_at:type_name -> google.protobuf.Timestamp
+	79, // 91: cineko.client.AuditoriumResponse.auditoriums:type_name -> cineko.catalog.Auditorium
+	92, // [92:92] is the sub-list for method output_type
+	92, // [92:92] is the sub-list for method input_type
+	92, // [92:92] is the sub-list for extension type_name
+	92, // [92:92] is the sub-list for extension extendee
+	0,  // [0:92] is the sub-list for field type_name
 }
 
 func init() { file_cineko_client_client_proto_init() }
@@ -10860,11 +10511,7 @@ func file_cineko_client_client_proto_init() {
 		(*networkSettings_Direct)(nil),
 		(*networkSettings_Proxy)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[12].OneofWrappers = []any{
-		(*monitorMode_Opening)(nil),
-		(*monitorMode_Cancellation)(nil),
-	}
-	file_cineko_client_client_proto_msgTypes[20].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[17].OneofWrappers = []any{
 		(*monitorState_Pending)(nil),
 		(*monitorState_Running)(nil),
 		(*monitorState_Triggered)(nil),
@@ -10873,14 +10520,14 @@ func file_cineko_client_client_proto_init() {
 		(*monitorState_Stopped)(nil),
 		(*monitorState_PaymentUnknown)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[22].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[19].OneofWrappers = []any{
 		(*reservation_Prepared)(nil),
 		(*reservation_Booked)(nil),
 		(*reservation_CancellationCommitting)(nil),
 		(*reservation_CancellationUnknown)(nil),
 		(*reservation_Cancelled)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[28].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[25].OneofWrappers = []any{
 		(*externalOperation_Cancellation)(nil),
 		(*externalOperation_Prepared)(nil),
 		(*externalOperation_Unknown)(nil),
@@ -10888,13 +10535,13 @@ func file_cineko_client_client_proto_init() {
 		(*externalOperation_Confirmed)(nil),
 		(*externalOperation_Reconciled)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[35].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[32].OneofWrappers = []any{
 		(*appEvent_Info)(nil),
 		(*appEvent_Success)(nil),
 		(*appEvent_Warning)(nil),
 		(*appEvent_Error)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[40].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[37].OneofWrappers = []any{
 		(*resource_Settings)(nil),
 		(*resource_Preset)(nil),
 		(*resource_Monitor)(nil),
@@ -10902,7 +10549,7 @@ func file_cineko_client_client_proto_init() {
 		(*resource_ExternalOperation)(nil),
 		(*resource_AppEvent)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[47].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[44].OneofWrappers = []any{
 		(*resourceKind_Settings)(nil),
 		(*resourceKind_Preset)(nil),
 		(*resourceKind_Monitor)(nil),
@@ -10910,7 +10557,7 @@ func file_cineko_client_client_proto_init() {
 		(*resourceKind_ExternalOperation)(nil),
 		(*resourceKind_AppEvent)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[49].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[46].OneofWrappers = []any{
 		(*eventResource_Settings)(nil),
 		(*eventResource_Preset)(nil),
 		(*eventResource_Monitor)(nil),
@@ -10918,12 +10565,12 @@ func file_cineko_client_client_proto_init() {
 		(*eventResource_ExternalOperation)(nil),
 		(*eventResource_AppEvent)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[50].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[47].OneofWrappers = []any{
 		(*clientEvent_Upserted)(nil),
 		(*clientEvent_Deleted)(nil),
 		(*clientEvent_ExecutionReady)(nil),
 	}
-	file_cineko_client_client_proto_msgTypes[57].OneofWrappers = []any{
+	file_cineko_client_client_proto_msgTypes[54].OneofWrappers = []any{
 		(*streamControl_Ready)(nil),
 		(*streamControl_Heartbeat)(nil),
 		(*streamControl_RetentionGap)(nil),
@@ -10935,7 +10582,7 @@ func file_cineko_client_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cineko_client_client_proto_rawDesc), len(file_cineko_client_client_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   75,
+			NumMessages:   72,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

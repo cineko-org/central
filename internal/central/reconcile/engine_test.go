@@ -64,11 +64,11 @@ func TestReconcileCycleDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Leader || report.StaleProbes != 2 || report.DeletedProbes != 1 ||
-		report.ExpiredLeases != 3 || report.RequeuedAssignments != 1 ||
-		report.FailedAssignments != 3 || report.MissedAssignments != 2 ||
-		report.AdvancedPolicies != 3 || report.CreatedAssignments != 2 ||
-		report.DeferredPolicies != 1 || report.SuspendedPolicies != 1 || report.OldestDueAgeSeconds != 5 {
+	if !report.GetLeader() || report.GetStaleProbes() != 2 || report.GetDeletedProbes() != 1 ||
+		report.GetExpiredLeases() != 3 || report.GetRequeuedAssignments() != 1 ||
+		report.GetFailedAssignments() != 3 || report.GetMissedAssignments() != 2 ||
+		report.GetAdvancedPolicies() != 3 || report.GetCreatedAssignments() != 2 ||
+		report.GetDeferredPolicies() != 1 || report.GetSuspendedPolicies() != 1 || report.GetOldestDueAgeSeconds() != 5 {
 		t.Fatalf("report = %+v", report)
 	}
 	if got := cycle.requeued["retry"]; got != now.Add(2*time.Second) {
@@ -111,7 +111,7 @@ func TestReconcileFollowerSkipsCycle(t *testing.T) {
 	repository := &memoryRepository{cycle: newMemoryCycle(), leader: false}
 	engine := newTestEngine(t, repository, time.Now().UTC())
 	report, err := engine.RunOnce(context.Background())
-	if err != nil || report.Leader || repository.calls != 1 {
+	if err != nil || report.GetLeader() || repository.calls != 1 {
 		t.Fatalf("report = %+v, error = %v, calls = %d", report, err, repository.calls)
 	}
 }
@@ -173,7 +173,7 @@ func TestScheduleDuePoliciesSkipsAnIdlePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.CreatedAssignments != 0 || len(cycle.created) != 0 || len(cycle.preempted) != 0 {
+	if report.GetCreatedAssignments() != 0 || len(cycle.created) != 0 || len(cycle.preempted) != 0 {
 		t.Fatalf("idle policy was scheduled: report = %+v, assignments = %+v, preempted = %v",
 			report, cycle.created, cycle.preempted)
 	}
@@ -189,7 +189,7 @@ func TestCatalogRefreshWaitsForProbeAndCreatesOneSystemAssignment(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.CatalogRefreshWaiting || report.CatalogRefreshCreated || len(waiting.created) != 0 {
+	if !report.GetCatalogRefreshWaiting() || report.GetCatalogRefreshCreated() || len(waiting.created) != 0 {
 		t.Fatalf("waiting report = %+v, assignments = %+v", report, waiting.created)
 	}
 
@@ -201,15 +201,52 @@ func TestCatalogRefreshWaitsForProbeAndCreatesOneSystemAssignment(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.CatalogRefreshCreated || report.CatalogRefreshWaiting || len(ready.created) != 1 {
+	if !report.GetCatalogRefreshCreated() || report.GetCatalogRefreshWaiting() || len(ready.created) != 1 {
 		t.Fatalf("created report = %+v, assignments = %+v", report, ready.created)
 	}
 	assignment := ready.created[0]
 	catalogTask := assignment.Task.GetCatalog()
-	if assignment.PolicyID != "" || catalogTask == nil || catalogTask.GetTheater() == nil ||
+	if assignment.Priority != planning.PriorityCatalogRefresh || assignment.PolicyID != "" ||
+		catalogTask == nil || catalogTask.GetTheater() == nil ||
 		catalogTask.GetTheater().GetSourceKey() != "__catalog__" || len(catalogTask.GetTargetDates()) != 0 ||
 		len(assignment.Candidates) != 1 {
 		t.Fatalf("catalog assignment = %+v", assignment)
+	}
+}
+
+func TestSeatAvailabilityCreatesExactShowtimePriorityAssignment(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	cycle := newMemoryCycle()
+	cycle.seatAvailabilityTarget = &SeatAvailabilityTarget{Task: seatAvailabilityAssignmentTask()}
+	cycle.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
+	engine := newTestEngine(t, &memoryRepository{cycle: cycle, leader: true}, now)
+	report, err := engine.RunOnce(context.Background())
+	if err != nil || len(cycle.created) != 1 || report.GetCreatedAssignments() != 1 {
+		t.Fatalf("seat-availability assignment = %+v, report = %+v, error = %v", cycle.created, report, err)
+	}
+	assignment := cycle.created[0]
+	availability := assignment.Task.GetSeatAvailability()
+	if assignment.Priority != planning.PrioritySeatAvailability || availability == nil ||
+		availability.GetShowtime().GetId() != "showtime" || assignment.Task.GetEgress().GetManagedScan() == nil {
+		t.Fatalf("seat-availability assignment = %+v", assignment)
+	}
+}
+
+func TestAssignmentPriorityBandsPreserveBookingOrder(t *testing.T) {
+	t.Parallel()
+	priorities := []int{
+		planning.PriorityScheduleDiscovery,
+		planning.PrioritySeatAvailability,
+		planning.PriorityRecentChange,
+		planning.PriorityRequestedSeatMap,
+		planning.PriorityCatalogRefresh,
+		planning.PriorityBaselineObservation,
+	}
+	for index := 1; index < len(priorities); index++ {
+		if priorities[index-1] <= priorities[index] {
+			t.Fatalf("priority bands are not strictly ordered: %v", priorities)
+		}
 	}
 }
 
@@ -244,7 +281,7 @@ func TestCatalogRefreshFailureAndBusyBoundaries(t *testing.T) {
 	busy.busyPolicies[""] = true
 	engine = newTestEngine(t, &memoryRepository{cycle: busy, leader: true}, now)
 	report, err := engine.RunOnce(context.Background())
-	if err != nil || !report.CatalogRefreshWaiting || report.CatalogRefreshCreated {
+	if err != nil || !report.GetCatalogRefreshWaiting() || report.GetCatalogRefreshCreated() {
 		t.Fatalf("busy catalog refresh = %+v, %v", report, err)
 	}
 }
@@ -256,7 +293,7 @@ func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) 
 	waiting.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask(), Requested: true}
 	engine := newTestEngine(t, &memoryRepository{cycle: waiting, leader: true}, now)
 	report, err := engine.RunOnce(context.Background())
-	if err != nil || !report.SeatMapBackfillWaiting || len(waiting.created) != 0 {
+	if err != nil || !report.GetSeatMapBackfillWaiting() || len(waiting.created) != 0 {
 		t.Fatalf("waiting seat-map report = %+v, assignments = %+v, error = %v", report, waiting.created, err)
 	}
 
@@ -265,12 +302,12 @@ func TestSeatMapBackfillWaitsForCapableProbeAndPrioritizesRequest(t *testing.T) 
 	ready.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: ready, leader: true}, now)
 	report, err = engine.RunOnce(context.Background())
-	if err != nil || !report.SeatMapBackfillCreated || len(ready.created) != 1 {
+	if err != nil || !report.GetSeatMapBackfillCreated() || len(ready.created) != 1 {
 		t.Fatalf("created seat-map report = %+v, assignments = %+v, error = %v", report, ready.created, err)
 	}
 	assignment := ready.created[0]
 	seatMapTask := assignment.Task.GetSeatMap()
-	if assignment.Priority != 95 || seatMapTask == nil || seatMapTask.GetAuditorium() == nil ||
+	if assignment.Priority != planning.PriorityRequestedSeatMap || seatMapTask == nil || seatMapTask.GetAuditorium() == nil ||
 		seatMapTask.GetAuditorium().GetId() != "auditorium" || len(assignment.Candidates) != 1 ||
 		assignment.Task.GetEgress() == nil || assignment.Task.GetEgress().GetManagedScan() == nil {
 		t.Fatalf("seat-map assignment = %+v", assignment)
@@ -310,7 +347,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 	busy.busyPolicies[""] = true
 	engine = newTestEngine(t, &memoryRepository{cycle: busy, leader: true}, now)
 	report, err := engine.RunOnce(context.Background())
-	if err != nil || !report.SeatMapBackfillWaiting || report.SeatMapBackfillCreated {
+	if err != nil || !report.GetSeatMapBackfillWaiting() || report.GetSeatMapBackfillCreated() {
 		t.Fatalf("busy seat-map report = %+v, %v", report, err)
 	}
 
@@ -318,7 +355,7 @@ func TestSeatMapBackfillBoundaries(t *testing.T) {
 	normal.seatMapTarget = &SeatMapBackfillTarget{Task: seatMapAssignmentTask()}
 	normal.candidates[""] = []CandidateProbe{{ID: "probe", NetworkID: "home"}}
 	engine = newTestEngine(t, &memoryRepository{cycle: normal, leader: true}, now)
-	if _, err := engine.RunOnce(context.Background()); err != nil || len(normal.created) != 1 || normal.created[0].Priority != 70 {
+	if _, err := engine.RunOnce(context.Background()); err != nil || len(normal.created) != 1 || normal.created[0].Priority != planning.PriorityBaselineObservation {
 		t.Fatalf("normal seat-map assignment = %+v, %v", normal.created, err)
 	}
 }
@@ -420,7 +457,7 @@ func TestEngineConfigurationLifecycleAndHealth(t *testing.T) {
 	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
 	repository := &memoryRepository{cycle: newMemoryCycle(), leader: true, called: make(chan struct{}, 1)}
 	engine := newTestEngine(t, repository, now)
-	if status := engine.Snapshot(); status.Healthy || status.Running {
+	if status := engine.Snapshot(); status.GetHealthy() || status.GetRunning() {
 		t.Fatalf("initial status = %+v", status)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -433,7 +470,7 @@ func TestEngineConfigurationLifecycleAndHealth(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		status := engine.Snapshot()
-		if status.Healthy && status.Running && status.Leader {
+		if status.GetHealthy() && status.GetRunning() && status.GetLeader() {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -445,20 +482,20 @@ func TestEngineConfigurationLifecycleAndHealth(t *testing.T) {
 	if err := <-finished; err != nil {
 		t.Fatal(err)
 	}
-	if status := engine.Snapshot(); status.Running {
+	if status := engine.Snapshot(); status.GetRunning() {
 		t.Fatalf("stopped status = %+v", status)
 	}
 
 	repository.err = errors.New("cycle failed")
 	engine.runAndRecord(context.Background())
-	if status := engine.Snapshot(); status.Healthy || status.LastErrorCode != "cycle_failed" || status.LastErrorAt.IsZero() {
+	if status := engine.Snapshot(); status.GetHealthy() || status.GetLastErrorCode() != "cycle_failed" || status.GetLastErrorAt() == nil {
 		t.Fatalf("failed status = %+v", status)
 	}
 	repository.err = nil
 	engine.runAndRecord(context.Background())
 	now = now.Add(4 * time.Hour)
 	engine.clock = func() time.Time { return now }
-	if status := engine.Snapshot(); status.Healthy {
+	if status := engine.Snapshot(); status.GetHealthy() {
 		t.Fatalf("stale status = %+v", status)
 	}
 }
@@ -473,8 +510,8 @@ func TestEngineRunAndRecordRecordsSuccessfulActivity(t *testing.T) {
 	engine.runAndRecord(context.Background())
 
 	status := engine.Snapshot()
-	if !status.Healthy || !status.Leader || status.LastReport.StaleProbes != 1 ||
-		status.LastAttemptAt.IsZero() || status.LastSuccessAt.IsZero() {
+	if !status.GetHealthy() || !status.GetLeader() || status.GetLastReport().GetStaleProbes() != 1 ||
+		status.GetLastAttemptAt() == nil || status.GetLastSuccessAt() == nil {
 		t.Fatalf("successful activity status = %+v", status)
 	}
 }
@@ -494,8 +531,120 @@ func TestEngineTickerAndShortHealthWindow(t *testing.T) {
 	if err := <-finished; err != nil {
 		t.Fatal(err)
 	}
-	if status := engine.Snapshot(); !status.Healthy {
+	if status := engine.Snapshot(); !status.GetHealthy() {
 		t.Fatalf("short-window status = %+v", status)
+	}
+}
+
+func TestEngineAdaptiveTimerHonorsFastDeadline(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
+	deadline := now.Add(2 * time.Second)
+	repository := &memoryRepository{
+		cycle:    newMemoryCycle(),
+		leader:   true,
+		deadline: &deadline,
+	}
+	engine := newTestEngine(t, repository, now)
+	engine.config.TickInterval = 5 * time.Second
+	delays := make(chan time.Duration, 1)
+	engine.newTimer = func(delay time.Duration) schedulerTimer {
+		delays <- delay
+		return schedulerTimer{channel: make(chan time.Time), stop: func() bool { return true }}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { finished <- engine.Run(ctx) }()
+	if delay := <-delays; delay != 2*time.Second {
+		t.Fatalf("adaptive delay = %v, want 2s", delay)
+	}
+	cancel()
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEngineCancellationStopsAdaptiveTimer(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
+	repository := &memoryRepository{cycle: newMemoryCycle(), leader: true}
+	engine := newTestEngine(t, repository, now)
+	timerCreated := make(chan struct{}, 1)
+	timerStopped := make(chan struct{}, 1)
+	engine.newTimer = func(time.Duration) schedulerTimer {
+		timerCreated <- struct{}{}
+		return schedulerTimer{channel: make(chan time.Time), stop: func() bool {
+			timerStopped <- struct{}{}
+			return true
+		}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { finished <- engine.Run(ctx) }()
+	<-timerCreated
+	cancel()
+	select {
+	case <-timerStopped:
+	case <-time.After(time.Second):
+		t.Fatal("timer was not stopped after cancellation")
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEngineWakeupRunsBeforeMaintenanceDeadline(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
+	repository := &memoryRepository{
+		cycle:   newMemoryCycle(),
+		leader:  true,
+		called:  make(chan struct{}, 2),
+		wakeups: make(chan struct{}, 1),
+	}
+	engine := newTestEngine(t, repository, now)
+	engine.config.TickInterval = 5 * time.Second
+	engine.newTimer = func(time.Duration) schedulerTimer {
+		return schedulerTimer{channel: make(chan time.Time), stop: func() bool { return true }}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { finished <- engine.Run(ctx) }()
+	<-repository.called
+	repository.wakeups <- struct{}{}
+	<-repository.called
+	cancel()
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if repository.calls != 2 {
+		t.Fatalf("wakeup reconciler calls = %d, want 2", repository.calls)
+	}
+}
+
+func TestEngineIdleStateKeepsMaintenanceCadence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 10, 5, 0, 0, 0, time.UTC)
+	repository := &memoryRepository{cycle: newMemoryCycle(), leader: true}
+	engine := newTestEngine(t, repository, now)
+	engine.config.TickInterval = 5 * time.Second
+	delays := make(chan time.Duration, 1)
+	engine.newTimer = func(delay time.Duration) schedulerTimer {
+		delays <- delay
+		return schedulerTimer{channel: make(chan time.Time), stop: func() bool { return true }}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { finished <- engine.Run(ctx) }()
+	if delay := <-delays; delay != 5*time.Second {
+		t.Fatalf("idle delay = %v, want 5s maintenance interval", delay)
+	}
+	cancel()
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if repository.calls != 1 {
+		t.Fatalf("idle reconciler calls = %d, want one initial cycle without busy-looping", repository.calls)
 	}
 }
 
@@ -627,6 +776,19 @@ func seatMapAssignmentTask() *observationpb.AssignmentTask {
 	return task
 }
 
+func seatAvailabilityAssignmentTask() *observationpb.AssignmentTask {
+	seatMapTask := seatMapAssignmentTask().GetSeatMap()
+	availability := &observationpb.SeatAvailabilityTask{}
+	availability.SetTheater(seatMapTask.GetTheater())
+	availability.SetAuditorium(seatMapTask.GetAuditorium())
+	availability.SetShowtime(seatMapTask.GetShowtime())
+	availability.SetLocale(seatMapTask.GetLocale())
+	availability.SetTimeZone(seatMapTask.GetTimeZone())
+	task := &observationpb.AssignmentTask{}
+	task.SetSeatAvailability(availability)
+	return task
+}
+
 func failureCycle(stage string, now time.Time) *memoryCycle {
 	cycle := newMemoryCycle()
 	cycle.failAt = stage
@@ -661,12 +823,15 @@ func failureCycle(stage string, now time.Time) *memoryCycle {
 }
 
 type memoryRepository struct {
-	mu     sync.Mutex
-	cycle  *memoryCycle
-	leader bool
-	err    error
-	calls  int
-	called chan struct{}
+	mu          sync.Mutex
+	cycle       *memoryCycle
+	leader      bool
+	err         error
+	deadline    *time.Time
+	deadlineErr error
+	wakeups     chan struct{}
+	calls       int
+	called      chan struct{}
 }
 
 func (repository *memoryRepository) RunLeaderCycle(
@@ -694,32 +859,59 @@ func (repository *memoryRepository) RunLeaderCycle(
 	return true, run(cycle)
 }
 
+func (repository *memoryRepository) NextReconcileDeadline(
+	_ context.Context,
+	_ time.Time,
+) (*time.Time, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if repository.deadline == nil {
+		return nil, repository.deadlineErr
+	}
+	deadline := *repository.deadline
+	return &deadline, repository.deadlineErr
+}
+
+func (repository *memoryRepository) WaitForReconcileWakeup(ctx context.Context) error {
+	if repository.wakeups == nil {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	select {
+	case <-repository.wakeups:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type policyAdvance struct {
 	run  TerminalPolicyRun
 	next *time.Time
 }
 
 type memoryCycle struct {
-	failAt          string
-	staleProbes     int
-	deletedProbes   int
-	expired         []ExpiredLease
-	retryable       []RetryableFailure
-	retries         map[string]RetryAvailability
-	timedOut        []TimedOutAssignment
-	terminal        []TerminalPolicyRun
-	due             []Policy
-	candidates      map[string][]CandidateProbe
-	busyPolicies    map[string]bool
-	oldestDue       *time.Time
-	requeued        map[string]time.Time
-	finished        map[string]string
-	advanced        []policyAdvance
-	created         []NewAssignment
-	preempted       []string
-	suspended       map[string]string
-	catalogRequired bool
-	seatMapTarget   *SeatMapBackfillTarget
+	failAt                 string
+	staleProbes            int
+	deletedProbes          int
+	expired                []ExpiredLease
+	retryable              []RetryableFailure
+	retries                map[string]RetryAvailability
+	timedOut               []TimedOutAssignment
+	terminal               []TerminalPolicyRun
+	due                    []Policy
+	candidates             map[string][]CandidateProbe
+	busyPolicies           map[string]bool
+	oldestDue              *time.Time
+	requeued               map[string]time.Time
+	finished               map[string]string
+	advanced               []policyAdvance
+	created                []NewAssignment
+	preempted              []string
+	suspended              map[string]string
+	catalogRequired        bool
+	seatMapTarget          *SeatMapBackfillTarget
+	seatAvailabilityTarget *SeatAvailabilityTarget
 }
 
 func newMemoryCycle() *memoryCycle {
@@ -842,6 +1034,10 @@ func (cycle *memoryCycle) CatalogRefreshRequired(context.Context, time.Time) (bo
 
 func (cycle *memoryCycle) SeatMapBackfillTarget(context.Context, time.Time) (*SeatMapBackfillTarget, error) {
 	return cycle.seatMapTarget, cycle.failure("seat_map_backfill")
+}
+
+func (cycle *memoryCycle) SeatAvailabilityTarget(context.Context, time.Time) (*SeatAvailabilityTarget, error) {
+	return cycle.seatAvailabilityTarget, cycle.failure("seat_availability")
 }
 
 func (cycle *memoryCycle) EligibleProbes(

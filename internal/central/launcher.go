@@ -377,7 +377,7 @@ func (service *ClientService) AuthorizeProbeBootstrap(
 }
 
 func validClientProbeCapabilities(values []*observationpb.Capability) bool {
-	if len(values) < 1 || len(values) > 3 {
+	if len(values) < 1 || len(values) > 4 {
 		return false
 	}
 	seen := make(map[string]struct{}, len(values))
@@ -408,6 +408,8 @@ func capabilityName(capability *observationpb.Capability) string {
 		return probedomain.CapabilityCGVCatalogCapture
 	case capability.GetSeatMapCapture() != nil:
 		return probedomain.CapabilityCGVSeatMapCapture
+	case capability.GetSeatAvailabilityCapture() != nil:
+		return probedomain.CapabilityCGVSeatAvailabilityCapture
 	default:
 		return ""
 	}

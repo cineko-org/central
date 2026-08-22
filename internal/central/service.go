@@ -436,11 +436,21 @@ func validateResult(result *observationpb.AssignmentResult) error {
 		}
 		return nil
 	}
-	if completed.GetCatalog() != nil && completed.GetSeatMap() != nil {
-		return fmt.Errorf("%w: assignment result cannot include catalog and seat map", ErrInvalid)
+	typedResults := 0
+	if completed.GetCatalog() != nil {
+		typedResults++
 	}
-	if (completed.GetCatalog() != nil || completed.GetSeatMap() != nil) && len(completed.GetCaptures()) != 0 {
-		return fmt.Errorf("%w: catalog and seat-map results cannot include schedule captures", ErrInvalid)
+	if completed.GetSeatMap() != nil {
+		typedResults++
+	}
+	if completed.GetSeatAvailability() != nil {
+		typedResults++
+	}
+	if typedResults > 1 {
+		return fmt.Errorf("%w: assignment result contains multiple typed payloads", ErrInvalid)
+	}
+	if typedResults > 0 && len(completed.GetCaptures()) != 0 {
+		return fmt.Errorf("%w: typed assignment results cannot include schedule captures", ErrInvalid)
 	}
 	for _, capture := range completed.GetCaptures() {
 		if err := validateCapture(capture); err != nil {
@@ -458,7 +468,10 @@ func validateCapture(capture *observationpb.Capture) error {
 		return fmt.Errorf("%w: complete capture cannot include errorCode", ErrInvalid)
 	}
 	for _, showtime := range capture.GetShowtimes() {
-		if err := validateShowtime(showtime); err != nil {
+		if err := validateShowtime(showtime); err != nil || !proto.Equal(showtime.GetScheduleDate(), capture.GetTargetDate()) {
+			if err == nil {
+				err = errors.New("showtime schedule date does not match capture target date")
+			}
 			return err
 		}
 	}
@@ -467,12 +480,21 @@ func validateCapture(capture *observationpb.Capture) error {
 
 func validateShowtime(showtime *catalogpb.Showtime) error {
 	if !showtimeIdentityComplete(showtime) || !showtimeIdentityCanonical(showtime) ||
+		!validLocalDate(showtime.GetScheduleDate()) ||
 		showtime.GetStartsAt() == nil || showtime.GetEndsAt() == nil ||
 		!showtime.GetEndsAt().AsTime().After(showtime.GetStartsAt().AsTime()) ||
 		showtime.GetAvailableSeats() < 0 || showtime.GetCapacity() < showtime.GetAvailableSeats() {
 		return fmt.Errorf("%w: invalid showtime", ErrInvalid)
 	}
 	return nil
+}
+
+func validLocalDate(value *commonpb.LocalDate) bool {
+	if value == nil || value.GetYear() < 1 || value.GetMonth() < 1 || value.GetMonth() > 12 || value.GetDay() < 1 || value.GetDay() > 31 {
+		return false
+	}
+	date := time.Date(int(value.GetYear()), time.Month(value.GetMonth()), int(value.GetDay()), 0, 0, 0, 0, time.UTC)
+	return date.Year() == int(value.GetYear()) && date.Month() == time.Month(value.GetMonth()) && date.Day() == int(value.GetDay())
 }
 
 func showtimeIdentityComplete(showtime *catalogpb.Showtime) bool {

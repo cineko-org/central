@@ -13,6 +13,7 @@ import (
 	"time"
 
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -164,7 +165,7 @@ func normalizeShowtimes(snapshot *catalogpb.CatalogSnapshot, theaters map[string
 		movie := movies[strings.TrimSpace(showtime.GetMovie().GetId())]
 		auditorium := auditoriums[strings.TrimSpace(showtime.GetAuditorium().GetId())]
 		startsAt, endsAt := showtime.GetStartsAt(), showtime.GetEndsAt()
-		if showtime.GetProviderId() != snapshot.GetProvider().GetId() || showtime.GetSourceKey() == "" || theaters[showtime.GetTheaterId()] == nil || movie == nil || auditorium == nil || auditorium.GetTheaterId() != showtime.GetTheaterId() || startsAt == nil || endsAt == nil || startsAt.CheckValid() != nil || endsAt.CheckValid() != nil || !endsAt.AsTime().After(startsAt.AsTime()) {
+		if showtime.GetProviderId() != snapshot.GetProvider().GetId() || showtime.GetSourceKey() == "" || theaters[showtime.GetTheaterId()] == nil || movie == nil || auditorium == nil || auditorium.GetTheaterId() != showtime.GetTheaterId() || !validLocalDate(showtime.GetScheduleDate()) || startsAt == nil || endsAt == nil || startsAt.CheckValid() != nil || endsAt.CheckValid() != nil || !endsAt.AsTime().After(startsAt.AsTime()) {
 			return errors.New("catalog showtime is incomplete")
 		}
 		showtime.SetMovie(movie)
@@ -174,6 +175,16 @@ func normalizeShowtimes(snapshot *catalogpb.CatalogSnapshot, theaters map[string
 		}
 	}
 	return nil
+}
+
+// validLocalDate rejects normalized-looking values that time.Date would roll
+// into a different civil day.
+func validLocalDate(value *commonpb.LocalDate) bool {
+	if value == nil || value.GetYear() < 1 || value.GetMonth() < 1 || value.GetMonth() > 12 || value.GetDay() < 1 || value.GetDay() > 31 {
+		return false
+	}
+	date := time.Date(int(value.GetYear()), time.Month(value.GetMonth()), int(value.GetDay()), 0, 0, 0, 0, time.UTC)
+	return date.Year() == int(value.GetYear()) && date.Month() == time.Month(value.GetMonth()) && date.Day() == int(value.GetDay())
 }
 
 //nolint:gocyclo,cyclop // Seat geometry validation keeps every contract invariant visible in one ordered pass.
@@ -246,8 +257,18 @@ func normalizeLayout(layout *seatmappb.Layout, auditoriumID string) error {
 		block.SetMaxY(block.GetMaxY())
 	}
 	sort.Slice(layout.GetSeats(), func(i, j int) bool { return layout.GetSeats()[i].GetLabel() < layout.GetSeats()[j].GetLabel() })
-	sort.Slice(layout.GetZones(), func(i, j int) bool { return layout.GetZones()[i].GetCode() < layout.GetZones()[j].GetCode() })
-	sort.Slice(layout.GetBlocks(), func(i, j int) bool { return layout.GetBlocks()[i].GetCode() < layout.GetBlocks()[j].GetCode() })
+	sort.Slice(layout.GetZones(), func(i, j int) bool {
+		if layout.GetZones()[i].GetCode() == layout.GetZones()[j].GetCode() {
+			return layout.GetZones()[i].GetName() < layout.GetZones()[j].GetName()
+		}
+		return layout.GetZones()[i].GetCode() < layout.GetZones()[j].GetCode()
+	})
+	sort.Slice(layout.GetBlocks(), func(i, j int) bool {
+		if layout.GetBlocks()[i].GetCode() == layout.GetBlocks()[j].GetCode() {
+			return layout.GetBlocks()[i].GetName() < layout.GetBlocks()[j].GetName()
+		}
+		return layout.GetBlocks()[i].GetCode() < layout.GetBlocks()[j].GetCode()
+	})
 	return nil
 }
 

@@ -49,31 +49,40 @@ func TestExecutionTargetMatchesCanonicalProbeShowtime(t *testing.T) {
 	showtime.SetId("9238317d2a1589ed7c5d3241")
 	showtime.SetMovie(movie)
 	showtime.SetAuditorium(auditorium)
+	showtime.SetScheduleDate(date)
 	showtime.SetStartsAt(timestamppb.New(time.Date(2026, 8, 12, 19, 45, 0, 0, location)))
-	if !executionTargetMatches(target, "2026-08-12", showtime, now, location) {
+	if !executionTargetMatches(target, showtime, now, location) {
 		t.Fatal("canonical Probe showtime did not match the stored Client target")
 	}
 
 	tests := []struct {
 		name   string
 		mutate func(*catalogpb.Showtime)
-		date   string
 		want   bool
 	}{
-		{name: "auditorium", mutate: func(value *catalogpb.Showtime) { value.GetAuditorium().SetId("other") }, date: "2026-08-12", want: false},
-		{name: "movie title snapshot", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetTitle("다른 영화") }, date: "2026-08-12", want: true},
-		{name: "movie identity", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetId("other") }, date: "2026-08-12", want: false},
-		{name: "missing movie identity", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetId("") }, date: "2026-08-12", want: false},
-		{name: "date", mutate: func(*catalogpb.Showtime) {}, date: "2026-08-13", want: false},
+		{name: "auditorium", mutate: func(value *catalogpb.Showtime) { value.GetAuditorium().SetId("other") }, want: false},
+		{name: "movie title snapshot", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetTitle("다른 영화") }, want: true},
+		{name: "movie identity", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetId("other") }, want: false},
+		{name: "missing movie identity", mutate: func(value *catalogpb.Showtime) { value.GetMovie().SetId("") }, want: false},
+		{name: "date", mutate: func(value *catalogpb.Showtime) {
+			date := &commonpb.LocalDate{}
+			date.SetYear(2026)
+			date.SetMonth(8)
+			date.SetDay(13)
+			value.SetScheduleDate(date)
+		}, want: false},
+		{name: "provider schedule date survives after-midnight start", mutate: func(value *catalogpb.Showtime) {
+			value.SetStartsAt(timestamppb.New(time.Date(2026, 8, 13, 1, 45, 0, 0, location)))
+		}, want: true},
 		{name: "time", mutate: func(value *catalogpb.Showtime) {
 			value.SetStartsAt(timestamppb.New(value.GetStartsAt().AsTime().Add(2 * time.Hour)))
-		}, date: "2026-08-12", want: false},
+		}, want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			value := proto.CloneOf(showtime)
 			test.mutate(value)
-			if got := executionTargetMatches(target, test.date, value, now, location); got != test.want {
+			if got := executionTargetMatches(target, value, now, location); got != test.want {
 				t.Fatalf("executionTargetMatches() = %t, want %t", got, test.want)
 			}
 		})

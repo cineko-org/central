@@ -2,13 +2,10 @@ package clientresources
 
 import (
 	"fmt"
-	"time"
 
 	clientpb "github.com/cineko-org/contracts/gen/go/cineko/client"
-	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Kind returns the persistence identity for a typed Client resource.
@@ -79,16 +76,12 @@ func Payload(resource *clientpb.Resource) ([]byte, error) {
 	return protojson.MarshalOptions{UseProtoNames: false}.Marshal(message)
 }
 
-// Decode reconstructs a typed Client resource from relational identity and a
-// ProtoJSON payload.
-func Decode(kind, id string, revision int64, createdAt, updatedAt time.Time, payload []byte) (*clientpb.Resource, error) {
-	resource := &clientpb.Resource{}
-	identity := &commonpb.ResourceIdentity{}
-	identity.SetId(id)
-	identity.SetRevision(revision)
-	identity.SetCreatedAt(timestamppb.New(createdAt))
-	identity.SetUpdatedAt(timestamppb.New(updatedAt))
-	resource.SetIdentity(identity)
+// DecodeEventResource reconstructs the typed resource carried by a Client
+// event from the event log's immutable ProtoJSON body.
+func DecodeEventResource(kind, id string, revision int64, payload []byte) (*clientpb.EventResource, error) {
+	eventResource := &clientpb.EventResource{}
+	eventResource.SetId(id)
+	eventResource.SetRevision(revision)
 	options := protojson.UnmarshalOptions{DiscardUnknown: false}
 	switch kind {
 	case "settings":
@@ -96,66 +89,37 @@ func Decode(kind, id string, revision int64, createdAt, updatedAt time.Time, pay
 		if err := options.Unmarshal(payload, message); err != nil {
 			return nil, err
 		}
-		resource.SetSettings(message)
+		eventResource.SetSettings(message)
 	case "presets":
 		message := &clientpb.Preset{}
 		if err := options.Unmarshal(payload, message); err != nil {
 			return nil, err
 		}
-		resource.SetPreset(message)
+		eventResource.SetPreset(message)
 	case "monitors":
 		message := &clientpb.Monitor{}
 		if err := options.Unmarshal(payload, message); err != nil {
 			return nil, err
 		}
-		resource.SetMonitor(message)
+		eventResource.SetMonitor(message)
 	case "reservations":
 		message := &clientpb.Reservation{}
 		if err := options.Unmarshal(payload, message); err != nil {
 			return nil, err
 		}
-		resource.SetReservation(message)
+		eventResource.SetReservation(message)
 	case "external-operations":
 		message := &clientpb.ExternalOperation{}
 		if err := options.Unmarshal(payload, message); err != nil {
 			return nil, err
 		}
-		resource.SetExternalOperation(message)
+		eventResource.SetExternalOperation(message)
 	case "app-events":
 		message := &clientpb.AppEvent{}
 		if err := options.Unmarshal(payload, message); err != nil {
 			return nil, err
 		}
-		resource.SetAppEvent(message)
-	default:
-		return nil, fmt.Errorf("unsupported Client resource kind %q", kind)
-	}
-	return resource, nil
-}
-
-// DecodeEventResource reconstructs the typed resource carried by a Client
-// event from the event log's relational identity and ProtoJSON body.
-func DecodeEventResource(kind, id string, revision int64, payload []byte) (*clientpb.EventResource, error) {
-	resource, err := Decode(kind, id, revision, time.Time{}, time.Time{}, payload)
-	if err != nil {
-		return nil, err
-	}
-	eventResource := &clientpb.EventResource{}
-	eventResource.SetId(id)
-	eventResource.SetRevision(revision)
-	switch kind {
-	case "settings":
-		eventResource.SetSettings(resource.GetSettings())
-	case "presets":
-		eventResource.SetPreset(resource.GetPreset())
-	case "monitors":
-		eventResource.SetMonitor(resource.GetMonitor())
-	case "reservations":
-		eventResource.SetReservation(resource.GetReservation())
-	case "external-operations":
-		eventResource.SetExternalOperation(resource.GetExternalOperation())
-	case "app-events":
-		eventResource.SetAppEvent(resource.GetAppEvent())
+		eventResource.SetAppEvent(message)
 	default:
 		return nil, fmt.Errorf("unsupported Client resource kind %q", kind)
 	}

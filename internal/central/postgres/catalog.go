@@ -12,6 +12,7 @@ import (
 	probedomain "github.com/cineko-org/central/internal/domain/probe"
 	adminpb "github.com/cineko-org/contracts/gen/go/cineko/admin"
 	catalogpb "github.com/cineko-org/contracts/gen/go/cineko/catalog"
+	commonpb "github.com/cineko-org/contracts/gen/go/cineko/common"
 	seatmappb "github.com/cineko-org/contracts/gen/go/cineko/seatmap"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
@@ -372,14 +373,14 @@ func upsertAuditorium(ctx context.Context, tx pgx.Tx, auditorium *catalogpb.Audi
 func upsertShowtime(ctx context.Context, tx pgx.Tx, showtime *catalogpb.Showtime, observedAt time.Time) (bool, error) {
 	return mutateCatalogEntity(ctx, tx, "showtime", showtime.GetId(), showtime, observedAt,
 		`SELECT content_hash, updated_at FROM showtimes WHERE id = $1 FOR UPDATE`, `
-		INSERT INTO showtimes (id, provider_id, source_key, theater_id, movie_id, auditorium_id, starts_at, ends_at, content_hash, first_seen_at, last_seen_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $10)
+		INSERT INTO showtimes (id, provider_id, source_key, theater_id, movie_id, auditorium_id, schedule_date, starts_at, ends_at, content_hash, first_seen_at, last_seen_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)
 		ON CONFLICT (id) DO UPDATE SET provider_id = EXCLUDED.provider_id, source_key = EXCLUDED.source_key,
 			theater_id = EXCLUDED.theater_id, movie_id = EXCLUDED.movie_id, auditorium_id = EXCLUDED.auditorium_id,
-			starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, active = true, content_hash = EXCLUDED.content_hash,
+			schedule_date = EXCLUDED.schedule_date, starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at, active = true, content_hash = EXCLUDED.content_hash,
 			last_seen_at = GREATEST(showtimes.last_seen_at, EXCLUDED.last_seen_at),
 			updated_at = CASE WHEN showtimes.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.updated_at ELSE showtimes.updated_at END
-		WHERE EXCLUDED.updated_at >= showtimes.updated_at`, showtime.GetId(), showtime.GetProviderId(), showtime.GetSourceKey(), showtime.GetTheaterId(), showtime.GetMovie().GetId(), showtime.GetAuditorium().GetId(), showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime())
+		WHERE EXCLUDED.updated_at >= showtimes.updated_at`, showtime.GetId(), showtime.GetProviderId(), showtime.GetSourceKey(), showtime.GetTheaterId(), showtime.GetMovie().GetId(), showtime.GetAuditorium().GetId(), localDateString(showtime.GetScheduleDate()), showtime.GetStartsAt().AsTime(), showtime.GetEndsAt().AsTime())
 }
 
 func mutateCatalogEntity(ctx context.Context, tx pgx.Tx, entity, id string, value proto.Message, observedAt time.Time, stateQuery, mutationQuery string, arguments ...any) (bool, error) {
@@ -525,7 +526,7 @@ func (store *Store) listShowtimes(ctx context.Context) ([]*catalogpb.Showtime, e
 			movie.id, movie.provider_id, movie.source_key, movie.title, movie.poster_url,
 			auditorium.id, auditorium.theater_id, auditorium.source_key, auditorium.name,
 			auditorium.screen_types, auditorium.capacity, COALESCE(auditorium.current_seat_map_version_id, ''),
-			showtime.starts_at, showtime.ends_at
+			showtime.schedule_date::text, showtime.starts_at, showtime.ends_at
 		FROM showtimes AS showtime JOIN movies AS movie ON movie.id = showtime.movie_id
 		JOIN auditoriums AS auditorium ON auditorium.id = showtime.auditorium_id
 		WHERE showtime.active AND showtime.starts_at > now() ORDER BY showtime.starts_at, showtime.id`)
@@ -540,9 +541,14 @@ func (store *Store) listShowtimes(ctx context.Context) ([]*catalogpb.Showtime, e
 		var auditoriumID, auditoriumTheaterID, auditoriumSourceKey, auditoriumName, layoutHash string
 		var screenTypes []string
 		var capacity int32
+		var scheduleDate string
 		var startsAt, endsAt time.Time
-		if err := rows.Scan(&id, &providerID, &sourceKey, &theaterID, &movieID, &movieProviderID, &movieSourceKey, &movieTitle, &moviePosterURL, &auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName, &screenTypes, &capacity, &layoutHash, &startsAt, &endsAt); err != nil {
+		if err := rows.Scan(&id, &providerID, &sourceKey, &theaterID, &movieID, &movieProviderID, &movieSourceKey, &movieTitle, &moviePosterURL, &auditoriumID, &auditoriumTheaterID, &auditoriumSourceKey, &auditoriumName, &screenTypes, &capacity, &layoutHash, &scheduleDate, &startsAt, &endsAt); err != nil {
 			return nil, err
+		}
+		parsedScheduleDate, err := time.Parse(time.DateOnly, scheduleDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse catalog showtime schedule date: %w", err)
 		}
 		movie := &catalogpb.Movie{}
 		movie.SetId(movieID)
@@ -562,7 +568,16 @@ func (store *Store) listShowtimes(ctx context.Context) ([]*catalogpb.Showtime, e
 		value.SetProviderId(providerID)
 		value.SetSourceKey(sourceKey)
 		value.SetTheaterId(theaterID)
+		value.SetScheduleDate(catalogLocalDate(parsedScheduleDate))
 		result = append(result, value)
 	}
 	return result, rows.Err()
+}
+
+func catalogLocalDate(value time.Time) *commonpb.LocalDate {
+	date := &commonpb.LocalDate{}
+	date.SetYear(int32(value.Year()))
+	date.SetMonth(int32(value.Month()))
+	date.SetDay(int32(value.Day()))
+	return date
 }

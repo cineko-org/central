@@ -87,7 +87,6 @@ type ClientRepository interface {
 	ClaimClientExecution(context.Context, ExecutionClaim) (*executionpb.Command, error)
 	HeartbeatClientExecution(context.Context, string, string, [32]byte, time.Time, time.Time) error
 	CompleteClientExecution(context.Context, ExecutionCompletion) error
-	RetryClientExecution(context.Context, string, string, time.Time) error
 }
 
 type ClientService struct {
@@ -393,11 +392,7 @@ func (service *ClientService) PutResource(
 	if clientresources.Kind(resource) != kind || resource.GetIdentity().GetId() != id {
 		return nil, fmt.Errorf("%w: resource identity does not match the request", ErrInvalid)
 	}
-	payload, err := clientresources.Payload(resource)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, kind, err)
-	}
-	if err := clientresources.ValidatePayload(principal.UserID, kind, id, payload); err != nil {
+	if err := clientresources.Validate(principal.UserID, kind, id, resource); err != nil {
 		return nil, fmt.Errorf("%w: invalid %s payload: %w", ErrInvalid, kind, err)
 	}
 	return service.repository.PutClientResource(ctx, ResourceMutation{
@@ -411,11 +406,7 @@ func validateStoredClientResource(userID string, kind string, id string, resourc
 		(id != "" && resource.GetIdentity().GetId() != id) {
 		return fmt.Errorf("%w: resource storage identity is inconsistent", ErrCorruptResource)
 	}
-	payload, err := clientresources.Payload(resource)
-	if err != nil {
-		return fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, kind, resource.GetIdentity().GetId(), err)
-	}
-	if err := clientresources.ValidatePayload(userID, kind, resource.GetIdentity().GetId(), payload); err != nil {
+	if err := clientresources.Validate(userID, kind, resource.GetIdentity().GetId(), resource); err != nil {
 		return fmt.Errorf("%w: %s/%s: %w", ErrCorruptResource, kind, resource.GetIdentity().GetId(), err)
 	}
 	return nil
